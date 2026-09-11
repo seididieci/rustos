@@ -1,0 +1,790 @@
+# AGENTS.md - Istruzioni per Agenti AI
+
+## Contesto del Progetto
+
+rustOS è un **microkernel x86_64** scritto in Rust (ADR-0005). Architettura
+microkernel: il kernel contiene scheduling, IPC, gestione della memoria e
+routing degli interrupt; driver e servizi (console, file system, devfs, shell)
+sono processi userspace che comunicano via IPC per nome con reply implicita,
+supporto async e trasferimento dati zero-copy su ring SPSC per-processo. Lo
+scheduler è unico RT a 32 priorità con Constant Bandwidth Server (CBS) per la
+bandwidth reservation.
+
+**Obiettivo**: un microkernel con isolamento dei servizi in userspace, IPC ad
+alte prestazioni (per-nome, async, zero-copy) e CPU time garantito sotto carico.
+
+## Stack Tecnico
+
+| Componente | Scelta |
+|------------|--------|
+| Architettura | Microkernel (ADR-0005) |
+| Language | Rust nightly (x86_64-unknown-none) |
+| Bootloader | stub PVH custom (kernel/src/boot.asm), niente GRUB |
+| Testing | QEMU (qemu-system-x86_64, `-kernel` + nota PVH) |
+| Documentazione | mdbook |
+| Target | x86_64 bare-metal |
+
+NB: `vga.rs`/`serial.rs` sono DEBUG FACILITY temporanee in-kernel; migreranno
+al console server userspace quando esiste l'IPC (ADR-0005 §3).
+
+## Build Commands
+
+```bash
+# Build kernel + boot in QEMU (PVH)
+./run.sh
+
+# Build kernel only (release)
+cargo build --release
+
+# VGA visibile in locale
+RUN_DISPLAY=gtk ./run.sh
+
+# Build documentation
+cd docs && mdbook build
+
+# Serve documentation locally
+cd docs && mdbook serve
+```
+
+## Coding Conventions
+
+1. **Sempre** usare `#![no_std]` e `#![no_main]` nei moduli kernel
+2. **Volatile** per tutti gli accessi MMIO (VGA, LAPIC, ecc.)
+3. **Spin locks** per sincronizzazione (no std::sync)
+4. **`hlt`** negli idle loop (mai `loop {}` vuoto)
+5. **EOI** sempre dopo interrupt handlers
+6. **Comments** solo quando necessario (il codice deve essere auto-esplicativo)
+7. **Naming**: snake_case per funzioni/variabili, PascalCase per tipi
+8. **Error handling**: usare `Result<T, E>` dove possibile, `unwrap()` solo in init
+
+## File Structure
+
+```
+rustos/
+├── kernel/         # Il kernel stesso
+│   ├── src/
+│   │   ├── main.rs     # Entry point Rust (rust_main)
+│   │   ├── boot.asm    # Stub PM32 -> long mode (NASM)
+│   │   ├── vga.rs      # VGA text mode
+│   │   ├── serial.rs   # UART debug
+│   │   └── ...         # Altri moduli
+│   ├── Cargo.toml
+│   └── linker.ld       # Include la nota PVH per il boot QEMU
+├── libs/
+│   └── libr/           # libreria di sistema condivisa (userland + testland)
+├── syscall-numbers/    # Costanti syscall + costanti condivise (kernel+user)
+├── scripts/
+│   ├── boot.asm        # MBR 16-bit (riserva, non usato dal path PVH)
+│   ├── build_common.sh # build_one() condivisa (freestanding PIC)
+│   ├── build-userland.sh  # binari "utente" -> userland/build
+│   ├── build-tests.sh  # binari test suite -> testland/build
+│   ├── mkimage.py      # Immagine disco raw (boot sector + payload)
+│   └── putc16.inc
+├── run.sh              # build userland + testland + kernel + QEMU (PVH)
+├── userland/           # SOLO binari ad uso utente: init, console server,
+│   │                   #   fs server, devfs, shell, uptime, kbd/tty (Fase 15);
+│   │                   #   futuri: disk server dedicato (Fase 16), utility (Fase 17)
+│   └── build/          # output .bin dei servizi utente
+├── testland/           # TEST SUITE + repro + demo (nessun binario "utente")
+│   │                   #   demo, testfs, testfat, hogheap, devreader,
+│   │                   #   usertests (+ helper usertest-client/usertest-spin);
+│   │                   #   srv/cli: demo storiche Fase 7 NON piu' buildate
+│   │                   #   (basate su IPC per PID, rimosse in Fase 12)
+│   └── build/          # output .bin dei test
+├── docs/               # Documentazione mdbook
+│   ├── src/            # Capitoli (mdbook src) + adr/ (decisioni, source unica)
+│   ├── book.toml
+│   └── book/           # output build mdbook
+└── AGENTS.md           # Questo file
+```
+
+## Phase Progress
+
+- [x] Fase 1: Bare metal Hello World (VGA) + boot PVH
+- [x] Fase 2: Memory Map (PVH hvm_start_info) + GDT/TSS/IDT + handler eccezioni
+- [x] Fase 3: Interrupt hardware (PIC, timer, keyboard IRQ — routing kernel-side)
+- [x] Fase 4: Frame allocator fisico + heap kernel (identity map dinamica fino a ~109 GiB)
+- [x] Fase 5: Processi + scheduler preemptive (context switch reale, PCB, idle, priorita')
+- [x] Fase 6: User mode (ring 3) + entry syscall (4 sotto-fasi)
+  - [x] 6.1 Infrastruttura: GDT user segment, TSS RSP0 dinamica, page table per-processo (CR3), kernel stack per processo
+  - [x] 6.2 Entry Ring 3: frame CPU user + trampoline IRET, primo processo che gira in ring 3 e viene preemptato
+  - [x] 6.3 Meccanismo syscall/sysret: MSR STAR/LSTAR/SFMASK, entry (senza swapgs, rip-relative su PERCPU), handler (getpid/write/exit)
+  - [x] 6.4 Embed binario user + demo (getpid + write + busy-loop) e preemption in ring 3
+- [x] Fase 7: IPC sincrona send/recv ⭐ (cuore del microkernel)
+- [x] Fase 8: init + console server (driver VGA/kbd migrano in userspace)
+  - [x] 8.1 init: init e' l'unico processo user che spawna i servizi via
+        syscall `spawn` (numero 20); process tree radicata in init (campo
+        `parent`). Il kernel spawna solo init. Nota: da Fase 9.5 in produzione
+        init spawna solo i servizi (console, fs, uptime, devfs, shell); da Fase
+        13 init sincronizza il boot attendendo l'ACK "Fs pronto" da userfs.
+  - [x] 8.2 console server: `userconsole` mappa VGA (`map_physical`, syscall 21).
+        Tastiera in userspace da Fase 15 (userkbd/usertty): nessun ponte kernel.
+        `sys_write` stampa solo su seriale.
+  - [x] 8.3 uptime in userspace: processo `uptime` spostato dal kernel in
+        userspace (`useruptime`); nuova syscall `get_ticks` (22) che ritorna
+        il contatore PIT. Solo `idle` resta nel kernel (Fase 15 ha eliminato
+        anche `keyboard`: driver PS/2 in userspace).
+- [x] Fase 9: File system server (ramfs -> FAT32) via IPC
+  - [x] 9.1 Shared buffer page + ramfs server
+    - [x] 9.1.1 Kernel: shared buffer page (phys_mem + vmm_user)
+    - [x] 9.1.2 Syscall: OPEN/READ/WRITE/CLOSE/READDIR (kernel dispatch)
+    - [x] 9.1.3 userland/fs: ramfs server
+    - [x] 9.1.4 libs/libr: wrappers open/read/write/close/readdir
+    - [x] 9.1.5 Build script: aggiungere fs
+    - [x] 9.1.6 Test: usertestfs (write + read verification)
+  - [x] 9.2 FAT32 read-only (ATA PIO driver + BPB parsing)
+    - [x] 9.2.1 Kernel: TSS per-processo con I/O bitmap (ADR-0006) — ogni
+          processo ha il proprio TSS (pool 32 slot, RSP0 per-processo, bitmap
+          I/O); `userfs` abilita solo le porte ATA 0x1F0-0x1F7, 0x3F6-0x3F7.
+          `ltr` per-switch con azzeramento del bit busy del descriptor.
+    - [x] 9.2.2 Kernel: fix IPC reply routing — la reply va al mittente del
+          messaggio correntemente elaborato (`reply_target` impostato da
+          `recv`), non all'ultimo `send`; piu' client concorrenti non si
+          sovrascrivono.
+    - [x] 9.2.3 scripts/mkfat.py: generatore immagine FAT32 (~257 MiB, 2 FAT,
+          root cluster, file 8.3, subdir con '.'/'..') validato con fsck.fat.
+    - [x] 9.2.4 userland/fs: driver ATA PIO (`io.rs` + `block.rs`) e parser
+          FAT32 (`fat32.rs`) generalizzato a qualunque cluster size; mount
+          table `/` → ramfs, `/fat` → FAT32; allocatore free-list con
+          coalescenza (i transients del parser vanno liberati); fallback
+          ramfs-only se il disco e' assente.
+    - [x] 9.2.5 run.sh: genera `userland/fs/fat.img` e lo monta con
+          `-drive file=...,if=ide`.
+    - [x] 9.2.6 Test: usertestfat (readdir /fat, read HELLO.TXT e
+          SUB/NOTES.TXT, write su /fat deve fallire) — PASS.
+  - [x] 9.3 devfs server separato + IPC routing
+    - [x] 9.3.1 userland/devfs: server `/dev/null` + `/dev/zero`, si registra
+          presso userfs via syscall FS_REGISTER (prefix in uno slot dedicato,
+          nessun uso della shared buffer → no race condition)
+    - [x] 9.3.2 userfs: mount table dinamica (`Vec<Mount>`), handler
+          FS_REGISTER (tag 0x30), `FsKind::Dev { server_pid }`, remote fd
+          table (`BTreeMap<(pid,fd), (server_pid, remote_fd)>`), routing
+          open/read/write/close/readdir verso server remoto
+    - [x] 9.3.3 Test: usertestfat test 5+6 (/dev/null write+read, /dev/zero
+          read 16 zeri) — PASS.
+    - [x] 9.3.4 Nessuna modifica al kernel: shared buffer gia' mappata in
+          tutti i processi user (`setup_user_memory`).
+  - [x] 9.4 Shell integration (ls, cat, touch, mkdir) + terminale VGA unico
+    - [x] 9.4.1 Fix mount resolution (longest prefix match per `/dev/input`)
+    - [x] 9.4.2 Console server = terminale: UNICO proprietario del VGA
+          (echo tasti + output client + cursore hardware CRTC 0x3D4/0x3D5);
+          tastiera = device `/dev/input/keyboard` (ring buffer +
+          DEV_OPEN/READ/WRITE/CLOSE); layout US (`Us104Key`); mapping tasti
+          Enter→`\n` e Backspace→`0x08` dai `RawKey` di pc_keyboard.
+          La shell NON mappa il VGA: legge tasti e scrive output sullo stesso
+          fd del device (DEV_WRITE disegna sulla VGA).
+    - [x] 9.4.3 FS mkdir: syscall 23 + userfs ramfs `FsNode::Dir` +
+          `libr::mkdir` (+ test usertestfs Test 4) — PASS.
+    - [x] 9.4.4 Shell binary: `usershell` client terminale con
+          ls/cat/touch/mkdir/exit/help; output specchiato su seriale.
+    - [x] 9.4.5 Integrazione: init spawna usershell, `user_binary.rs`
+          (`io_ranges` CRTC per userconsole), build script, test automatico
+          `scripts/test-shell.py` (ls/cat/mkdir via monitor QEMU) — PASS.
+    - [x] FS_REGISTER via syscall: `SYS_FS_REGISTER` (24) in kernel con slot
+          dedicato (come open/mkdir) → registrazione driver senza limite di
+          lunghezza prefix ne' race; `libr::fs_register`; devfs/console lo
+          usano (rimosso il vecchio encoding del prefix in parole IPC,
+          limitato a 8 byte).
+  - [x] 9.5 Riorganizzazione alberi + suite di regressione usertests
+    - [x] 9.5.1 Split layout: `userland/` = SOLO binari utente (init, console,
+          fs, devfs, shell, uptime); `testland/` = test/demo/repro (demo, srv,
+          cli, testfs, testfat, hogheap, devreader, usertests + helper);
+          `libs/libr` = libreria condivisa; `scripts/build-userland.sh` +
+          `build-tests.sh` (via `build_common.sh`), output separati.
+    - [x] 9.5.2 Per-processo il binario embedded viene COPIATO in frame privati
+          (`user_binary.rs::copy_binary`): mappare gli stessi frame a piu'
+          processi condivide .bss/.data mutabili (free-list di libr) → due
+          istanze dello stesso binario si corrompevano. Single-instance prima.
+    - [x] 9.5.3 `testland/usertests`: suite di regressione 17 test con riga
+          riepilogo `[usertests] PASS N/N` — syscall core, heap lazy demand-
+          zero (fresco=0), ramfs write-multichunk/mkdir/errori, /dev/null e
+          /dev/zero, map_physical aliasing (pagina scratch `MAP_TEST_PHYS`
+          16 MiB riservata dal kernel), IPC echo + multi-client reply_target,
+          devfs concorrente + heap churn, preemption ring-3 (via contatore su
+          pagina scratch), priorita' High>Normal. Helper: `usertest-client`
+          (ECHO/ZEROREAD/NULLW con handshake OPENED/GO che dal buffer
+          per-processo 9.6 non e' piu' necessario per la race, ma resta come
+          barriera di coordinamento) e `usertest-spin` (busy a
+          budget di tick; stessa bin esposta a priorita' diverse).
+    - [x] 9.5.4 init esegue i test in SEQUENZA (spawn e attesa di `TEST_DONE`
+          IPC) prima della shell: determinismo di PID/output (la race della
+          shared buffer single-page sara' risolta in 9.6, non piu' necessaria).
+    - [x] 9.5.5 Retrofit: `[testfs] PASS 5/5` e `[testfat] PASS 6/6`.
+          Validazione: 6/6 boot puliti + `test-shell.py` 3/3.
+  - [x] 9.6 Buffer FS per-processo + zero-copy IPC (rimozione shared buffer)
+    - [x] 9.6.1 Kernel: rimossi `fs_slots` (pool di slot) e la shared buffer
+          page unica (`FS_BUFFER_PHYS`, mapping a `USER_FS_BUFFER` nello spawn);
+          le syscall FS (3-7, 23, 24) non sono piu' nel percorso dati. Nuove
+          syscall: `fs_buf_alloc` (26) alloca/mappa la pagina FS per-processo;
+          `map_in` (27) inietta solo pagine FS note nello spazio di un altro
+          processo user. `map_physical` ora invalida la TLB (rimap finestra).
+    - [x] 9.6.2 libr: le operazioni FS diventano IPC dirette client→userfs con
+          lazy-init della pagina (syscall 26) + handshake register-only
+          `FS_BUF_REG` (0x31); i wrapper open/read/write/close/readdir/mkdir/
+          fs_register scrivono nella propria pagina e leggono da li' i risultati.
+    - [x] 9.6.3 userfs: registro client (pid→phys); finestra a `USER_FS_BUFFER`
+          rimappata al client corrente (`map_physical`); ramfs/fat leggono e
+          scrivono direttamente la pagina del client. Per i device remoti
+          userfs inietta la pagina del client nel driver (`map_in`) → anche
+          `/dev/*` e' zero-copy (devfs/console scrivono nella pagina del client).
+    - [x] 9.6.4 Validazione: 4/4 boot puliti — `[testfs] PASS 5/5`,
+          `[testfat] PASS 6/6` (incl. /dev/null + /dev/zero), `[usertests]
+          PASS 17/17` (t15 churn devfs concorrente in parallelo, nessuna race),
+          `test-shell.py` 3/3.
+- [x] Fase 10: IPC optimizations (ispirate a KeuO)
+  - NOTA: 10.1.1 (Reply-slot pre-read) e 10.3 (Scheduler scalability) sono
+    stati RIMOSSI dalla fase e NON implementati:
+      - 10.1.1 leggeva il `reply_slot` senza lock subito dopo lo `switch_to`
+        (raw pointer); sebbene corretto su x86 single-core (TSO), non e'
+        multicore-safe e si vuole poter scalare a piu' CPU in futuro → saltato.
+      - 10.3 (run queues per priorita', lock IPC per-processo, batched
+        wakeups) e' stato rimpiazzato da un approccio diverso: nuovo scheduler
+        RT a 32 priorita' + CBS scritto DA ZERO in un file separato
+        (`sched_rt.rs`), poi consolidato come l'UNICO scheduler → vedi Fase 11.
+  - [x] 10.1 Ottimizzare il modello sincrono esistente
+    - [x] 10.1.2 Ring buffer per `msg_queue`: sostituire `Vec<PendingMsg>` con
+          ring fisso (8 slot) embedded nel PCB, no heap, O(1) enqueue/dequeue
+    - [x] 10.1.3 Bitmask `pick_next`: sostituire le 2 `Vec` alloc con `u64`
+          bitmask per livello di priorita', `trailing_zeros()` O(1)
+  - [x] 10.2 SPSC ring per bulk data (sostituzione completa del percorso FS)
+    - [x] 10.2.1 Layout ring page (per direzione, 4 KiB, head/tail in-page):
+          dati `[0x0000..0xFF8)` (4088 B), head a `0xFF8`, tail a `0xFFC`;
+          posizioni dati e head/tail wrapped `% RING_DATA_CAP` (4088);
+          SPSC by construction, no locks. NOTA: la capacity reale e' 4087 B
+          (free = CAP-1): read/write > ~4072 B di payload vengono spezzate
+          dal CLIENT in piu' round trip (Fase 10.2 chunking, multi-frame).
+    - [x] 10.2.2 Syscall `sys_ring_alloc` (numero 26, riusa il vecchio slot):
+          alloca/mappa DUE pagine ring (request a `USER_FS_BUFFER`, response a
+          `USER_RESP_RING`), ritorna i due fisici via IpcResult; sostituisce
+          `sys_fs_buf_alloc`. `sys_map_in` (27) e' RIMASTO come mapper
+          generico cross-process (rimossa l'autorizzazione FS-specifica
+          `is_known_fs_buf_page`).
+    - [x] 10.2.3 Protocollo FS su ring: client scrive un frame `[tag:4][w0:8]
+          [w1:8][payload]` nel request ring → `send(FS_NOTIFY)` (tag 0x32);
+          userfs legge il frame consumando l'intero frame (header+payload) —
+          ECCEZIONE: per i WRITE verso device remoti il frame NON viene
+          consumato (dedicato `handle_write_remote`: il payload resta nel
+          request ring e il driver lo legge direttamente, mappato via
+          `map_in`, avanzando la tail) —, processa e scrive il response frame
+          `[result:8][w1:8][payload]` nel response ring; 1 IPC round trip per
+          operazione.
+    - [x] 10.2.4 libr wrappers: `open`/`read_fs`/`write_fs`/`close`/`readdir`
+          /`mkdir` scrivono nel request ring, notificano e leggono il result dal
+          response ring. `read_fs`/`write_fs` splittano richieste > ~4000 B in
+          piu' round trip (`RING_MAX_PAYLOAD`), per restare sotto la capacity
+          del ring (es. /dev/zero legge 4096 B in 2 round trip).
+    - [x] 10.2.5 userfs rewrite: legge le richieste dal request ring, processa
+          (ramfs/fat locali scrivono il response frame loro stessi per
+          read/readdir), per i device remoti inietta entrambi i ring del client
+          nel driver (`map_in`): il driver scrive il response frame nella
+          response ring del client (zero copie) e userfs fa da relay IPC.
+          Registrazione driver: handshake `FS_BUF_REG` (0x31, ring fisici) +
+          `FS_REGISTER` (0x30) con frame `R_REGISTER` nel request ring del
+          driver (il prefix e' letto da userfs dalla request ring mappata).
+    - [x] 10.2.6 Rimosso vecchio percorso: `sys_fs_buf_alloc`, `FS_BUF_PHYS`,
+          `alloc_fs_buf_page`, `is_known_fs_buf_page`, fs_slots e syscall FS
+          kernel-side (3-7, 23, 24). L'area a `USER_FS_BUFFER` e' ora la
+          request ring.
+- [x] Fase 11: Scheduler RT a 32 priorita' + CBS bandwidth reservation
+  - Motivazione: garantire CPU time anche sotto carico al 100% (es. registrare
+    audio senza perdere sample). La priorita' fissa non basta: serve bandwidth
+    reservation stile Constant Bandwidth Server (Linux SCHED_DEADLINE, RTEMS,
+    Rialto).
+  - NOTA (consolidamento): la Fase 11 nasceva come secondo scheduler in
+    `kernel/src/sched_rt.rs` selezionato a compile time con la feature Cargo
+    `rt_scheduler`, affiancando lo scheduler classico (`sched.rs`, 3 priorita').
+    Dopo la validazione su tutta la suite (Fase 13/14, 21/21) lo scheduler
+    classico e' stato RIMOSSO: `sched_rt.rs` (file mantenuto con il nome
+    "rt") e' esposto come `crate::sched` e resta l'UNICO scheduler, sempre
+    attivo (nessun feature flag; CBS e syscall 28-30 sempre disponibili;
+    `cbs_server` nel PCB sempre presente). I chiamanti usano `crate::sched::*`
+    invariati. Vedi ADR-0007 (aggiornato).
+  - [x] 11.1 Infrastruttura: scheduler unico
+    - [x] 11.1.1 `kernel/src/sched_rt.rs`: scheduler completo (32 priorita' +
+          CBS), esposto come `crate::sched` via `#[path]` in `main.rs`.
+    - [x] 11.1.2 Stessa superficie pubblica (init/spawn/create_user/on_tick/
+          block_current/wake/ipc_*/exit_current/process_*/IpcResult): i
+          chiamanti (main/syscall/user_binary/process) usano `crate::sched::*`
+          senza cambiare.
+    - [x] 11.1.3 Tipo `Priority`: newtype `u8` 0-31 (0=idle, 31=max) con
+          costanti alias (`Priority::High`=31 / `Normal`=16 / `Low`=1 /
+          `Idle`=0) per leggibilita' del codice.
+    - [x] 11.1.4 Build: singola `cargo build --release` (RT sempre attivo),
+          verde sulla suite.
+  - [x] 11.2 Run queue per-priorita' a 32 livelli (O(1))
+    - [x] 11.2.1 `ready_by_prio: [u32; 32]` (bit i = PID Ready al livello i) +
+          `ready_prio_mask: u32` (bit i = livello i non vuoto); set/clear
+          ready O(1)
+    - [x] 11.2.2 `pick_next` O(1): priorita' piu' alta via `leading_zeros()` su
+          `ready_prio_mask`, round-robin interno al livello sul bitmask
+          (generalizzazione di 10.1.3 a 32 livelli)
+    - [x] 11.2.3 Mapping priorita' processi esistenti: idle=0, demo/uptime/
+          testspin=1, test/demo=2-5, servizi Normal (console/fs/devfs/shell)=
+          16-20, utspin_high/keyboard/urgenti=31; quantum invariato (2 tick)
+  - [x] 11.3 Constant Bandwidth Server (CBS): bandwidth reservation
+    - [x] 11.3.1 `kernel/src/cbs.rs`: `CbsServer { budget_ticks, period_ticks,
+          remaining_budget, deadline, task_pid: Option<usize>, active,
+          bandwidth }` + pool limitato (`MAX_CBS_SERVERS`). Parametri in TICK
+          (1 tick = 10 ms; es. audio Q=2, P=10 → 20% CPU garantito)
+    - [x] 11.3.2 Campo CBS nel PCB (`process.rs`): `cbs_server: Option<usize>`
+          (sempre presente)
+    - [x] 11.3.3 Contabilita' budget in `on_tick`: decrementa `remaining_budget`
+          del server del processo corrente; a 0 → throttled: il processo non
+          viene piu' scelto via CBS finche' il budget non e' ripristinato (non
+          puo' rubare CPU oltre la quota)
+    - [x] 11.3.4 Replenishment: alla `deadline` scaduta budget = Q e deadline +=
+          P; il task torna schedulabile via CBS. Tempo CBS non usato (task
+          bloccato) NON si accumula: va ai processi fixed-priority
+    - [x] 11.3.5 Admission control: un nuovo CBS e' accettato solo se
+          `Σ(Qi/Pi) + Q/P ≤ CBS_BW_CAP` (~70%; il resto resta ai fixed-priority)
+  - [x] 11.4 Syscall CBS (28-30) + wrappers libr
+    - [x] 11.4.1 `SYS_CBS_CREATE (28)` (budget, period) → id server o -1
+    - [x] 11.4.2 `SYS_CBS_ATTACH (29)`: lega il server al processo corrente
+    - [x] 11.4.3 `SYS_CBS_GET_INFO (30)`: budget/period/remaining/bandwidth
+          correnti (debug + test)
+    - [x] 11.4.4 libr: wrapper `cbs_create`/`cbs_attach`/`cbs_get_info`
+  - [x] 11.5 Test CBS + validazione
+    - [x] 11.5.1 Test bandwidth: task "audio" con CBS (Q=3, P=10) + task hog che
+          satura la CPU (no CBS) → l'audio completa SEMPRE i suoi 3 tick ogni
+          10 (nessun sample perso). NOTA IMPLEMENTATIVA: la misura NON usa piu'
+          pagina scratch + busy-loop `get_ticks` del parent (maschera IF=0 e
+          affama il timer, vedi AGENTS robustezza scheduler): audio e hog
+          contano ciascuno i tick OSSERVATI durante il proprio busy-loop
+          (batch da 512 spin puri tra due get_ticks) e li riportano al parent
+          con `T_DONE` (w1). Il parent resta BLOCCATO in `recv` (mai spin su
+          syscall). Attesi: audio ~60/200 (30%), hog ~243/300 (~70%) →
+          check `audio_obs in [40,90] && hog_obs > audio_obs` → PASS.
+    - [x] 11.5.2 Test admission control: richiesta oltre il cap (~70%) →
+          rifiutata (-1) (80% singola e 75% cumulativa rifiutate; 5%+10%
+          accettate)
+    - [x] 11.5.3 Validazione: suite completa verde (boot pulito +
+          `[testfs] PASS 5/5` + `[testfat] PASS 6/6` + `[usertests] PASS 21/21`
+          + `test-shell.py` 3/3). NOTA: fix CBS importante — a `exit_current`
+          il server CBS legato al processo viene RILASCIATO
+          (`cbs::release_pid`): senza, `tick_replenish` risvegliava il processo
+          Terminated (`set_ready`) e il scheduler lo riprendeva nel `hlt` di
+          exit con IF=0 → congelamento. In piu', `on_tick` ri-aggiunge in ready
+          SOLO processi `Ready`/throttled, mai `Terminated`/`Blocked`.
+- [x] Fase 12: IPC per nome — registry + channel nel kernel (ADR-0008)
+  - Motivazione: l'IPC sincrono per PID (Fase 7) accoppiava i peer al numero di
+    processo (`FS_SERVER_PID=4` hardcodato, `CONSOLE_PID`, figli che deducono il
+    padre da `cfg.sender`), rendendo fragile riavvio servizi e futura pulizia.
+  - [x] 12.1 Registry nel kernel: `enum Service` nel crate `syscall-numbers`
+        (`#[repr(u64)]`, discriminant = slot); tabella slot nel kernel
+        (`channels.rs`). Nessun servizio ring-3 (bootstrap/latenze).
+  - [x] 12.2 Oggetto `Channel` (pool statico): coppia bidirezionale tra due
+        processi. I messaggi viaggiano per `channel_id`, mai per PID. La morte
+        di un endpoint invalida i canali (`invalidate_pid`) e libera lo slot
+        servizio di cui era owner (`release_service`).
+  - [x] 12.3 Canale di nascita: `spawn` crea il canale tra parent e figlio; il
+        figlio lo usa come canale 0 (= parent), il parent riceve l'handle da
+        `spawn`. Elimina il PID dall'IPC padre-figlio.
+  - [x] 12.4 Syscall: `service_register` (31), `service_lookup` (32);
+         `send`/`recv`/`reply` indirizzano per channel. La `reply` e' implicita
+         al messaggio corrente (via `reply_chan`, generalizzazione del fix
+         9.2.2). Niente request-id esplicito lato server / `reply_to` in Fase 12
+         (vedi ADR-0008: l'ABI a tupla SysV a 6 registri per un request-id di
+         ritorno rompeva l'inlining → write a 0x0). La Fase 13 (async)
+         introduce un request-id come CAMPO INTERNO del messaggio (non nei
+         registri di ritorno), quindi senza problemi ABI.
+  - [x] 12.5 kbd (kernel) risolve `Console` per nome e inietta i scancode sul
+        canale; niente piu' `CONSOLE_PID`.
+  - [x] 12.6 Migrazione userland: fs/console/devfs fanno `service_register`;
+        libr risolve `Fs` per nome (`fs_chan`, retry di boot con spin IF=1);
+        init sincronizza il boot attendendo l'ACK "Fs pronto" da userfs prima
+        di spawnare chi usa il filesystem. Rimossi `FS_SERVER_PID` e le demo
+        storiche srv/cli (basate su PID dedotto) dal catalogo binari.
+  - [x] 12.7 Test suite migrata a canali di nascita + reply implicita.
+        Regressione: 19/19 (x3) + shell 3/3.
+- [x] Fase 13: IPC asincrono (primo passo, additivo) (ADR-0009)
+  - Motivazione: l'IPC di Fase 12 e' sincrono: un client ha al piu' 1 richiesta
+    in volo per canale (si blocca in `send`). L'async permette piu' richieste
+    in volo e prepara un futuro `async/await` in libr. Il request-id esplicito
+    era stato rimandato in 12.4 per un problema ABI (6° registro di ritorno →
+    tupla SysV non inlinable → write a 0x0): la Fase 13 lo introduce come campo
+    INTERNO del messaggio, senza toccare l'ABI dei registri.
+  - Decisioni implementate:
+    - ADDITIVO: si aggiungono primitive async; il sincrono esistente resta
+      intatto (rete di sicurezza 19/19 → 21/21).
+    - Encoding signed sul campo `req_id` del messaggio (NON su w0, che porta i
+      dati applicativi FS): `req_id >= 0` = richiesta, `req_id < 0` = risposta
+      asincrona a `-req_id`. Il segno si legge in `recv`.
+    - Reply IMPLICITA (nessuna syscall reply_to): il kernel, alla `reply` del
+      server, guarda lo stato del target — se bloccato (`BlockedOnReply`) →
+      comportamento sync attuale (`reply_slot`); se non bloccato (async) →
+      accoda un messaggio-risposta con `req_id = -reply_req`.
+    - Vincolo primo passo (rilassabile in futuro): no mix sync/async in volo
+      per lo stesso processo; risposte consumate FIFO (server single-threaded
+      che risponde in ordine di recv). Miglioramento (reply_to esplicita /
+      riordino) in una fase successiva.
+    - Syscall nuove: `SYS_SEND_ASYNC (33)`, `SYS_RECV_NONBLOCK (34)`.
+  - [x] 13.1 Kernel `process.rs`: `PendingMsg` + campo `req_id: i64` (signed);
+        `MsgQueue::try_push` (false se piena → backpressure, oggi push scarta);
+        `Process` + `req_next: u64` (contatore req_id per processo) e
+        `reply_req: i64` (req_id del messaggio corrente, salvato da `recv`).
+  - [x] 13.2 Kernel `sched_rt.rs` (l'unico scheduler, esposto come `crate::sched`):
+        - `ipc_send` (sync): assegna `req_id = req_next++` al messaggio.
+        - nuova `ipc_send_async`: come ipc_send ma NON blocca il mittente;
+          `try_push` al peer; coda piena / canale morto → errore (-1).
+        - `pop_msg` condiviso: per le richieste (`req_id >= 0`) salva
+          `reply_chan`/`reply_req` ed espone il canale in `rdi`; per le risposte
+          async espone il `req_id` negativo in `rdi` (niente reply implicita).
+        - `ipc_reply`: se il target e' `BlockedOnReply` → comportamento attuale;
+          se non bloccato → accoda `PendingMsg{ req_id: -reply_req, ... }` e
+          `set_ready` solo se era `BlockedOnRecv` (coda piena → risposta persa,
+          log di warning — limitazione del primo passo).
+        - nuova `ipc_recv_nonblock`: come recv ma coda vuota → -1 senza bloccare.
+  - [x] 13.3 Kernel `syscall.rs`: dispatch 33/34 + handler `sys_send_async`,
+        `sys_recv_nonblock`.
+  - [x] 13.4 libr: `IpcMsg` + `req_id` (decodifica dal segno di rdi: per le
+        richieste `channel`, per le risposte async `req_id` positivo della
+        richiesta originale); `send_async`, `recv_poll()`, `wait_reply(req)`
+        (recv bloccante finche' arriva `req_id == req`). Sincrono invariato.
+  - [x] 13.5 Demo FS/FAT async = **1 operazione in volo per processo** (il
+        formato frame del ring non ha lunghezza payload esplicita → un solo
+        frame nel ring alla volta): guard `FS_PENDING` in libr che rifiuta ogni
+        altra op FS (sync o async) finche' non si raccoglie; `read_async` /
+        `fs_collect` (wait_reply + lettura/consumo del response ring;
+        rollback del request ring se `send_async` fallisce). userfs/console/
+        devfs INVARIATI (reply implicita); solo fix di commenti obsoleti in
+        userfs. Le vere N-in-volo e la backpressure si testano su IPC puro
+        verso un server echo (helper usertestcli MODE_SRV).
+  - [x] 13.6 Test: usertests t20 (FS async 1-in-volo: read_async hello.txt +
+        fs_collect) e t21 (IPC async: N=4 send_async in volo raccolte FIFO +
+        backpressure: spam finche' la coda del server, cap 8, e' piena →
+        -1 osservato, poi drenaggio). Totale atteso 19/19 → 21/21.
+  - [x] 13.7 Verifica: **21/21** (x1) + shell 3/3; zero
+        fault/panic; docs 06-syscalls (33/34), 07-ipc (sezione async + vincoli),
+        ADR-0009, AGENTS.
+  - Limitazioni note (fase futura): mix sync/async sullo stesso canale;
+    `wait_reply` assume FIFO (niente riordino locale); wrap di `req_next`;
+    reply async persa se la msg_queue del target e' piena.
+- [x] Fase 14: Cleanup processi — exit/kill kernel-side + notifica al parent (ADR-0010)
+  - Motivazione: chiude il cerchio di IPC per-nome/async. Prima di questa fase
+    `exit_current` marcava `Terminated` ma NON liberava stack kernel, slot TSS,
+    CR3/address space, page table, ring e heap; i PID non si riusavano (limiti
+    strutturali: `ready_by_prio` a 32 bit → max 32 processi pronti, TSS pool 32
+    slot monotono, `Vec<Process>` mai compattato, canali `alive:false` mai
+    rimossi dal pool). Il parent non veniva mai notificato della morte del figlio.
+  - Decisioni concordate (ADR-0010):
+    - MODELLO 1 — cleanup kernel-side DIFFERITO: exit/kill marca `Terminated` e
+      mette il processo in una coda di reclaim; un passaggio di cleanup (inizio
+      `on_tick`, `Scheduler::drain_reclaim`) esegue il teardown (stack kernel,
+      slot TSS, address space user: foglie PTE `owned` + page-table private;
+      mai le pagine iniettate con `map_physical`/`map_in`). Il rilascio NON
+      avviene mai mentre si gira ancora sullo stack del morente. (Non-POSIX:
+      nessun obbligo di wait/reap per il parent.)
+    - NOTIFICA EXIT UNIFICATA a tutti i peer (con exit code), ma SOLO
+      DOPO il teardown: quando un peer si sveglia le risorse sono gia' libere
+      → il pool non si esaurisce nei loop spawn/exit. Messaggio `EXIT_NOTIFY`
+      (0x7C): w0 = code, w1 = pid, sul canale che collegava ciascun peer
+      (il parent e' un peer come gli altri). Consente a init di riavviare i
+      servizi morti (restart effettivo rimandato).
+    - CASCATA: la morte di un processo (exit/kill) termina TUTTA la discendenza
+      (stesso percorso di cleanup, ricorsivo). Morte di init → panic documentato.
+    - KILL: syscall `kill(pid, code)` (35, stessa via di exit). Killabile:
+      qualunque processo user tranne init, i processi kernel e se stesso (exit).
+      Kill esplicito del sottoalbero rimandato alla fase "detach".
+    - SLOT A GENERAZIONI/RIUSO: allocatore PID riusabile (bitmask, max 32
+      concorrenti); TSS (pool 32, slot 0 boot), canali (slot `None`) e server
+      CBS (slot `None`) riusabili. Un PID torna libero solo dopo il rilascio di
+      canali/servizi/CBS (fatto a `terminate`) E il teardown (`drain_reclaim`).
+    - Detach (futuro, nota): figli che sopravvivono al parent (ri-parentati a
+      init) e kill del sottoalbero esplicito.
+  - [x] 14.1 `process.rs`: campi `exit_code`, `waiting_pid` (peer su cui un
+        `BlockedOnReply` attende la reply, per sbloccarlo alla morte del
+        destinatario) e `tss_slot` (slot pool, distinto dal selettore GDT).
+  - [x] 14.2 `vmm_user.rs`: PTE bit AVL `0x200` = "owned" (code copiato, stack
+        user, ring, heap demand-zero); `map_user_region` = mapping estraneo,
+        `map_user_region_owned` = di proprieta'; `teardown_user_space(cr3, pid)`
+        walk dal PML4 (salta le entry condivise col kernel U=0) e libera solo le
+        foglie `owned` + i frame delle page table private; azzera
+        `HEAP_BRK`/`RING_PHYS`.
+  - [x] 14.3 `gdt.rs`: pool TSS riusabile (`TSS_FREE` bitmask init in `init`;
+        `free_tss_slot(slot)`; `configure_tss` gia' idempotente). FIX: il PCB
+        ora tiene lo slot pool (il selettore GDT ha indice base+slot e non
+        serviva a liberare il pool).
+  - [x] 14.4 `phys_mem.rs`: `free_contiguous(start, n)` per i frame contigui.
+  - [x] 14.5 `channels.rs`: `release_pid(pid)` libera gli slot canale (`None`,
+        riusabili) e gli slot servizio dell'owner.
+  - [x] 14.6 `cbs.rs`: `release_pid` azzera lo slot (prima marcava solo
+        `inactive` e saturava il pool di 8).
+  - [x] 14.7 `sched_rt.rs`: free-set PID + cap `MAX_PIDS=32`; `terminate`,
+        `kill`, coda reclaim fixed-size + `drain_reclaim` in `on_tick`,
+        notifica exit in `reclaim_one`, `wake_senders` (morte logica immediata);
+        `user_binary.rs::spawn_user` torna `Option` (nessun panic su pool pieno).
+  - [x] 14.8 syscall `SYS_KILL` (35) + `libr::kill(pid, code)`.
+  - [x] 14.9 Test (in usertests): helper `usertestcli` modi CHURN/KILLME; i loop
+        `recv`/`wait_reply` della suite sono EXIT-aware (t13-t21 intatti);
+        t22 lifecycle churn (42 spawn/exit ~2 MiB heap → riuso PID, no leak,
+        notifiche EXIT_NOTIFY) e t23 kill + exit notify. Suite 21/21 → 23/23.
+  - [x] 14.10 Notifica unificata a TUTTI i peer (estensione): `terminate`
+        enumera le coppie (peer, channel) e le salva nel PCB (`die_peers`, max
+        31 peer distinti = bound provabile, dedupe first-wins); `reclaim_one`
+        notifica ogni peer sul suo canale DOPO il teardown (single path, il
+        parent e' un peer come gli altri). `libr::wait_reply` ritorna
+        `WaitReplyError::ServerDied{pid,code}` (+ `wait_reply_chan` per filtro
+        canale, usato da `fs_collect`); `drain_stray` scarta EXIT_NOTIFY senza
+        reply. Semantica "UN peer e' morto": notifiche stale filtrate per pid
+        (t21/t24) o canale (fs_collect). Nuovo `Service::Test` (slot usa-e-getta
+        per t24). Helper SRVDIE/SYNCWAIT; t24 copre path async+sync+slot libero.
+        Retry automatico e init-restart rimandati (documentati). Suite → 24/24.
+  - [x] 14.11 Cleanup per-peer nei server su EXIT_NOTIFY: userfs purga
+        `rings[chan]` + `ftable`/`next_fd[chan]` (con `DEV_CLOSE` best-effort ai
+        driver, che restano puliti senza attribuzione) + `mounts.retain`
+        (stale first-match avvelenerebbe `resolve_mount` dopo re-registrazione;
+        provato: senza retain t25 FAIL); console/devfs skip senza reply (nessuno
+        stato per-client: hub-topology; condizione futura documentata). Helper
+        MNTDIE/OPENDIE; t25 morte driver + re-registrazione, t26 morte client
+        senza close + smoke completo (null/zero/hello/write/mkdir/readdir).
+        Suite → 26/26.
+  - [x] 14.12 Init-restart + retry client: init supervisiona console/fs/devfs
+        (tabella bin/svc/chan/pid; loop EXIT_NOTIFY condiviso con run_test
+        cosi' i restart funzionano anche a suite in corso; shell/uptime
+        log-only). Respawn + attesa SVC_READY fire-and-forget via send_async
+        (tutti i servizi; una send sync resterebbe bloccata — bug trovato:
+        hang a boot; wait_ready senza reply + bound 500 tick). Backoff 20 tick
+        + hold oltre 3 restart/300 tick. Syscall `service_pid` (36). libr retry
+        uniform-retry-once in `fs_send` (re-lookup bounded ~200 tick, caveat
+        write at-least-once). userfs replace-on-register. t27 kill devfs →
+        sparizione → ricomparsa (pid anche riusato: 6→6 osservato) → operativo.
+        Bug trovati: tabella pid allineata prima della registrazione devfs
+        (race → attesa READY anche di console/devfs a boot; ACK console subito
+        dopo service_register per non fare deadlock con /dev/input). t28
+        (restart userfs end-to-end: fixture fresh, wipe probe, /fat persistente,
+        /dev operativo) e t29 (map-flap isolation) implementati e PASS. Igiene
+        Livello 1: i polling di operativita' in t27/t28 sono throttled (~20 tick
+        via `libr::poll_wait`/`open_wait`, mai busy-loop su syscall FS); t30 e'
+        gate di fairness scheduler sotto carico IPC (helper FLOOD + latenza mount,
+        bound 300, osservato 0-1), NON di saturazione userfs (impossibile con
+        client sync: coda 8 slot, <=1 in volo). t31 (Kbd/Tty + device). Lezione
+        Fase 15: gli spinner a pari priorita' diluiscono la rotazione (~1
+        quantum/hop) — i test attendono BLOCCANDOSI (mai poll aggressivi) e i
+        server dormono in recv (event-driven). Rimandate: generazioni PID.
+        Suite → 31/31.
+  - Verifica: boot pulito, gate `[usertests] PASS 31/31` + shell 3/3, zero
+        fault/panic, righe `[reap]` con frame liberi stabili.
+- [x] Fase 15: Keyboard + Terminal server in userspace (sgancio tastiera/VGA)
+  - `userkbd` (driver PS/2, ring 3): `io_ranges (0x60,0x64)`, init i8042 in
+    userland, scancode raw su `/dev/kbd`; servizio `Kbd` (slot 5).
+    Svegliato da IRQ1 via wake dell'owner per nome (kernel: solo routing+EOI).
+  - `usertty` (terminal server): decode `pc_keyboard` (spostato da console),
+    echo su `/dev/console`, byte cotti su `/dev/input/keyboard` (protocollo
+    identico: shell INVARIATA); servizio `Tty` (slot 6, solo supervisione).
+  - `userconsole`: solo rendering VGA (`/dev/console`, DEV_CONSOLE=3).
+  - Kernel: eliminati `kbd_process.rs`, `kbd_events.rs`, `keyboard.rs` + spawn;
+    solo `idle` resta oltre init (8.3 superato: niente piu' processi kernel).
+  - tty e' client FS PURAMENTE async (mai sync in steady) + EVENT-DRIVEN
+    (dorme in recv, wake su KBD_NOTIFY/relay/reply): lezioni apprese —
+    (1) ciclo userfs<->driver se il driver blocca su userfs servendo;
+    (2) dilution scheduler da spinner (~1 quantum/hop → flooder 25x lento);
+    (3) boot async: invio nella stessa chiamata (mai wake atteso pre-send);
+    (4) handshake BUF_REG per-canale; (5) open di file device, mai mount-root.
+  - Init: spawn console→fs→uptime→devfs→kbd→tty + supervisione kbd/tty; t31
+    (Kbd/Tty + open /dev/kbd/kbd + /dev/input/keyboard). Suite → 31/31.
+- [ ] Fase 16: Disk/ATA driver server in userspace (sgancio ATA/FS) — pianificata
+  - Motivazione: oggi userfs possiede il driver ATA PIO (`block.rs`, `io.rs`) e
+    il parser FAT32 nello stesso processo, con le porte ATA abilitate solo per
+    lui; ogni read `/fat` blocca il server nel polling PIO.
+  - Design:
+    - `userdisk` (nuovo): proprietario porte ATA `0x1F0-0x1F7` (+
+      `0x3F6-0x3F7`), espone blocchi via IPC per nome (slot `Service` o prefix
+      `/dev/ata`).
+    - `userfs`: rimuove `io.rs`/`block.rs`; mantiene il parser FAT32 con un
+      client disco (read block via IPC al disk server). `io_ranges` ATA spostati
+      da userfs a userdisk.
+    - Flusso `/fat/*` invariato per i client (userfs risolve il path come oggi).
+  - 16.1 Nuovo `userland/disk` (lettura settore/cluster via IPC).
+  - 16.2 `userfs`: FAT32 parametrizzato su un "block source" (trait/tipo);
+        rimozione porte ATA da userfs in `user_binary.rs`.
+  - 16.3 Opportunita' (non requisito): caching settori nel disk server.
+  - Verifica: /fat leggibile identico a oggi, userfs senza porte ATA, suite
+        testfat 6/6 invariata.
+- [ ] Fase 17: Shell + utility utente — SLITTATA in coda al backlog (la shell
+      interattiva esiste gia'; restano le utility "utente"). Da
+      rivedere/ridimensionare quando ripresa.
+
+## Important Notes
+
+- **Non usare** `std` - solo `core` e `alloc`
+- **Testare sempre** con QEMU prima di commit
+- **Documentare** ogni decisione architetturale in ADR
+- **Aggiornare** questo file quando si aggiungono nuove fasi
+- **Crate consentite**: solo `no_std`-compatible
+- **Kernel higher-half: RIMANDATO a fase futura** — il kernel resta mappato in
+  identity map (bassa) con protezione U/S via bit delle PTE (ADR-0005). Il
+  higher-half sara' valutato in una fase dedicata post-Fase 6, quando i processi
+  user reali (init, console server) richiederanno spazio utente basso pulito.
+  Motivazioni e dettagli in `03-memory.md`.
+- **TSS per-processo** (ADR-0006): ogni processo ha il proprio TSS con I/O
+  bitmap. I driver userspace dichiarano le proprie porte in `io_ranges`
+  (`user_binary.rs::NAMED_BINARIES`); chi non ha range non tocca porte.
+- **IPC per nome: registry + channel nel kernel** (ADR-0008, Fase 12): i peer
+  non si indirizzano piu' per PID. Ogni processo parla su un **`Channel`**
+  (coppia bidirezionale creata da `spawn` per i figli, o da `service_lookup`
+  per i servizi registrati per nome con `service_register`). Il canale 0 = il
+  parent. `libr` risolve `Fs`/`Console`/`Devfs` per nome. I messaggi viaggiano
+  per channel_id; `reply` e' implicita al messaggio corrente (via `reply_chan`),
+  mai per PID. La morte di un endpoint invalida i suoi canali e libera lo slot
+  servizio → riavvio/riuso sicuri.
+- **IPC reply implicita**: la reply del server va al peer del canale del
+  messaggio correntemente elaborato (fissato da `recv` in `reply_chan`), non
+  all'ultimo `send`. Piu' client concorrenti su un server sono quindi
+  supportati (fix 9.2.2 generalizzato ai canali). Un request-id esplicito lato
+  server / `reply_to` e' rimandato: la Fase 13 (async) usa un request-id come
+  campo interno del messaggio, senza toccare l'ABI dei registri.
+- **IPC asincrono (Fase 13, ADR-0009)**: `send_async` (33) NON blocca e
+  ritorna il `req_id` (>= 1); `recv_nonblock` (34) non blocca. Il `req_id` e'
+  un campo INTERNO di `PendingMsg` (signed: >= 0 richiesta, < 0 risposta a
+  `-req_id`), assegnato dal mittente via `req_next`. La reply del server resta
+  implicita: il kernel alla `reply` guarda il target — `BlockedOnReply` →
+  `reply_slot` (sync); altrimenti accoda una risposta con `req_id = -reply_req`
+  (async). Trasparente a userfs/console/devfs. Vincoli primo passo: no mix
+  sync/async in volo per processo; risposte FIFO (`wait_reply` non riordina);
+  FS async = 1 op in volo (guard `FS_PENDING`: il formato frame del ring non ha
+  lunghezza payload esplicita); reply async persa se la msg_queue del target
+  (8 slot) e' piena (log nel kernel).
+- **Process lifecycle (Fase 14, ADR-0010, implementata)**: exit/kill kernel-side
+  in DUE tempi — (1) "morte logica" immediata (`Scheduler::terminate`): stato
+  `Terminated`, release di CBS/servizi/canali, risveglio dei peer bloccati in
+  `send` sincrono verso il morto (`waiting_pid`), cascata sulla discendenza,
+  accodamento al reclaim; (2) teardown fisico differito (`drain_reclaim` a inizio
+  `on_tick`): stack kernel, slot TSS, address space user (foglie PTE `owned`,
+  vedi sotto) → poi notifica `EXIT_NOTIFY` a TUTTI i peer e PID nel free-set.
+  Notifica DOPO il teardown: nei loop spawn/exit il pool non si esaurisce. Riuso: PID
+  (cap 32 concorrenti), slot TSS, canali (`None`) e server CBS (`None`).
+  `kill(pid, code)` (35): killabile qualunque processo user tranne init/kernel/
+  self. Morte di init → panic documentato. `usertestcli` ha i modi CHURN/KILLME/
+   SRVDIE/SYNCWAIT/MNTDIE/OPENDIE/MAPHAMMER/FLOOD; suite 21/21 → 31/31 (t22 churn riuso+leak, t23
+   kill+notifica, t24 notifica unificata async+sync, t25 morte driver +
+   re-registrazione, t26 morte client senza close + smoke, t27 init-restart devfs,
+   t28 restart userfs end-to-end, t29 map-flap isolation, t30 fairness sotto flood).
+  **Notifica unificata (14.10)**: DOPO il
+  teardown il kernel notifica TUTTI i peer (non solo il parent), ciascuno sul
+  canale che li collegava (`die_peers` nel PCB, max 31); `wait_reply` ritorna
+  `WaitReplyError::ServerDied{pid,code}` (mai attesa infinita), `fs_collect`
+  filtra per canale (`wait_reply_chan`), `drain_stray` scarta senza reply.
+  Semantica "UN peer e' morto" (notifiche stale filtrate per pid/canale);
+  `Service::Test` = slot usa-e-getta per t24. Retry/init-restart rimandati.
+- **Address space teardown e bit "owned" (Fase 14)**: le PTE delle pagine user
+  hanno il bit AVL `0x200` (owned) se di proprieta' del processo (code copiato,
+  stack user, ring, heap demand-zero). `map_physical`/`map_in` NON lo settano
+  (pagine iniettate: VGA, ring di altri processi, scratch). `teardown_user_space`
+  libera solo le foglie owned e le page-table private (entry PML4 diverse da
+  quelle del kernel), mai i frame altrui.
+- **Ring SPSC per-processo, niente piu' buffer FS** (Fase 10.2, sostituisce
+  9.6): ogni processo alloca DUE pagine ring (syscall **`sys_ring_alloc` (26)**,
+  che riusa il numero del vecchio `fs_buf_alloc`) mappate a `USER_FS_BUFFER`
+  (request) e `USER_RESP_RING` (response), e le registra presso userfs con una
+  IPC register-only (`FS_BUF_REG`). Ogni operazione FS = 1 frame nel request
+  ring `[tag:4][w0:8][w1:8][payload]` + `send(FS_NOTIFY)`; userfs consuma
+  SEMPRE l'intero frame (header + payload) e scrive 1 response frame
+  `[result:8][w1:8][payload]` — **ECCEZIONE: per i WRITE remoti userfs NON
+  consuma il frame** (dedicato `handle_write_remote`): il payload resta nel
+  request ring e il driver (console/devfs) lo legge direttamente (mappato con
+  `map_in` (27), mapper generico cross-process) avanzando la tail lui stesso.
+  Per i READ remoti il driver scrive il response frame nella response ring del
+  client (zero copie in ogni percorso). Ring a pagina singola: dati
+  `[0x0000..0xFF8)` = 4088 B, head a `0xFF8`, tail a `0xFFC`; capacity reale
+  4087 B (free = CAP-1) → libr splitta read/write > ~4000 B in piu' round
+  trip. Il kernel NON e' nel percorso dati; slot (`fs_slots`) e syscall FS
+  kernel-side (3-7, 23, 24) rimossi.
+- **Registrazione driver via ring**: devfs/console si registrano con
+  `FS_REGISTER` (0x30) scrivendo un frame `R_REGISTER` nel proprio request
+  ring (NON il tag FS_NOTIFY); userfs legge il prefix dalla request ring del
+  driver (primo elemento della coppia `(req, resp)` registrata — attenzione a
+  non confonderlo col response ring).
+- **Reattivita' shell**: a valle del boot i soli processi `Normal` sono i
+  servizi interattivi (console, fs, devfs, shell), tutti bloccati in attesa IPC;
+  init resta bloccato in `recv`, `useruptime` e' `Low`. Quantum scheduler = 2
+  tick (20 ms). Ordine spawn di init: userconsole per PRIMO (registra
+  `Console`, kbd lo raggiunge per nome), userfs SUBITO DOPO (registra `Fs`;
+  init attende l'ACK "Fs pronto" via canale di nascita prima di spawnare chi usa
+  il filesystem), poi uptime/devfs, quindi i test in SEQUENZA (ognuno atteso
+  fino a `TEST_DONE` sul canale di nascita), usershell per ultimo (interattivo).
+- **I test girano in sequenza, la shell e' ultima**: usertestfs/usertestfat/
+  usertests condividono la ramfs di userfs (path e file di lavoro) e l'output
+  seriale; la sequenza rende PID e risultati deterministici. Con il buffer
+  per-processo (9.6) la race della vecchia shared buffer e' eliminata (la suite
+  t15 churn devfs concorrente gira davvero in parallelo). init spawa i test uno
+  alla volta e attende il `TEST_DONE` (canale 0x7E) da ciascuno sul canale di
+  nascita prima dello spawn successivo.
+- **Processi Low e server idle**: i server Normal (fs/shell) in coda di `recv`
+  vuota e senza altri runnable diventano `Ready` in tight-loop (fix anti-
+  deadlock); una fascia `Low` non e' quindi schedulabile finche' girano. Per
+  questo il test di priorita' e' **High vs Normal** (Low usato solo da
+  `useruptime` in boot reale).
+- **Robustezza scheduler (fix pre-esistenti)**: (1) i wait in userland NON fanno
+  busy-loop su syscall (`get_ticks`) — che maschera gli interrupt (IF=0) e
+  affama il timer — ma spin puri IF=1 (shell/console; `usertestspin`/`utcbstest`
+  fanno batch da 512 spin puri tra due `get_ticks`); (2) `ipc_recv` controlla
+  la coda e marca `Blocked` sotto lo STESSO lock (chiusa la race check-then-
+  block / lost-wakeup); (3) i wait da IRQ (kbd) usano `pending_wake`: `wake`
+  imposta il flag se il processo non e' ancora bloccato, `block_current` lo
+  consuma e non si blocca; `block_current` ripristina `Ready` se non c'e'
+  nessun altro runnable.
+- **Read: solo i byte restituiti sono significativi**: ogni client ha una
+  pagina FS propria (mai riusata da altri, Fase 9.6) → niente residui di slot/
+  buffer condivisi che finivano nelle risposte di altri device (il vecchio
+  bug `/dev/zero`).
+- **Heap on-demand in libr** (single allocator): niente piu' `static [u8; N]`
+  nei binari user. `libr/src/heap.rs` e' l'UNICO allocatore (free-list first-fit
+  con split+coalescenza) ed espone `#[global_allocator]`; i crate user che
+  alloccano non definiscono allocatori propri. L'heap parte vuoto a
+  `USER_HEAP_BASE` (= `USER_STACK_TOP`) e cresce via la syscall **`sbrk` (25)**,
+  che riserva solo VA (`heap_brk`): le pagine vengono materializzate **lazy** dal
+  page-fault handler (demand-zero, come brk/mmap di Linux). Binari
+  sensibilmente piu' piccoli (es. userfs 132→66 KiB).
+- **Kernel heap riservato nel frame allocator**: la regione di 4 MiB del kernel
+  heap deve essere marcata `used` nel bitmap fisico (`phys_mem::reserve` in
+  `main.rs`). Senza questa riserva i frame della regione finivano ai processi e
+  venivano sovrascritti → corruzione della free-list del kernel heap (alloc
+  falliti o hang; il fix e' alla radice dei fallimenti dell'heap lazy).
+
+## Testing
+
+```bash
+# Test in QEMU (output seriale, esce con Ctrl-C)
+./run.sh
+
+# Verifica build
+cargo build --release
+
+# Build dei binari user (test suite inclusa)
+./scripts/build-userland.sh && ./scripts/build-tests.sh
+
+# Test selftest (feature flag)
+cargo build --release --features selftest
+
+# Verifica la mappa di memoria dinamica a diverse dimensioni RAM
+# (QEMU -m 4G/16G/32G: la RAM sale sopra 4 GiB per il PCI hole)
+timeout 6 qemu-system-x86_64 -m 4G -display none -serial stdio -no-reboot \
+  -kernel target/x86_64-unknown-none/release/rustos-kernel
+
+# Produzione (default): niente test, shell subito usabile
+timeout 60 ./run.sh > /tmp/boot.log
+
+# Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
+#   [testfs] PASS 5/5
+#   [testfat] PASS 6/6
+#   [usertests] PASS 31/31
+timeout 150 ./run-tests.sh > /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 6/6|\[usertests\] PASS 31/31' /tmp/boot.log
+test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
+```
+
+## Documentation
+
+- Ogni ADR deve essere nel formato `docs/src/adr/NNNN-title.md` (source unica:
+  il libro mdbook li legge da li'; nessuna copia altrove)
+- Ogni nuovo componente deve avere documentazione in `docs/src/`
+- Aggiornare il SUMMARY.md quando si aggiungono nuovi capitoli
+- Usare mdbook per la documentazione pubblica
+
+## Common Pitfalls
+
+1. **Dimenticare EOI**: dopo ogni interrupt, mandare End of Interrupt al PIC
+2. **Deadlock con spin locks**: un interrupt handler non può prendere un lock già preso
+3. **Dimenticare volatile**: gli accessi MMIO devono essere volatile
+4. **Stack alignment**: x86_64 richiede 16-byte alignment per SSE
+5. **Busy waiting**: usare `hlt` invece di `loop {}` negli idle loop

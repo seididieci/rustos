@@ -1,0 +1,17 @@
+[package]
+name = "usertty"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+libr = { path = "../../libs/libr" }
+pc-keyboard = "0.7"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "z"

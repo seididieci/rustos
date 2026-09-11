@@ -1,0 +1,21 @@
+[package]
+name = "rustos-kernel"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[features]
+selftest = []
+# Stampa diagnostica dello scheduler (snapshot ready-mask ogni 100 tick) e
+# degli IRQ tastiera. Spenta di default (log puliti in produzione); accesa con
+# SCHED_DEBUG=1 (run.sh la inoltra a cargo; run-tests.sh la imposta sempre).
+sched_debug = []
+
+[dependencies]
+spin = "0.9"
+x86_64 = "0.15"
+uart_16550 = "0.3"
+pic8259 = "0.11"
+pc-keyboard = "0.7"
+linked_list_allocator = "0.10"
+syscall-numbers = { path = "../syscall-numbers" }

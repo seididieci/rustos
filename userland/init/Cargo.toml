@@ -1,0 +1,25 @@
+[package]
+name = "userinit"
+version = "0.1.0"
+edition = "2024"
+
+# Crate fuori dal workspace del kernel: build freestanding separata.
+[workspace]
+
+[dependencies]
+libr = { path = "../../libs/libr" }
+
+# Produzione (default): init NON esegue la test suite, va dritto ai servizi
+# interattivi (shell subito usabile). Con `--no-default-features` (via
+# `RUN_TESTS=1`, vedi scripts/run-tests.sh) esegue usertestfs/usertestfat/
+# usertests in sequenza prima della shell (gate di regressione).
+[features]
+default = ["skip_tests"]
+skip_tests = []
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "z"

@@ -1,0 +1,22 @@
+[unstable]
+build-std = ["core", "compiler_builtins", "alloc"]
+
+[build]
+target = "x86_64-unknown-none"
+
+# NOTA IMPORTANTE: nessuna `[target.*] rustflags` qui.
+#
+# Il config discovery di Cargo parte dalla directory corrente e risale verso la
+# radice. Tutti i crate (kernel E userspace) costruiti da qui condividono questo
+# file. Le rustflags sono ADDITIVE tra i file di config: se mettessimo qui
+# flag specifiche del kernel (relocation-model, -Tkernel/linker.ld, -no-pie)
+# si infiltrerebbero anche nel link dei binari userspace (userland/demo) che
+# pero' vivono a USER_CODE=2^46 e richiedono PIC, non static.
+#
+# Percio':
+#   - il KERNEL riceve le sue flag via kernel/build.rs (cargo:rustc-link-arg)
+#     e via relocation-model sotto, quando servira';
+#   - gli userspace ricevono le loro flag dal proprio .cargo/config.toml.
+
+[alias]
+kbuild = "build --manifest-path kernel/Cargo.toml"

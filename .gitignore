@@ -1,0 +1,32 @@
+# rustOS — solo codice e docs nel repo. Tutto cio' che e' rigenerabile
+# (build, binari, immagini, log) resta fuori dal commit.
+
+# Output Cargo a qualunque livello (root, kernel, crate userland/testland,
+# dir build/*): rigenerabile con gli script in scripts/ + cargo.
+target/
+
+# Output binari freestanding (.bin raw caricati a USER_CODE) e immagini disco.
+*.bin
+*.iso
+*.img
+
+# Directory di output dei binari (contengono solo .bin + target/).
+userland/build/
+testland/build/
+
+# Log di boot/debug QEMU (boot-logs/) e log sparsi: mai nel repo.
+boot-logs/
+*.log
+
+# Output mdbook (docs/book/): rigenerabile con `mdbook build` in docs/.
+docs/book/
+
+# Lockfile dei crate foglia (uno per binario freestanding, rigenerabili).
+# Resta tracciato solo il Cargo.lock root del workspace.
+**/Cargo.lock
+!/Cargo.lock
+
+# Editor / OS.
+*~
+*.swp
+.DS_Store

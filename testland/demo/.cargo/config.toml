@@ -1,0 +1,6 @@
+[build]
+target = "x86_64-unknown-none"
+
+# Le rustflags di link a USER_CODE (relocation-model=pic, -Tsrc/demo.ld) sono
+# impostate da scripts/build-userland.sh (CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS):
+# vedi userland/.cargo/config.toml.
