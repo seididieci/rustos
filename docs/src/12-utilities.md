@@ -44,10 +44,11 @@ raggiungono per nome/canale, non per PID):
 
 ### Console server (userconsole)
 
-Driver VGA e tastiera in userspace. Gestisce:
+Rendering VGA in userspace. Gestisce:
 - Scrittura VGA (testo, cursore hardware CRTC)
-- Echo tasti da `/dev/input/keyboard`
-- Registrazione device presso userfs via `FS_REGISTER`
+- Registrazione device `/dev/console` presso userfs via `FS_REGISTER`
+
+La tastiera è gestita da `userkbd`/`usertty` (Fase 15): input da `/dev/input/keyboard`, echo al shell tramite device path DEV.
 
 ### FS server (userfs)
 

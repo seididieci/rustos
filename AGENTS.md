@@ -582,7 +582,7 @@ velordor/
     (4) handshake BUF_REG per-canale; (5) open di file device, mai mount-root.
   - Init: spawn console→fs→uptime→devfs→kbd→tty + supervisione kbd/tty; t31
     (Kbd/Tty + open /dev/kbd/kbd + /dev/input/keyboard). Suite → 31/31.
-- [ ] Fase 16: Disk/ATA driver server in userspace (sgancio ATA/FS) — pianificata
+- [ ] Fase 16: Disk/ATA driver server in userspace (sgancio ATA/FS) — in backlog
   - Motivazione: oggi userfs possiede il driver ATA PIO (`block.rs`, `io.rs`) e
     il parser FAT32 nello stesso processo, con le porte ATA abilitate solo per
     lui; ogni read `/fat` blocca il server nel polling PIO.
@@ -600,9 +600,9 @@ velordor/
   - 16.3 Opportunita' (non requisito): caching settori nel disk server.
   - Verifica: /fat leggibile identico a oggi, userfs senza porte ATA, suite
         testfat 6/6 invariata.
-- [ ] Fase 17: Shell + utility utente — SLITTATA in coda al backlog (la shell
-      interattiva esiste gia'; restano le utility "utente"). Da
-      rivedere/ridimensionare quando ripresa.
+- [ ] Fase 17: Shell + utility utente — in backlog (shell interattiva esiste;
+      restano utility "utente" aggiuntive). Da rivedere/ridimensionare quando
+      ripresa.
 
 ## Important Notes
 
