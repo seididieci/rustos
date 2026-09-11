@@ -136,11 +136,11 @@ unsafe fn vga_write_char(vga: *mut Buffer, byte: u8, cursor: &mut usize) {
 }
 
 // ── Ring I/O (Fase 10.2) ─────────────────────────────────────────
-// La response ring del client e' mappata a RESP_RING_VA da userfs (map_in).
-// La request ring del client e' mappata a REQ_RING_VA da userfs (map_in).
+// Le finestre CLI_* sono mappate da userfs (map_in) con i ring del client
+// a ogni relay DEV (zero-copy); i ring propri del server non cambiano mai.
 
-const REQ_RING_VA: u64 = 0x0000_4000_0020_0000;
-const RESP_RING_VA: u64 = 0x0000_4000_0021_0000;
+const REQ_RING_VA: u64 = libr::CLI_REQ_VA;
+const RESP_RING_VA: u64 = libr::CLI_RESP_VA;
 const RING_DATA_CAP: usize = 4088;
 const RING_HEAD: usize = 0xFF8;
 const RING_TAIL: usize = 0xFFC;
@@ -282,7 +282,9 @@ pub extern "C" fn _start() -> ! {
 
                     DEV_READ => {
                         // Output-only: EOF immediato (frame vuoto + 0), come
-                        // /dev/null. Nessuno legge qui (tty scrive soltanto).
+                        // /dev/null. Frame SEMPRE (anche vuoto): il client
+                        // distingue "0 byte" da "ring vuoto" solo dal frame.
+                        unsafe { resp_ring_write_client(&[]); }
                         let _ = libr::reply(msg.tag, 0, 0);
                     }
 

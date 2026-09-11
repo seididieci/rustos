@@ -534,6 +534,15 @@ macro_rules! println {
 const REQ_RING_VA: u64 = 0x0000_4000_0020_0000;
 /// Response ring virtuale (USER_FS_BUFFER + 0x1000).
 const RESP_RING_VA: u64 = 0x0000_4000_0021_0000;
+/// Finestre DEDICATE per i relay userfs→driver (zero-copy senza clobber):
+/// userfs inietta qui (via `map_in`) i ring del client quando inoltra una DEV_*.
+/// Separate dalle finestre proprie (REQ/RESP): i ring propri di un driver-server
+/// non vengono mai rimappati da nessuno, quindi niente `remap` dance, niente
+/// race di preemption tra remap e uso (osservato: letture congelate/wedge).
+/// Libere nella mappa user (heap da +0x400000, stack sotto, VGA +0x100000).
+pub const CLI_REQ_VA: u64 = 0x0000_4000_0022_0000;
+/// Finestra response per i relay userfs→driver (vedi sopra).
+pub const CLI_RESP_VA: u64 = 0x0000_4000_0023_0000;
 /// Capacita' dati per ring (4088 byte; gli ultimi 8 byte della pagina
 /// 4KiB = head + tail a 0xFF8/0xFFC, fuori dall'area dati).
 const RING_DATA_CAP: usize = 4088;

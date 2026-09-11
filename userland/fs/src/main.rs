@@ -445,6 +445,21 @@ fn req_ring_consume(frame_len: usize) {
     }
 }
 
+/// Resync del request ring del client (tail=head, scarta tutto): il frame in
+/// testa e' impossibile (tag sconosciuto o incompleto) e qualunque consumo lo
+/// disallineerebbe per sempre (osservato: tag=0x0, RINGFULL lato client e
+/// stallo senza recovery). Il mittente riceve ERR; i client ritentano
+/// (tty: flush riprova, pump alla prossima notify) o vedono -1 (sync).
+/// Sicuro: il mittente scrive un frame intero prima di notificare, quindi
+/// scartare qui non taglia mai un frame valido a meta'.
+fn req_resync() {
+    unsafe {
+        let (head, _) = ring_positions(REQ_RING_VA);
+        core::ptr::write_volatile((REQ_RING_VA + RING_TAIL as u64) as *mut u32, head);
+    }
+    println!("[userfs] resync request ring (frame impossibile, tail=head)");
+}
+
 /// Scrive un response frame nel response ring. Formato: [result:8][w1:8][payload].
 fn resp_ring_write(result: u64, w1: u64, payload: &[u8]) {
     let frame_len = 16 + payload.len();
@@ -535,11 +550,17 @@ fn handle_read(
     // client nel driver (`map_in`): il driver legge dalla request ring e
     // scrive nella response ring → zero copie (Fase 10.2).
     if let Some((driver_chan, remote_fd)) = ftable.get_remote(chan, fd) {
-        let (req_phys, resp_phys) = rings.get(&chan)?;
-        libr::map_in(driver_chan, *req_phys, REQ_RING_VA, 1).ok()?;
-        libr::map_in(driver_chan, *resp_phys, RESP_RING_VA, 1).ok()?;
+        let (req_phys, resp_phys) = match rings.get(&chan) {
+            Some(&r) => r,
+            None => return None,
+        };
+        libr::map_in(driver_chan, req_phys, libr::CLI_REQ_VA, 1).ok()?;
+        libr::map_in(driver_chan, resp_phys, libr::CLI_RESP_VA, 1).ok()?;
         let reply = libr::send(driver_chan, DEV_READ, remote_fd as u64, count as u64).ok()?;
         return Some(reply.w0);
+    }
+    if ftable.get(chan, fd).is_none() {
+        return None;
     }
 
     let (path, kind, offset) = ftable.get(chan, fd)?;
@@ -591,10 +612,16 @@ fn handle_write_remote(
     fd: u32,
     count: usize,
 ) -> Option<u64> {
-    let (driver_chan, remote_fd) = ftable.get_remote(chan, fd)?;
-    let (req_phys, resp_phys) = rings.get(&chan)?;
-    libr::map_in(driver_chan, *req_phys, REQ_RING_VA, 1).ok()?;
-    libr::map_in(driver_chan, *resp_phys, RESP_RING_VA, 1).ok()?;
+    let (driver_chan, remote_fd) = match ftable.get_remote(chan, fd) {
+        Some(r) => r,
+        None => return None,
+    };
+    let (req_phys, resp_phys) = match rings.get(&chan) {
+        Some(&r) => r,
+        None => return None,
+    };
+    libr::map_in(driver_chan, req_phys, libr::CLI_REQ_VA, 1).ok()?;
+    libr::map_in(driver_chan, resp_phys, libr::CLI_RESP_VA, 1).ok()?;
     let reply = libr::send(driver_chan, DEV_WRITE, remote_fd as u64, count as u64).ok()?;
     Some(reply.w0)
 }
@@ -647,8 +674,8 @@ fn handle_readdir(
     // response ring del client (mappata li' da map_in).
     if let Some((driver_chan, _rel)) = resolve_mount(path, mounts) {
         let (req_phys, resp_phys) = rings.get(&chan)?;
-        libr::map_in(driver_chan, *req_phys, REQ_RING_VA, 1).ok()?;
-        libr::map_in(driver_chan, *resp_phys, RESP_RING_VA, 1).ok()?;
+        libr::map_in(driver_chan, *req_phys, libr::CLI_REQ_VA, 1).ok()?;
+        libr::map_in(driver_chan, *resp_phys, libr::CLI_RESP_VA, 1).ok()?;
         let reply = libr::send(driver_chan, DEV_READDIR, 0, 0).ok()?;
         return Some(reply.w0);
     }
@@ -846,14 +873,40 @@ pub extern "C" fn _start() -> ! {
             continue;
         }
 
-        // Leggi il request frame.
-        let (op_tag, w0, w1, payload_len) = match req_ring_read() {
-            Some(f) => f,
-            None => { let _ = libr::reply(0, ERR, 0); continue; }
+        // Leggi l'header del request frame (senza consumare: la lunghezza vera
+        // e' dichiarata in w0/w1, vedi sotto).
+        let (op_tag, w0, w1, avail) = match req_ring_read() {
+            Some((t, a, b, avail)) => (t, a, b, avail),
+            None => {
+                // Ring vuoto a notifica arrivata: spuria/stale, niente da
+                // consumare e niente da riallineare (tail==head gia').
+                let _ = libr::reply(0, ERR, 0);
+                continue;
+            }
         };
 
-        if payload_len > MAX_PATH + 4096 {
-            req_ring_consume(20 + payload_len);
+        // Lunghezza payload dichiarata dal frame. Il formato frame non ha
+        // lunghezza esplicita: consumare "tutto il disponibile" inghiotte gli
+        // eventuali frame successivi gia' presenti (coalescenza), disallineando
+        // il ring per sempre (osservato: tag=0x0 con pay enorme, RINGFULL lato
+        // client e stallo senza recovery). Si consuma ESATTAMENTE il dichiarato;
+        // il resto resta per la propria notifica.
+        let expect: usize = match op_tag {
+            R_OPEN | R_MKDIR | R_READDIR | R_REGISTER => w0 as usize,
+            R_WRITE => w1 as usize,
+            R_READ | R_CLOSE => 0,
+            _ => {
+                // Tag impossibile: scarta tutto e riallinea (vedi req_resync).
+                req_resync();
+                let _ = libr::reply(0, ERR, 0);
+                continue;
+            }
+        };
+        if expect > 4096 || avail < expect {
+            // Frame impossibile o incompleto: riallinea e fallisci
+            // visibilmente (mai wedge). Il payload perso appartiene a un'epoca
+            // disallineata; il client ritenta (tty) o vede -1 (sync).
+            req_resync();
             let _ = libr::reply(0, ERR, 0);
             continue;
         }
@@ -861,7 +914,7 @@ pub extern "C" fn _start() -> ! {
         // R_WRITE verso un device remoto: NON consumare il request frame. Il
         // payload resta nel request ring del client e il driver (console/devfs),
         // che ha i ring del client iniettati via map_in, lo legge direttamente e
-        // avanza la tail (zero copy, SPSC). Qui scriviamo solo il result frame.
+        // avanza la tail di (20 + w1) esatti. Qui scriviamo solo il result frame.
         if op_tag == R_WRITE && ftable.get_remote(chan, w0 as u32).is_some() {
             let result = handle_write_remote(&ftable, &rings, chan, w0 as u32, w1 as usize);
             resp_ring_write(to_reply(result), 0, &[]);
@@ -869,12 +922,12 @@ pub extern "C" fn _start() -> ! {
             continue;
         }
 
-        // Percorsi locali (o remote non-WRITE): consuma SEMPRE l'intero frame
-        // dal request ring (header + payload). req_ring_read_payload avanza la
-        // tail di (20 + payload_len), quindi va chiamata anche per payload_len
-        // == 0 (solo l'header da consumare).
-        let mut payload = vec![0u8; payload_len];
-        req_ring_read_payload(&mut payload, payload_len);
+        // Percorsi locali (o remote non-WRITE): consuma ESATTAMENTE header +
+        // payload dichiarato. req_ring_read_payload avanza la tail di
+        // (20 + expect); eventuali byte successivi (coalescenza) restano per
+        // la loro notifica invece di essere inghiottiti.
+        let mut payload = vec![0u8; expect];
+        req_ring_read_payload(&mut payload, expect);
 
         // Dispatch in base all'op_tag del ring. Ogni handler riceve gia' il
         // payload estratto: il frame e' stato interamente consumato sopra.

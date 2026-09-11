@@ -51,21 +51,21 @@ const ERR: u64 = !0u64;
 
 // ── Ring I/O (Fase 10.2, pattern console/devfs: servire i client) ───
 
-const REQ_RING_VA: u64 = 0x0000_4000_0020_0000;
-const RESP_RING_VA: u64 = 0x0000_4000_0021_0000;
+const CLI_REQ: u64 = libr::CLI_REQ_VA;
+const CLI_RESP: u64 = libr::CLI_RESP_VA;
 const RING_DATA_CAP: usize = 4088;
 const RING_HEAD: usize = 0xFF8;
 const RING_TAIL: usize = 0xFFC;
 
-/// Scrive dati nella response ring del client (a RESP_RING_VA).
+/// Scrive dati nella response ring del client (a CLI_RESP).
 unsafe fn resp_ring_write_client(data: &[u8]) {
     let frame_len = 16 + data.len();
     unsafe {
-        let head = core::ptr::read_volatile((RESP_RING_VA + RING_HEAD as u64) as *const u32);
+        let head = core::ptr::read_volatile((CLI_RESP + RING_HEAD as u64) as *const u32);
         let mut hdr = [0u8; 16];
         hdr[0..8].copy_from_slice(&(data.len() as u64).to_le_bytes());
         hdr[8..16].copy_from_slice(&0u64.to_le_bytes());
-        let dst = RESP_RING_VA as *mut u8;
+        let dst = CLI_RESP as *mut u8;
         for (i, byte) in hdr.iter().enumerate() {
             let p = ((head as usize) + i) % RING_DATA_CAP;
             core::ptr::write_volatile(dst.add(p), *byte);
@@ -75,7 +75,7 @@ unsafe fn resp_ring_write_client(data: &[u8]) {
             core::ptr::write_volatile(dst.add(p), *byte);
         }
         let new_head = ((head as usize) + frame_len) % RING_DATA_CAP;
-        core::ptr::write_volatile((RESP_RING_VA + RING_HEAD as u64) as *mut u32, new_head as u32);
+        core::ptr::write_volatile((CLI_RESP + RING_HEAD as u64) as *mut u32, new_head as u32);
     }
 }
 
@@ -83,15 +83,15 @@ unsafe fn resp_ring_write_client(data: &[u8]) {
 /// (20 + letti): serve a consumare il payload dei DEV_WRITE inoltrati.
 unsafe fn req_ring_read_client(dst: &mut [u8], count: usize) -> usize {
     unsafe {
-        let tail = core::ptr::read_volatile((REQ_RING_VA + RING_TAIL as u64) as *const u32);
-        let src = REQ_RING_VA as *const u8;
+        let tail = core::ptr::read_volatile((CLI_REQ + RING_TAIL as u64) as *const u32);
+        let src = CLI_REQ as *const u8;
         let n = count.min(dst.len());
         for i in 0..n {
             let p = ((tail as usize) + 20 + i) % RING_DATA_CAP;
             dst[i] = core::ptr::read_volatile(src.add(p));
         }
         let new_tail = ((tail as usize) + 20 + n) % RING_DATA_CAP;
-        core::ptr::write_volatile((REQ_RING_VA + RING_TAIL as u64) as *mut u32, new_tail as u32);
+        core::ptr::write_volatile((CLI_REQ + RING_TAIL as u64) as *mut u32, new_tail as u32);
         n
     }
 }
@@ -142,6 +142,8 @@ struct Tty {
     /// Pump richiesta (notify kbd o ingresso in Steady): il prossimo giro
     /// avvia una read async (level-triggered: resta finche' non parte).
     pump_now: bool,
+    /// Backoff dopo un pump fallito (vedi retry in collect PumpRead).
+    pump_wait_until: i64,
 }
 
 impl Tty {
@@ -162,6 +164,7 @@ impl Tty {
             ready_sent: false,
             flush_wait_until: 0,
             pump_now: false,
+            pump_wait_until: 0,
         }
     }
 
@@ -286,15 +289,8 @@ impl Tty {
             Some(p) if m.req_id > 0 && m.req_id == p.req => p,
             _ => return false,
         };
-        // Remap PRIMA di leggere la risposta (Fase 15): tra il nostro send e
-        // questa collect, userfs puo' aver iniettato i ring di un altro client
-        // nelle nostre finestre (relay DEV, stessa VA!) per servire LORO — la
-        // risposta e' nelle nostre PAGINE FISICHE (scritte da userfs dal suo
-        // lato), ma le nostre finestre puntano altrove. Senza remap qui si
-        // legge spazzatura altrui (osservato: collect fallite al 100% non
-        // appena la shell inizia a pollare). Il remap a inizio giro copre i
-        // send; questo copre le collect. Simmetrici e entrambi necessari.
-        let _ = libr::fs_remap_self();
+        // Niente remap: i relay usano le finestre dedicate CLI_*, i ring
+        // propri non vengono mai rimappati da nessuno.
         let mut tmp = [0u8; 64];
         match p.kind {
             OpKind::BufReg => {
@@ -353,7 +349,18 @@ impl Tty {
                     self.err_streak = 0;
                     self.decode_bytes(&tmp[..n as usize]);
                 } else if n < 0 {
+                    // Errore (es. resync userfs che ha scartato il frame):
+                    // riprova al prossimo giro invece di aspettare una nuova
+                    // notify (che potrebbe non arrivare mai: la notify e' andata
+                    // persa col frame scartato e kbd dorme). Il relay DEV_READ
+                    // della riprova sveglia kbd da solo: se ha dati li consegna,
+                    // se e' vuoto torna 0 e ci si ferma. Solo su ERR, mai su 0
+                    // (0 = vuoto legittimo, nessun retry). Throttle via
+                    // pump_wait_until (come flush); dopo 50 fallimenti
+                    // consecutivi reset_to_lookup riapre i peer.
                     self.note_error();
+                    self.pump_now = true;
+                    self.pump_wait_until = libr::get_ticks().wrapping_add(2);
                 }
                 // n == 0 (vuoto): niente da fare, nessun errore.
             }
@@ -416,10 +423,21 @@ impl Tty {
         if !self.pump_now {
             return;
         }
+        // Backoff dopo un invio fallito (come flush): non riprovare a vuoto
+        // ogni giro (igiene Livello 1).
+        let now = libr::get_ticks();
+        if now.wrapping_sub(self.pump_wait_until) < 0 {
+            return;
+        }
         self.pump_now = false;
         let req = libr::read_async(self.kbd_fd, 64);
         if req >= 0 {
             self.pending = Some(Pending { req, kind: OpKind::PumpRead });
+        } else {
+            // Invio fallito (backpressure): riprova con backoff, come flush.
+            // Senza, un pump perso resta perso fino alla prossima notify.
+            self.pump_now = true;
+            self.pump_wait_until = libr::get_ticks().wrapping_add(2);
         }
     }
 
@@ -460,16 +478,9 @@ pub extern "C" fn _start() -> ! {
     let mut tty = Tty::new();
 
     loop {
-        // 0. Remap dei PROPRI ring (Fase 15, lezione map_in): userfs inietta
-        //    i ring dei client nelle nostre finestre REQ/RESP_RING_VA (stessa
-        //    VA condivisa!) ad ogni relay DEV che ci inoltra — senza remap,
-        //    le nostre op async scriverebbero/leggerebbero le pagine di un
-        //    altro client (osservato: 100% fail non appena la shell inizia a
-        //    pollare /dev/input). Costa 2 map_physical a giro (solo sui wake).
-        //    Le relay gestite dopo usano i mapping client appena iniettati
-        //    (corretto: la lettura avviene prima del prossimo remap).
-        let _ = libr::fs_remap_self();
         // 1. Boot async (no-op in Steady).
+        //    (Niente remap dance: i relay usano le finestre dedicate CLI_*,
+        //    i ring propri non vengono mai rimappati da nessuno.)
         tty.boot_step();
         if tty.phase == Phase::Steady && !tty.ready_sent {
             tty.ready_sent = true;
@@ -569,9 +580,10 @@ impl Tty {
                         None => break,
                     }
                 }
-                if i > 0 {
-                    unsafe { resp_ring_write_client(&buf[..i]); }
-                }
+                // Frame SEMPRE (anche vuoto con i==0, come kbd/devfs): il
+                // client distingue "0 byte" da "ring vuoto" solo dal frame.
+                // Senza, un async-reader confonde vuoto e risposta persa.
+                unsafe { resp_ring_write_client(&buf[..i]); }
                 Some(i as u64)
             }
             DEV_WRITE => {
