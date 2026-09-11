@@ -238,43 +238,43 @@ pub extern "C" fn _start() -> ! {
                 // Notify IRQ dal kernel (bridge interrupt→IPC, canale 0 senza
                 // peer): NESSUNA reply (non c'e' nessuno ad aspettarla;
                 // risponderla manderebbe spazzatura sul canale di nascita).
-                // Il drain_hw sotto raccoglie comunque lo scancode.
-                if m.tag == libr::IRQ_NOTIFY_KBD {
-                    continue;
-                }
-
-                let result: Option<u64> = match m.tag {
-                    DEV_OPEN => {
-                        if m.w0 == DEV_KBD {
-                            let fd = next_fd;
-                            next_fd += 1;
-                            Some(fd as u64)
-                        } else {
-                            None
+                // Niente `continue` qui: si cade nel drain_hw + notify comuni
+                // sotto, altrimenti lo scancode resta nel controller e tty non
+                // viene mai avvisata.
+                if m.tag != libr::IRQ_NOTIFY_KBD {
+                    let result: Option<u64> = match m.tag {
+                        DEV_OPEN => {
+                            if m.w0 == DEV_KBD {
+                                let fd = next_fd;
+                                next_fd += 1;
+                                Some(fd as u64)
+                            } else {
+                                None
+                            }
                         }
-                    }
-                    DEV_READ => {
-                        // Consegna subito il disponibile (anche 0 con frame
-                        // vuoto, pattern /dev/null). Il lettore (usertty,
-                        // notify-driven) riprova alla prossima notify. Niente
-                        // reply differite: le VA map_in verrebbero rimappate
-                        // da altri nel mentre.
-                        let count = (m.w1 as usize).min(256);
-                        let mut buf = [0u8; 256];
-                        let n = queue.drain_into(&mut buf[..count]);
-                        unsafe { resp_ring_write_client(&buf[..n]); }
-                        Some(n as u64)
-                    }
-                    DEV_WRITE => None,
-                    DEV_CLOSE => Some(0),
-                    DEV_READDIR => {
-                        let entry = b"kbd\0";
-                        unsafe { resp_ring_write_client(entry); }
-                        Some(1)
-                    }
-                    _ => None,
-                };
-                let _ = libr::reply(0, result.unwrap_or(ERR), 0);
+                        DEV_READ => {
+                            // Consegna subito il disponibile (anche 0 con frame
+                            // vuoto, pattern /dev/null). Il lettore (usertty,
+                            // notify-driven) riprova alla prossima notify. Niente
+                            // reply differite: le VA map_in verrebbero rimappate
+                            // da altri nel mentre.
+                            let count = (m.w1 as usize).min(256);
+                            let mut buf = [0u8; 256];
+                            let n = queue.drain_into(&mut buf[..count]);
+                            unsafe { resp_ring_write_client(&buf[..n]); }
+                            Some(n as u64)
+                        }
+                        DEV_WRITE => None,
+                        DEV_CLOSE => Some(0),
+                        DEV_READDIR => {
+                            let entry = b"kbd\0";
+                            unsafe { resp_ring_write_client(entry); }
+                            Some(1)
+                        }
+                        _ => None,
+                    };
+                    let _ = libr::reply(0, result.unwrap_or(ERR), 0);
+                }
             }
             Err(_) => {}
         }
