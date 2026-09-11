@@ -1,0 +1,311 @@
+//! userkbd — Driver tastiera PS/2 in userspace (Fase 15).
+//!
+//! Possiede le porte 0x60/0x64 (via `io_ranges`, TSS per-processo ADR-0006) e
+//! pubblica gli scancode raw (Set 1) sul device `/dev/kbd`, registrato presso
+//! userfs come gli altri driver (FS_REGISTER). La decodifica resta fuori: sara'
+//! `usertty` a leggere `/dev/kbd` e a servire i byte cotti (Fase 15.3).
+//!
+//! Risveglio: il kernel su IRQ1 fa solo routing + EOI e sveglia l'owner del
+//! servizio `Kbd` per nome. Il loop e' un `recv` bloccante: il wake IRQ lo
+//! rende Ready (via `pending_wake` se non ancora bloccato) e `recv` ritorna
+//! `Err` sullo wake spurio — in ogni giro si drena l'hardware (bit OBF di
+//! 0x64) prima di servire i messaggi. Nessun tasto perso per race wake/read:
+//! un byte arrivato mentre giriamo alza un nuovo IRQ che ci risveglia di nuovo.
+
+#![no_std]
+#![no_main]
+
+extern crate alloc;
+
+mod io;
+
+use libr::println;
+
+// ── IPC tags da userfs ──────────────────────────────────────────────
+
+// ── IPC tags ────────────────────────────────────────────────────────
+// DEV_* come gli altri driver (da userfs). KBD_NOTIFY e' diverso: e' kbd che
+// avvisa tty "ci sono scancode" (fire-and-forget, NESSUNA reply: il mittente
+// async non aspetta). Senza notify tty dovrebbe pompare in polling (sempre
+// Ready → dilution dello scheduler, vedi diagnosi t30 Fase 15).
+
+const DEV_OPEN: u64 = 0x20;
+const DEV_READ: u64 = 0x21;
+const DEV_WRITE: u64 = 0x22;
+const DEV_CLOSE: u64 = 0x23;
+const DEV_READDIR: u64 = 0x24;
+
+/// Notify a tty: scancode in attesa (w1 = quanti, hint).
+const KBD_NOTIFY: u64 = 0x40;
+
+// ── Device types (w0 di DEV_OPEN, deve combaciare con `dev_type` in userfs) ─
+
+const DEV_KBD: u64 = 4;
+
+// ── Ring I/O (Fase 10.2, stesso pattern di devfs) ───────────────────
+// La response ring del client e' mappata a RESP_RING_VA da userfs (map_in).
+
+const RESP_RING_VA: u64 = 0x0000_4000_0021_0000;
+const RING_DATA_CAP: usize = 4088;
+const RING_HEAD: usize = 0xFF8;
+
+const ERR: u64 = !0u64;
+
+// ── Porte PS/2 ──────────────────────────────────────────────────────
+
+const PS2_DATA: u16 = 0x60;
+const PS2_STATUS: u16 = 0x64;
+const PS2_OBF: u8 = 0x01;
+
+// ── Coda scancode interna ───────────────────────────────────────────
+// Come la vecchia coda kernel (`kbd_events`, ora rimossa): cap 256, i byte in
+// eccesso sotto raffica vengono scartati (stesso contratto di prima).
+
+const SCANCAP: usize = 256;
+
+struct ScanQueue {
+    buf: [u8; SCANCAP],
+    head: usize,
+    tail: usize,
+    len: usize,
+}
+
+impl ScanQueue {
+    const fn new() -> Self {
+        Self { buf: [0; SCANCAP], head: 0, tail: 0, len: 0 }
+    }
+
+    fn push(&mut self, sc: u8) {
+        if self.len == SCANCAP {
+            return;
+        }
+        self.buf[self.tail] = sc;
+        self.tail = (self.tail + 1) % SCANCAP;
+        self.len += 1;
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Drena fino a `out.len()` byte, ritorna quanti.
+    fn drain_into(&mut self, out: &mut [u8]) -> usize {
+        let mut n = 0;
+        while self.len > 0 && n < out.len() {
+            out[n] = self.buf[self.head];
+            self.head = (self.head + 1) % SCANCAP;
+            self.len -= 1;
+            n += 1;
+        }
+        n
+    }
+}
+
+/// Inizializzazione controller i8042 (spostata dal kernel, `keyboard.rs`:
+/// Fase 15 vuole tutto in userland). Senza, IRQ1 non viene generato neanche
+/// con la maschera PIC sbloccata (tipico in PVH mode).
+fn i8042_init() {
+    unsafe {
+        // Drain eventuali scancode pendenti
+        while io::inb(PS2_STATUS) & PS2_OBF != 0 {
+            let _: u8 = io::inb(PS2_DATA);
+        }
+
+        // Disabilita keyboard + mouse durante la config
+        io::outb(PS2_STATUS, 0xAD);
+        io::outb(PS2_STATUS, 0xA7);
+
+        // Leggi command byte, imposta bit 0 (IRQ1 enable), riscrivi
+        io::outb(PS2_STATUS, 0x20);
+        let cmd: u8 = io::inb(PS2_DATA);
+        io::outb(PS2_STATUS, 0x60);
+        io::outb(PS2_DATA, cmd | 0x01);
+
+        // Riabilita tastiera + abilita scanning
+        io::outb(PS2_STATUS, 0xAE);
+        io::outb(PS2_DATA, 0xF4);
+
+        // Drain ACK (0xFA) che il controller manda subito dopo 0xF4
+        let _: u8 = io::inb(PS2_DATA);
+    }
+    println!("[userkbd] i8042 init (IRQ1 abilitata)");
+}
+
+/// Drena l'hardware: finche' OBF e' alto, leggi uno scancode e accodalo.
+/// Chiamato a ogni giro di loop (dopo recv o wake spurio): tra IRQ e drain
+/// non si perde nulla, e un byte arrivato durante il drain alza un nuovo IRQ.
+fn drain_hw(q: &mut ScanQueue) {
+    unsafe {
+        while io::inb(PS2_STATUS) & PS2_OBF != 0 {
+            q.push(io::inb(PS2_DATA));
+        }
+    }
+}
+
+/// Scrive dati nella response ring del client (a RESP_RING_VA), come devfs.
+unsafe fn resp_ring_write_client(data: &[u8]) {
+    let frame_len = 16 + data.len();
+    unsafe {
+        let (head, _tail) = {
+            let h = core::ptr::read_volatile((RESP_RING_VA + RING_HEAD as u64) as *const u32);
+            let t = core::ptr::read_volatile((RESP_RING_VA + 0xFFC) as *const u32);
+            (h, t)
+        };
+        let mut hdr = [0u8; 16];
+        hdr[0..8].copy_from_slice(&(data.len() as u64).to_le_bytes());
+        hdr[8..16].copy_from_slice(&0u64.to_le_bytes());
+        let dst = RESP_RING_VA as *mut u8;
+        for (i, byte) in hdr.iter().enumerate() {
+            let p = ((head as usize) + i) % RING_DATA_CAP;
+            core::ptr::write_volatile(dst.add(p), *byte);
+        }
+        for (i, byte) in data.iter().enumerate() {
+            let p = ((head as usize) + 16 + i) % RING_DATA_CAP;
+            core::ptr::write_volatile(dst.add(p), *byte);
+        }
+        let new_head = ((head as usize) + frame_len) % RING_DATA_CAP;
+        core::ptr::write_volatile((RESP_RING_VA + RING_HEAD as u64) as *mut u32, new_head as u32);
+    }
+}
+
+/// Assicura il mount "/dev/kbd" presso userfs (stesso pattern di devfs,
+/// `ensure_mounted`): attende Fs via soli lookup, poi UN tentativo; se
+/// fallisce ricomincia. Unbounded: senza Fs il driver e' comunque inutile.
+fn ensure_mounted() {
+    let _ = libr::fs_remap_self();
+    loop {
+        while libr::service_lookup(libr::Service::Fs).is_err() {
+            for _ in 0..1_000_000 {
+                core::hint::spin_loop();
+            }
+        }
+        if libr::fs_register(b"/dev/kbd") == 0 {
+            return;
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn _start() -> ! {
+    println!("[userkbd] starting, pid={}", libr::getpid());
+
+    // Hardware prima di tutto: da qui in poi gli IRQ1 arrivano e il kernel ci
+    // sveglia (il servizio non e' ancora registrato: i wake vanno persi ma
+    // nessun byte resta nel controller — il primo drain_hw li raccoglie).
+    i8042_init();
+
+    // Registra il servizio Kbd per nome (ADR-0008): il kernel risolve l'owner
+    // su IRQ1 per il wake.
+    if libr::service_register(libr::Service::Kbd).is_ok() {
+        println!("[userkbd] registered as service Kbd");
+    }
+
+    // Registra il prefix "/dev/kbd" presso userfs.
+    ensure_mounted();
+    println!("[userkbd] registered /dev/kbd with userfs");
+
+    // Avvisa il parent (init) di essere pronto (SVC_READY fire-and-forget,
+    // come devfs: a boot init aspetta, su restart nessuno — mai sync).
+    for _ in 0..100 {
+        if libr::send_async(libr::CHANNEL_PARENT, 0x7D, 1, 0).is_ok() {
+            break;
+        }
+        for _ in 0..10_000 {
+            core::hint::spin_loop();
+        }
+    }
+
+    let mut queue = ScanQueue::new();
+    let mut next_fd: u32 = 1;
+    // Canale verso tty per KBD_NOTIFY (lookup pigro + re-lookup se tty muore).
+    let mut tty_chan: i64 = -1;
+    let mut last_notify_tick: i64 = 0;
+
+    loop {
+        // Wake IRQ o messaggio: in ogni caso prima drena l'hardware (vedi
+        // doc in testa). `recv` su wake spurio ritorna Err: nessun problema,
+        // il drain e' comunque avvenuto.
+        match libr::recv() {
+            Ok(m) => {
+                // userfs morto e rinato: re-mount (come devfs, t28). Mai reply.
+                if m.tag == libr::EXIT_NOTIFY {
+                    println!("[userkbd] peer morto, re-mount /dev/kbd");
+                    ensure_mounted();
+                    drain_hw(&mut queue);
+                    continue;
+                }
+
+                // Notify IRQ dal kernel (bridge interrupt→IPC, canale 0 senza
+                // peer): NESSUNA reply (non c'e' nessuno ad aspettarla;
+                // risponderla manderebbe spazzatura sul canale di nascita).
+                // Il drain_hw sotto raccoglie comunque lo scancode.
+                if m.tag == libr::IRQ_NOTIFY_KBD {
+                    continue;
+                }
+
+                let result: Option<u64> = match m.tag {
+                    DEV_OPEN => {
+                        if m.w0 == DEV_KBD {
+                            let fd = next_fd;
+                            next_fd += 1;
+                            Some(fd as u64)
+                        } else {
+                            None
+                        }
+                    }
+                    DEV_READ => {
+                        // Consegna subito il disponibile (anche 0 con frame
+                        // vuoto, pattern /dev/null). Il lettore (usertty,
+                        // notify-driven) riprova alla prossima notify. Niente
+                        // reply differite: le VA map_in verrebbero rimappate
+                        // da altri nel mentre.
+                        let count = (m.w1 as usize).min(256);
+                        let mut buf = [0u8; 256];
+                        let n = queue.drain_into(&mut buf[..count]);
+                        unsafe { resp_ring_write_client(&buf[..n]); }
+                        Some(n as u64)
+                    }
+                    DEV_WRITE => None,
+                    DEV_CLOSE => Some(0),
+                    DEV_READDIR => {
+                        let entry = b"kbd\0";
+                        unsafe { resp_ring_write_client(entry); }
+                        Some(1)
+                    }
+                    _ => None,
+                };
+                let _ = libr::reply(0, result.unwrap_or(ERR), 0);
+            }
+            Err(_) => {}
+        }
+        let had = queue.len();
+        drain_hw(&mut queue);
+        // Event-driven (Fase 15): se ci sono scancode in attesa, avvisa tty
+        // (che dorme in recv) con fire-and-forget. Throttle 2 tick sui resend
+        // (notify persa per coda piena: si riprova qui, mai polling dedicato).
+        // Senza notify, tty dovrebbe pompare sempre → sempre Ready → dilution.
+        if queue.len() > 0 {
+            let now = libr::get_ticks();
+            if had == 0 || now.wrapping_sub(last_notify_tick) >= 2 {
+                if tty_chan < 0 {
+                    tty_chan = libr::service_lookup(libr::Service::Tty)
+                        .unwrap_or(-1);
+                }
+                if tty_chan >= 0 {
+                    if libr::send_async(tty_chan as u64, KBD_NOTIFY, queue.len() as u64, 0).is_ok() {
+                        last_notify_tick = now;
+                    } else {
+                        // tty riavviato (canale morto): re-lookup al prossimo giro.
+                        tty_chan = -1;
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    println!("[userkbd] panic");
+    libr::exit(1)
+}

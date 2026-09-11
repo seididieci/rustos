@@ -1,0 +1,12 @@
+[build]
+target = "x86_64-unknown-none"
+
+# Config condiviso dei crate userspace.
+#
+# Le rustflags (relocation-model=pic, -T<demo.ld>, ecc.) NON stanno qui: vengono
+# impostate in modo esplicito da scripts/build-userland.sh tramite la var
+# d'ambiente CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS. Cosi' c'e' una sola
+# fonte di verita' e non si duplicano/concatenano con quelle di altri crate.
+#
+# `[build] target` qui e `[unstable] build-std` nella radice vengono scoperti
+# risalendo da questa directory (il build userland gira con CWD=userland/demo).

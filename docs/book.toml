@@ -1,0 +1,12 @@
+[book]
+title = "Velordor Documentation"
+authors = ["Velordor Contributors"]
+description = "Documentation for the Velordor kernel project"
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = "https://github.com/seididieci/velordor"
