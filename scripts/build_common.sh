@@ -14,6 +14,33 @@
 # Le variabili `BUILD` e `CARGO_TARGET_DIR` devono essere esportate dal
 # chiamante (es. userland/build e testland/build).
 
+objcopy_tool() {
+    if command -v llvm-objcopy >/dev/null 2>&1; then
+        command -v llvm-objcopy
+        return
+    fi
+
+    if command -v rust-objcopy >/dev/null 2>&1; then
+        command -v rust-objcopy
+        return
+    fi
+
+    local sysroot
+    sysroot="$(rustc --print sysroot 2>/dev/null || true)"
+    if [ -n "$sysroot" ]; then
+        if [ -x "$sysroot/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy" ]; then
+            printf '%s\n' "$sysroot/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy"
+            return
+        fi
+        if [ -x "$sysroot/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-objcopy" ]; then
+            printf '%s\n' "$sysroot/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-objcopy"
+            return
+        fi
+    fi
+
+    return 1
+}
+
 build_one() {
     local crate="$1"            # path del crate, es. userland/console
     local ld="$2"               # linker script del binario
@@ -34,7 +61,13 @@ build_one() {
     local ELF="$TARGET_DIR/x86_64-unknown-none/release/$elfname"
     local OUT="$BUILD/$out_name"
     mkdir -p "$BUILD"
-    llvm-objcopy -O binary --set-section-flags .bss=alloc,load,contents "$ELF" "$OUT"
+    local OBJCOPY
+    if ! OBJCOPY="$(objcopy_tool)"; then
+        echo "[build] ERROR: llvm-objcopy/rust-objcopy non trovato nel PATH" >&2
+        echo "[build] Installa llvm-tools-preview o aggiungi l'objcopy del toolchain al PATH" >&2
+        exit 1
+    fi
+    "$OBJCOPY" -O binary --set-section-flags .bss=alloc,load,contents "$ELF" "$OUT"
 
     local SIZE=$(stat -c %s "$OUT")
     echo "[build] $OUT ($SIZE bytes)"
