@@ -43,9 +43,10 @@ const KBD_NOTIFY: u64 = 0x40;
 const DEV_KBD: u64 = 4;
 
 // ── Ring I/O (Fase 10.2, stesso pattern di devfs) ───────────────────
-// La response ring del client e' mappata a RESP_RING_VA da userfs (map_in).
+// La response del client va nella finestra CLI_RESP_VA (mappata da userfs
+// con i ring del client a ogni relay DEV).
 
-const RESP_RING_VA: u64 = 0x0000_4000_0021_0000;
+const RESP_RING_VA: u64 = libr::CLI_RESP_VA;
 const RING_DATA_CAP: usize = 4088;
 const RING_HEAD: usize = 0xFF8;
 
@@ -56,6 +57,11 @@ const ERR: u64 = !0u64;
 const PS2_DATA: u16 = 0x60;
 const PS2_STATUS: u16 = 0x64;
 const PS2_OBF: u8 = 0x01;
+const PS2_IBF: u8 = 0x02;
+/// Bit 5 di 0x64: il byte in attesa viene dal mouse (AUX), non dalla tastiera.
+const PS2_AUX: u8 = 0x20;
+/// Bit di errore di 0x64: parita' (7) e timeout (6) — il byte e' spazzatura.
+const PS2_ERR: u8 = 0xC0;
 
 // ── Coda scancode interna ───────────────────────────────────────────
 // Come la vecchia coda kernel (`kbd_events`, ora rimossa): cap 256, i byte in
@@ -101,43 +107,97 @@ impl ScanQueue {
     }
 }
 
+/// Attende IBF libero (controller pronto a ricevere un comando) con bound.
+/// Senza, un comando scritto mentre il controller e' occupato va perso
+/// (es. 0xA7 che dovrebbe disabilitare il mouse).
+fn wait_ibf_clear() {
+    for _ in 0..100_000 {
+        if unsafe { io::inb(PS2_STATUS) } & PS2_IBF == 0 {
+            return;
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// Attende OBF alto (byte in arrivo) con bound. Ritorna false a timeout.
+fn wait_obf_set() -> bool {
+    for _ in 0..100_000 {
+        if unsafe { io::inb(PS2_STATUS) } & PS2_OBF != 0 {
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+    false
+}
+
 /// Inizializzazione controller i8042 (spostata dal kernel, `keyboard.rs`:
 /// Fase 15 vuole tutto in userland). Senza, IRQ1 non viene generato neanche
 /// con la maschera PIC sbloccata (tipico in PVH mode).
 fn i8042_init() {
     unsafe {
-        // Drain eventuali scancode pendenti
-        while io::inb(PS2_STATUS) & PS2_OBF != 0 {
-            let _: u8 = io::inb(PS2_DATA);
+        // Drain di backlog (SeaBIOS / mouse pre-init): scarta tutto.
+        loop {
+            let st = io::inb(PS2_STATUS);
+            if st & PS2_OBF == 0 {
+                break;
+            }
+            let _ = io::inb(PS2_DATA);
         }
 
-        // Disabilita keyboard + mouse durante la config
+        // Disabilita keyboard + mouse durante la config (con IBF-wait: senza,
+        // il comando puo' andare perso e il mouse resta attivo a sporcare OBF).
+        wait_ibf_clear();
         io::outb(PS2_STATUS, 0xAD);
+        wait_ibf_clear();
         io::outb(PS2_STATUS, 0xA7);
 
-        // Leggi command byte, imposta bit 0 (IRQ1 enable), riscrivi
+        // Leggi command byte, imposta bit 0 (IRQ1 enable), riscrivi.
+        wait_ibf_clear();
         io::outb(PS2_STATUS, 0x20);
-        let cmd: u8 = io::inb(PS2_DATA);
+        let cmd: u8 = if wait_obf_set() {
+            io::inb(PS2_DATA)
+        } else {
+            0x65
+        };
+        wait_ibf_clear();
         io::outb(PS2_STATUS, 0x60);
+        wait_ibf_clear();
         io::outb(PS2_DATA, cmd | 0x01);
 
-        // Riabilita tastiera + abilita scanning
+        // Riabilita tastiera + abilita scanning.
+        wait_ibf_clear();
         io::outb(PS2_STATUS, 0xAE);
+        wait_ibf_clear();
         io::outb(PS2_DATA, 0xF4);
 
-        // Drain ACK (0xFA) che il controller manda subito dopo 0xF4
-        let _: u8 = io::inb(PS2_DATA);
+        // ACK con timeout (niente lettura cieca: senza OBF si leggerebbe
+        // spazzatura che finirebbe decodificata come tasto).
+        if wait_obf_set() {
+            let _ = io::inb(PS2_DATA);
+        }
     }
     println!("[userkbd] i8042 init (IRQ1 abilitata)");
 }
 
 /// Drena l'hardware: finche' OBF e' alto, leggi uno scancode e accodalo.
+/// I byte AUX (mouse) o con errori di parita'/timeout vengono LETTI (per
+/// abbassare OBF, altrimenti il buffer HW si riempie e si perdono tasti veri)
+/// ma SCARTATI, mai accodati: decodificarli come tasti corrompe lo stream
+/// (osservato: caratteri sbagliati intermittenti in GTK con mouse vivo).
 /// Chiamato a ogni giro di loop (dopo recv o wake spurio): tra IRQ e drain
 /// non si perde nulla, e un byte arrivato durante il drain alza un nuovo IRQ.
 fn drain_hw(q: &mut ScanQueue) {
     unsafe {
-        while io::inb(PS2_STATUS) & PS2_OBF != 0 {
-            q.push(io::inb(PS2_DATA));
+        loop {
+            let st = io::inb(PS2_STATUS);
+            if st & PS2_OBF == 0 {
+                break;
+            }
+            let b = io::inb(PS2_DATA);
+            if st & (PS2_AUX | PS2_ERR) != 0 {
+                continue;
+            }
+            q.push(b);
         }
     }
 }

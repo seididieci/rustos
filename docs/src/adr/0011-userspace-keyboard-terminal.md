@@ -60,6 +60,11 @@ kbd/tty come gli altri servizi (restart/backoff Fase 14).
    `FS_BUF_REG` o ogni op prende `NOHANDSHAKE` per sempre.
 5. **Aprire file device, mai mount-root.** Aprire `/dev/kbd` (radice) da'
    `rel=""` → `dev_type` fallisce (EISDIR): si apre `/dev/kbd/kbd`.
+6. **Hardening PS/2 in GTK (mouse vivo).** Init i8042 con wait IBF/OBF bound
+   e `drain_hw` che legge ma scarta i byte AUX (mouse) e con errori di
+   parita'/timeout, mai accodati: senza, lo stream si corrompe con caratteri
+   sbagliati/ripetuti, visibili solo in GTK col mouse vivo (non con `sendkey`
+   QMP).
 
 ## Conseguenze
 

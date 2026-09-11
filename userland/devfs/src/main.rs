@@ -31,8 +31,8 @@ const DEV_ZERO: u64 = 1;
 // La response ring del client e' mappata a RESP_RING_VA da userfs (map_in);
 // la request ring a REQ_RING_VA (usata per consumare i frame dei WRITE).
 
-const REQ_RING_VA: u64 = 0x0000_4000_0020_0000;
-const RESP_RING_VA: u64 = 0x0000_4000_0021_0000;
+const REQ_RING_VA: u64 = libr::CLI_REQ_VA;
+const RESP_RING_VA: u64 = libr::CLI_RESP_VA;
 const RING_DATA_CAP: usize = 4088;
 const RING_HEAD: usize = 0xFF8;
 const RING_TAIL: usize = 0xFFC;
