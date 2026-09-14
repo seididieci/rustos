@@ -2,7 +2,7 @@
 # Build dei binari userspace in modalita' freestanding.
 #
 # Qui stanno SOLO i servizi utente (userland/): init, console, fs, devfs,
-# shell, uptime, kbd — i binari "ad uso utente" dell'OS. I binari della test suite
+# disk, shell, uptime, kbd, tty — i binari "ad uso utente" dell'OS. I binari della test suite
 # (testland/) sono compilati da scripts/build-tests.sh.
 #
 # Prodotto: userland/build/*.bin, codice raw caricato a USER_CODE dai processi
@@ -16,7 +16,7 @@ TARGET_DIR="$BUILD/target"
 export CARGO_TARGET_DIR="$TARGET_DIR"
 
 # Suite di test: di default init la SALTA (feature `skip_tests`, boot di
-# produzione dritto alla shell). Con RUN_TESTS=1 (scripts/run-tests.sh) init
+# produzione dritto alla shell). Con RUN_TESTS=1 (run-tests.sh) init
 # viene compilato con `--no-default-features` ed esegue la suite completa.
 if [ "${RUN_TESTS:-0}" = "1" ]; then
     INIT_FEATURES="--no-default-features"

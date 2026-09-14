@@ -110,8 +110,7 @@ Nella Fase 7 due processi user (ring 3) dimostravano il modello: `usersrv` →
 `usercli` (client che assume `server_pid = getpid() - 1`). Queste demo
 (`testland/srv`, `testland/cli`) NON sono piu' buildate dalla Fase 12: basate
 sull'IPC per PID dedotto, sono state rimosse dal catalogo binari (il modello
-attuale e' a canali di nascita). Il loro sorgente resta in tree come riferimento
-storico.
+attuale e' a canali di nascita) e i sorgenti cancellati in un batch di igiene.
 
 ## Note sul bug `swapgs` (perché l'entry non usa GS)
 

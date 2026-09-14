@@ -250,7 +250,7 @@ pub extern "C" fn _start() -> ! {
     // Test suite in sequenza: usertestfs, usertestfat, usertests (Fase 9.5).
     // Di default (feature `skip_tests`, run di produzione) SALTATA: boot
     // veloce dritto alla shell. Con `--no-default-features` (RUN_TESTS=1,
-    // scripts/run-tests.sh) eseguita come gate di regressione.
+    // run-tests.sh) eseguita come gate di regressione.
     #[cfg(feature = "skip_tests")]
     println!("[init] test suite saltata (production run)");
     #[cfg(not(feature = "skip_tests"))]

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build dei binari della TEST SUITE in modalita' freestanding.
 #
-# testland/ contiene ogni binario NON "ad uso utente": demo e coppia
-# server/client IPC storiche, i test ramfs/fat (usertestfs/usertestfat),
+# testland/ contiene ogni binario NON "ad uso utente": demo, i test
+# ramfs/fat (usertestfs/usertestfat), gli strumenti di stress (hogheap,
 # gli strumenti di stress (hogheap, devreader) e la suite di regressione
 # completa (usertests + helper client/spin).
 #

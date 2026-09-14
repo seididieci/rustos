@@ -5,6 +5,7 @@
 //! I campi della memory map esistono solo da versione >= 1, e nelle entry
 //! l'ordine e' addr/size/type (diverso dall'e820 classico!).
 
+//! I campi rispecchiano l'ABI Xen: restano anche se non (ancora) letti.
 #![allow(dead_code)]
 
 use core::slice;

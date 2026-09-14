@@ -7,7 +7,7 @@
 //!     client e l'attuale owner del servizio.
 //!   - il registro dei servizi mappa `enum Service` → PID owner. La morte
 //!     dell'owner libera lo slot e invalida i canali che lo coinvolgono
-//!     (premessa per la pulizia completa, Fase 3).
+//!     (premessa per la pulizia completa, Fase 14).
 //!   - `request_id` globali correlano una `reply` alla sua `send` (multi-client
 //!     senza reply_target "ultimo mittente").
 //!
@@ -130,15 +130,6 @@ pub fn enumerate_peers(pid: usize) -> ([(u32, u32); crate::process::MAX_NOTIFY_P
         }
     }
     (out, n)
-}
-
-/// Il canale `id` e' ancora valido per il processo `me`?
-pub fn is_alive_for(id: usize, me: usize) -> bool {
-    let pool = CHANNELS.lock();
-    match pool.get(id) {
-        Some(Some(ch)) => ch.alive && (ch.a == me || ch.b == me),
-        _ => false,
-    }
 }
 
 /// Rilascia TUTTO cio' che coinvolge il processo `pid` (Fase 14, ADR-0010):

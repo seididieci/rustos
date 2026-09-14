@@ -28,6 +28,7 @@ static MAPPED_MAX: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
 /// Tetto (byte) dell'identity map attuale. Indirizzi >= questo non sono mappati.
+/// Usato solo dai selftest (`#[cfg(feature = "selftest")]` in main.rs).
 #[allow(dead_code)]
 pub fn mapped_max() -> u64 {
     MAPPED_MAX.load(core::sync::atomic::Ordering::Relaxed)

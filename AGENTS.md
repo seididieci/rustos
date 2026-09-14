@@ -78,7 +78,6 @@ velordor/
 │   ├── build_common.sh # build_one() condivisa (freestanding PIC)
 │   ├── build-userland.sh  # binari "utente" -> userland/build
 │   ├── build-tests.sh  # binari test suite -> testland/build
-│   ├── mkimage.py      # Immagine disco raw (boot sector + payload)
 │   └── putc16.inc
 ├── run.sh              # build userland + testland + kernel + QEMU (PVH)
 ├── userland/           # SOLO binari ad uso utente: init, console server,

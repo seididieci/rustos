@@ -16,6 +16,8 @@
 //! garantito dal tipo (`u64`), l'errore classico dello stride a 4 byte non
 //! può nemmeno compilare.
 
+//! I simboli servono a `boot.asm` via indirizzo assoluto: il linker li tiene
+//! vivi, ma il compilatore non vede usi Rust — allow mirato, non rimosso.
 #![allow(dead_code)]
 
 use core::mem::size_of;
