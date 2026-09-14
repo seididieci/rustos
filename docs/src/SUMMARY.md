@@ -38,3 +38,4 @@
 - [ADR-0010: Process lifecycle — cleanup kernel-side](./adr/0010-process-lifecycle-cleanup.md)
 - [ADR-0011: Tastiera e terminale in userspace](./adr/0011-userspace-keyboard-terminal.md)
 - [ADR-0012: Disk driver ATA in userspace](./adr/0012-userspace-disk-driver.md)
+- [ADR-0013: Mount espliciti in userspace](./adr/0013-mount-syscall.md)

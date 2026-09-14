@@ -22,6 +22,8 @@ e scrive output sullo stesso fd (il console server disegna sulla VGA).
 | `cat <file>` | Stampa contenuto file |
 | `touch <file>` | Crea file vuoto |
 | `mkdir <dir>` | Crea directory |
+| `mount <src> <tgt>` | Monta un device (es. `/dev/sda`) su un target (Fase 16b) |
+| `umount <tgt>` | Smonta un target (rifiutato se busy, Fase 16b) |
 | `help` | Mostra comandi disponibili |
 | `exit` | Termina la shell |
 
@@ -36,11 +38,13 @@ in sequenza prima di lanciare la shell (i PID sono indicativi: i peer si
 raggiungono per nome/canale, non per PID):
 
 1. `userconsole` — driver VGA + tastiera (servizio `Console`)
-2. `userfs` — file system server (ramfs + FAT32, servizio `Fs`)
-3. `useruptime` — contatore PIT
-4. `userdevfs` — `/dev/null`, `/dev/zero` (servizio `Devfs`)
-5. Test: `usertestfs` → `usertestfat` → `usertests` (attende `TEST_DONE`)
-6. `usershell` — shell interattiva (ultima, dopo la suite)
+2. `userdisk` — disk driver ATA (servizio `Disk`, Fase 16)
+3. `userfs` — file system server (ramfs + FAT32 via userdisk, servizio `Fs`)
+4. `useruptime` — contatore PIT
+5. `userdevfs` — `/dev/null`, `/dev/zero` (servizio `Devfs`)
+6. `userkbd`/`usertty` — tastiera + terminale (servizi `Kbd`/`Tty`, Fase 15)
+7. Test: `usertestfs` → `usertestfat` → `usertests` (attende `TEST_DONE`)
+8. `usershell` — shell interattiva (ultima, dopo la suite)
 
 ### Console server (userconsole)
 
@@ -54,8 +58,11 @@ La tastiera è gestita da `userkbd`/`usertty` (Fase 15): input da `/dev/input/ke
 
 File system server con mount table dinamica:
 - `/` → ramfs (BTreeMap, scrivibile)
-- `/fat` → FAT32 (read-only, via ATA PIO)
+- `/fat` → FAT32 (read-only, via `userdisk` — Fase 16)
 - `/dev` → userdevfs (instradamento IPC)
+- mount dinamici via `mount`/`umount` (Fase 16b, [ADR-0013](./adr/0013-mount-syscall.md)):
+  tabella `Vec<FsMount>` con longest-prefix, attivazione lazy, re-apply delle
+  spec statiche a ogni boot
 
 ### DevFS (userdevfs)
 

@@ -612,9 +612,31 @@ rustos/
         FS_REGISTER → userdisk MAI sync verso userfs (SM async, nemmeno
         `fs_init`); (2) SM congelata da throttle+recv senza waker → retry a
         ogni wakeup; (3) frame letto a head invece che tail; (4) vedi kernel.
-  - Limiti noti (futuro): mount syscall esplicita (16b), ATAPI/ISO9660, catene
-    extended, scritture disco, caching, DMA+IRQ.
+  - Limiti noti (futuro): mount syscall esplicita (16b, FATTO sotto), ATAPI/ISO9660,
+    catene extended, scritture disco, caching, DMA+IRQ.
   - Verifica: /fat identica a oggi, testfat 6/6 invariata, suite 32/32.
+- [x] Fase 16b: mount/umount espliciti (syscall libr su IPC, zero kernel)
+  - Motivazione: dopo la 16 il mount era un binding hardcodato; servono mount
+    dinamici (shell, utility future). Il kernel non ha stato FS dal 9.6: una
+    SYS_MOUNT inoltrerebbe e basta (contro ADR-0005).
+  - [x] 16b.1 userfs: tabella `Vec<FsMount>` + enum `MountedFs` (oggi solo
+        `Fat`, domani ext2 senza reshuffle) con longest-prefix + attivazione
+        lazy (mai shadow ramfs); boot dalle spec statiche via stesso codice;
+        `FsNode` con `mode` + `opts` in spec (placeholder Strato 0, zero
+        enforcement); `FileEntry` con mount idx; fix `RamFs::find` (dir a
+        singolo componente). Comportamento identico, suite verde.
+  - [x] 16b.2 Frame `R_MOUNT` (0x16, "source\\0target") / `R_UMOUNT` (0x17) via
+        `FS_NOTIFY`; `libr::mount()/umount()`; handler apply (idempotente) +
+        umount con EBUSY (scan fd); shell builtin `mount`/`umount` (+help).
+  - [x] 16b.3 Test t33 (mount dinamico + contenuto + busy/umount + error
+        paths) + prova shell via monitor. Suite → 33/33.
+  - [x] 16b.4 Docs: ADR-0013 + AGENTS + SUMMARY/09/11/12.
+  - Permessi (domanda 16b): FAT da' solo readonly; scelta a strati — Strato 0
+    dentro (campi+opts), Strato 1 (uid per-canale + check, fase piccola) e
+    Strato 2 (identita'/credenziali, progetto grosso) rimandati al login
+    boundary. Confronto MINIX (tabella nel VFS) / QNX (namespace separato,
+    check live futuro) in ADR-0013.
+  - Verifica: testfs 5/5, testfat 6/6, usertests 33/33, zero FAIL/PANIC/FAULT.
 - [ ] Fase 17: Shell + utility utente — in backlog (shell interattiva esiste;
       restano utility "utente" aggiuntive). Da rivedere/ridimensionare quando
       ripresa.
@@ -782,9 +804,9 @@ timeout 60 ./run.sh > /tmp/boot.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 6/6
-#   [usertests] PASS 32/32
+#   [usertests] PASS 33/33
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 6/6|\[usertests\] PASS 32/32' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 6/6|\[usertests\] PASS 33/33' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 
