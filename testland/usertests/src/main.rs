@@ -1673,6 +1673,87 @@ fn t_kbd_presence() -> bool {
     true
 }
 
+/// Contenuto atteso di /fat/HELLO.TXT (come testfat Test 2).
+const FAT_HELLO: &[u8] = b"Hello from Velordor FAT32!\n";
+
+/// Apre /dev/sda raw (throttled, Livello 1), legge il settore 0 e verifica la
+/// firma boot 0x55AA a offset 510 (stesso settore del mount /fat: prova il
+/// data-plane DISK di userdisk e il relay DEV di userfs in un colpo solo).
+fn disk_sector0_ok() -> bool {
+    let fd = libr::open_wait("/dev/sda", 0, 1000, libr::POLL_PERIOD_TICKS);
+    if fd < 0 {
+        return false;
+    }
+    let mut buf = [0u8; 512];
+    let n = libr::read_fs(fd, &mut buf, 512);
+    let _ = libr::close(fd);
+    n == 512 && buf[510] == 0x55 && buf[511] == 0xAA
+}
+
+/// t32 — disk driver in userspace (Fase 16).
+/// (A) Baseline: /dev/sda leggibile raw con firma boot. (B) Kill userdisk
+/// (pid via `service_pid`, non figlio nostro) e attesa init-restart come
+/// t27/t28: sparizione dallo slot, ricomparsa, poi /dev/sda di nuovo
+/// operativo + smoke /fat/HELLO.TXT (riconnessione lazy di userfs al driver
+/// rinato, senza rimontare: il mount sopravvive). Bound generosi (1000 tick
+/// ~ 10 s contro restart atteso ~50), mai hang; poll throttled Livello 1.
+/// Ultimo test della suite: dopo di lui solo shell (nessuna interferenza).
+fn t_disk() -> bool {
+    drain_stray();
+    if !disk_sector0_ok() {
+        println!("[usertests] t32: baseline /dev/sda FAILED");
+        return false;
+    }
+    let p1 = match libr::service_pid(libr::Service::Disk) {
+        Ok(p) => p,
+        Err(_) => {
+            println!("[usertests] t32: service_pid(Disk) FAILED");
+            return false;
+        }
+    };
+    if libr::kill(p1, -16).is_err() {
+        println!("[usertests] t32: kill userdisk pid={} FAILED", p1);
+        return false;
+    }
+    // Fase A: sparizione dallo slot (morte osservata dal registry).
+    if !libr::poll_wait(1000, libr::POLL_PERIOD_TICKS, || {
+        libr::service_pid(libr::Service::Disk).is_err()
+    }) {
+        println!("[usertests] t32: userdisk mai sparito (timeout)");
+        return false;
+    }
+    // Fase B: ricomparsa (init ha riavviato + registrato).
+    let p2 = match libr::poll_value(1000, libr::POLL_PERIOD_TICKS, || {
+        libr::service_pid(libr::Service::Disk).ok()
+    }) {
+        Some(p) => p,
+        None => {
+            println!("[usertests] t32: userdisk mai riapparso (timeout)");
+            return false;
+        }
+    };
+    println!("[usertests] t32: userdisk riavviato (pid {} -> {})", p1, p2);
+    // Fase C: operativita' raw dopo il restart.
+    if !libr::poll_wait(1000, libr::POLL_PERIOD_TICKS, disk_sector0_ok) {
+        println!("[usertests] t32: /dev/sda mai tornato (timeout)");
+        return false;
+    }
+    // Smoke /fat via riconnessione (il driver e' nuovo, il mount e' quello di boot).
+    let fdf = libr::open_wait("/fat/HELLO.TXT", 0, 1000, libr::POLL_PERIOD_TICKS);
+    if fdf < 0 {
+        println!("[usertests] t32: open /fat/HELLO.TXT post-restart FAILED");
+        return false;
+    }
+    let mut fb = [0u8; 32];
+    let n = libr::read_fs(fdf, &mut fb, 32);
+    let _ = libr::close(fdf);
+    if n as usize != FAT_HELLO.len() || fb[..FAT_HELLO.len()] != *FAT_HELLO {
+        println!("[usertests] t32: /fat/HELLO.TXT post-restart corrotto");
+        return false;
+    }
+    true
+}
+
 // ── main ─────────────────────────────────────────────────────────────
 
 #[unsafe(no_mangle)]
@@ -1714,6 +1795,7 @@ pub extern "C" fn _start() -> ! {
     report(&mut total, &mut ok, "t29 map flap isolation", t_mapflap());
     report(&mut total, &mut ok, "t30 neighbor under flood", t_neighbor());
     report(&mut total, &mut ok, "t31 kbd/tty presence", t_kbd_presence());
+    report(&mut total, &mut ok, "t32 disk kill + init restart", t_disk());
 
     println!("[usertests] SUMMARY {}/{} PASS", ok, total);
     let _ = libr::send(libr::CHANNEL_PARENT, 0x7E, ok as u64, 0); // init: test finito
