@@ -185,6 +185,7 @@ usertests 17/17, shell 3/3.
 9.6  Buffer per-processo + zero-copy IPC (rimozione shared buf)  [x]
 10.2 Ring SPSC per-processo (sostituisce 9.6)                     [x]
 16   Disk driver in userspace (userdisk + userfs senza ATA)        [x]
+16b  Mount/umount espliciti (tabella Vec<FsMount>, R_MOUNT/R_UMOUNT) [x]
 ```
 
 ## File coinvolti

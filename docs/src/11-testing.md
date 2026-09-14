@@ -12,7 +12,7 @@ libs/libr   libreria di sistema condivisa (runtime + allocatore)
 testland/   test suite + repro + demo storiche
   testfs        usertestfs   — ramfs (read/write/mkdir/errori)   → PASS 5/5
   testfat       usertestfat  — FAT32 read-only + /dev/null, /dev/zero → PASS 6/6
-  usertests     usertests    — suite completa (32 test)          → PASS 32/32
+  usertests     usertests    — suite completa (33 test)          → PASS 33/33
   usertest-client usertestcli  — helper a modalita' (ECHO/ZEROREAD/NULLW/SRV)
   usertest-spin  usertestspin  — busy-loop a budget di tick (priorita')
   utcbstest     utcbstest    — helper CBS: crea server e si attacha (Fase 11.5)
@@ -44,10 +44,10 @@ Righe di gate:
 ```
 [testfs] PASS 5/5
 [testfat] PASS 6/6
-[usertests] PASS 32/32
+[usertests] PASS 33/33
 ```
 
-## Cosa copre `usertests` (32 test)
+## Cosa copre `usertests` (33 test)
 
 | Test | Cosa verifica |
 |------|----------------|
@@ -83,6 +83,7 @@ Righe di gate:
 | t30 | fairness scheduler sotto carico IPC: helper FLOOD (open+write+close /dev/null a regime dopo warm-up) + kill devfs + latenza mount (bound 300 tick, osservato 0–1) → becca regressioni di rotazione/starvation (es. bug di parita' round-robin). NON misura saturazione userfs: con client sync (≤1 in volo) la coda non si riempie mai |
 | t31 | presenza keyboard stack userspace (Fase 15): servizi `Kbd`/`Tty` registrati + open `/dev/kbd/kbd` e `/dev/input/keyboard` (path DEV del tty). Niente digitazione reale (serve QMP/sendkey: coperta da `test-shell.py` 3/3) |
 | t32 | disk driver in userspace (Fase 16): open raw `/dev/sda` + settore 0 con firma boot 0x55AA; kill userdisk via `service_pid` → sparizione/ricomparsa (init-restart) → raw di nuovo operativo + `/fat/HELLO.TXT` leggibile via riconnessione lazy di userfs |
+| t33 | mount/umount espliciti (Fase 16b): mkdir ramfs + mount `/dev/sda`→`/mnt` + contenuto FAT + re-mount idempotente + umount busy rifiutato + umount ok (`/mnt` torna ramfs) + error paths (sorgente/target invalidi, doppio umount, umount `/`) |
 
 > Il CBS e' sempre attivo (lo scheduler RT e' l'unico): t18/t19 sono test
 > reali, non ci sono modalita' "vuote".
