@@ -561,19 +561,18 @@ const RING_HEAD: usize = 0xFF8;
 const RING_TAIL: usize = 0xFFC;
 
 // ── Tag delle operazioni (nel frame del ring, non nell'IPC) ────────
-
-const R_OPEN: u32 = 0x10;
-const R_READ: u32 = 0x11;
-const R_WRITE: u32 = 0x12;
-const R_CLOSE: u32 = 0x13;
-const R_READDIR: u32 = 0x14;
-const R_MKDIR: u32 = 0x15;
-/// Monta una sorgente su un target (Fase 16b): payload "source\0target\0".
-const R_MOUNT: u32 = 0x16;
-/// Smonta un target (Fase 16b): payload "target".
-const R_UMOUNT: u32 = 0x17;
-/// Un driver (devfs/console) registra il proprio prefix di mount.
-const R_REGISTER: u32 = 0x30;
+// Single source in `syscall-numbers` (Fase 17): prima duplicati qui, in
+// userfs e (R_REGISTER) userdisk.
+pub use syscall_numbers::{
+    R_CLOSE, R_MKDIR, R_MOUNT, R_OPEN, R_READ, R_READDIR, R_REGISTER, R_UMOUNT, R_WRITE,
+    R_RIGHTS_DROP, R_RIGHTS_GET,
+};
+/// Bit dei diritti per-canale (Fase 17, self-restriction): mask per
+/// `rights_drop`, valore di ritorno di `rights_get`.
+pub use syscall_numbers::{
+    RIGHTS_ALL, RIGHTS_MKDIR, RIGHTS_MOUNT, RIGHTS_OPEN, RIGHTS_READ, RIGHTS_READDIR,
+    RIGHTS_UMOUNT, RIGHTS_WRITE,
+};
 
 /// IPC tag: il client ha scritto nel request ring e notifica il server.
 const FS_NOTIFY: u64 = 0x32;
@@ -1215,6 +1214,85 @@ pub fn umount(target: &str) -> i64 {
         Some((result, _, _)) => {
             resp_ring_consume(16);
             fs_reply_val(result)
+        }
+        None => -1,
+    }
+}
+
+/// `rights_drop(keep_mask, subtree)`: riduce i propri diritti sul canale
+/// verso userfs (Fase 17, self-restriction only). Solo shrink: il server fa
+/// AND con la mask corrente; il subtree puo' solo restringersi (widen =
+/// -1, nessun cambio). `subtree=None` = solo-ops. Ritorna 0 o -1.
+/// Irrevocabile per disegno (nessun GRANT: i canali non sono trasferibili).
+#[inline]
+pub fn rights_drop(keep_mask: u32, subtree: Option<&str>) -> i64 {
+    if !fs_init() || fs_async_pending() {
+        return -1;
+    }
+    let sub_bytes: &[u8] = match subtree {
+        Some(s) => s.as_bytes(),
+        None => &[],
+    };
+    if sub_bytes.len() > 256 {
+        return -1;
+    }
+    if !req_ring_write(
+        R_RIGHTS_DROP,
+        keep_mask as u64,
+        sub_bytes.len() as u64,
+        sub_bytes,
+    ) {
+        return -1;
+    }
+    match fs_notify_result(FS_NOTIFY, || {
+        req_ring_write(
+            R_RIGHTS_DROP,
+            keep_mask as u64,
+            sub_bytes.len() as u64,
+            sub_bytes,
+        )
+    }) {
+        Some((result, _, _)) => {
+            resp_ring_consume(16);
+            fs_reply_val(result)
+        }
+        None => -1,
+    }
+}
+
+/// `rights_get(buf)`: legge i propri diritti (Fase 17). Scrive il subtree
+/// normalizzato + NUL in `buf` (root = solo NUL) e ritorna la mask ops
+/// (0..=RIGHTS_ALL) o -1 su errore. Dimensionare `buf` ≥ 257.
+#[inline]
+pub fn rights_get(buf: &mut [u8]) -> i64 {
+    if buf.is_empty() {
+        return -1;
+    }
+    if !fs_init() || fs_async_pending() {
+        return -1;
+    }
+    if !req_ring_write(R_RIGHTS_GET, 0, 0, &[]) {
+        return -1;
+    }
+    match fs_notify_result(FS_NOTIFY, || req_ring_write(R_RIGHTS_GET, 0, 0, &[])) {
+        Some((result, w1, payload_len)) => {
+            let ops = fs_reply_val(result);
+            // Leggi tutto il payload in uno stack buffer (subtree ≤ 256 dal
+            // server): un solo consumo 16+len, mai disallineamenti.
+            let mut tmp = [0u8; 256];
+            let take = payload_len.min(256);
+            if take > 0 {
+                resp_ring_read_payload(&mut tmp, take);
+            } else {
+                resp_ring_consume(16);
+            }
+            if ops < 0 {
+                return -1;
+            }
+            let n = (w1 as usize).min(take).min(buf.len() - 1);
+            buf[..n].copy_from_slice(&tmp[..n]);
+            buf[n] = 0;
+            ops
         }
         None => -1,
     }

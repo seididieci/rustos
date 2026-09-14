@@ -669,10 +669,50 @@ rustos/
         dopo restart coperto solo via drop+re-resolve per nome (stesso nome).
   - Verifica: testfs 5/5, testfat 6/6, usertests 34/34 (x2), shell 3/3,
         zero FAIL/PANIC/FAULT.
+- [x] Fase 17: diritti per-canale lato server (capability su IPC)
   - Motivazione: oggi un `Channel` e' tutto-o-niente (chi ha l'id manda
     qualunque cosa). Il passo verso IPC a capability: diritti attaccati al
     canale, solo in riduzione, senza kernel (userfs conosce gia' ogni peer
     dal canale).
+  - [x] 17.0 Protocollo `R_*` centralizzato in `syscall-numbers` (come i
+        `DISK_*` in 16c: prima duplicati in libr/userfs/userdisk) + nuovi tag
+        `R_RIGHTS_DROP` (0x18) / `R_RIGHTS_GET` (0x19) e bit `RIGHTS_*`
+        (OPEN/READ/WRITE/READDIR/MKDIR/MOUNT/UMOUNT, ALL=0x7F, niente bit
+        CLOSE: chiudere rilascia stato, sempre consentito); `libr` riesporta.
+  - [x] 17.1 userfs: tabella `chan → {ops, subtree}` (entry assente =
+        `{ALL, root}`, zero alloc); check ops CENTRALE dopo validazione frame
+        (a diniego consuma 20+expect + ERR, mai map_in/send — vale anche per il
+        WRITE remoto); check subtree alle op con path (OPEN/MKDIR/READDIR +
+        MOUNT/UMOUNT-target: estensione ragionata del piano, gli fd restano
+        capability pure); DROP (solo shrink AND, widen = nessun cambio,
+        subtree vuoto = solo-ops, "/" esplicita da /fat = widen rifiutato) +
+        GET self-written `[ops:8][sublen:8][subtree]`; CLOSE/DROP/GET sempre
+        consentiti; FS_REGISTER non gatato (handshake server-to-server);
+        purge su EXIT_NOTIFY (diritti effimeri, limite dichiarato).
+  - [x] 17.2 libr: `rights_drop(mask, Option<subtree>)` / `rights_get(buf)`
+        (pattern mkdir + lettura payload intera in stack buffer, mai
+        disallineamenti; retry NOHANDSHAKE gratis via `fs_notify_result`).
+  - [x] 17.3 Test t34 DIRETTO sul canale di usertests (niente helper: la
+        semantica e' "riduco i MIEI diritti"), PER ULTIMO (drop irrevocabili):
+        GET default ALL+root, baseline write+read, drop WRITE (write -1/read
+        ok), drop MOUNT+subtree /fat (mount -1, open fuori -1, open dentro +
+        read + readdir dentro ok, readdir fuori -1, ogni rifiuto seguito da
+        op valida = nessun disallineamento ring), widen a root rifiutato +
+        GET conferma. Suite → 35/35.
+  - [x] 17.4 Docs: AGENTS (questa voce), ADR-0014, libro (09/11).
+  - Bug trovati (grosso, boot): il kernel ingrossato dai binari embedded ha
+        spinto il `.bss` (`pit::TICKS` a 0x200320, `_kernel_end` a 0x201000)
+        oltre i 2 MiB della boot map → triple fault pre-IDT al primo print
+        con timestamp, ZERO output. Fix: boot map a 8 MiB (PD[1..3] large
+        page in `boot_tables.rs`, `BOOT_MAP_LIMIT`) + guard fail-loud a inizio
+        `rust_main` (`_kernel_end` vs limite, raw serial senza TICKS + `hlt`,
+        mai piu' morte silenziosa).
+  - Limiti dichiarati (invariati): diritti effimeri (restart userfs =
+        re-handshake full); niente policy per-identita' (serve il kernel:
+        fase channel-rights); niente revoca selettiva (solo per-morte);
+        niente GRANT (canali non trasferibili).
+  - Verifica: testfs 5/5, testfat 6/6, usertests 35/35 (x2), shell 3/3,
+        zero FAIL/PANIC/FAULT.
 - [ ] Fase 18: Shell + utility utente — in backlog (era 17, slittata per la
       nuova 17; shell interattiva esiste; restano utility "utente"
       aggiuntive). Da rivedere/ridimensionare quando ripresa.
@@ -840,9 +880,9 @@ timeout 60 ./run.sh > /tmp/boot.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 6/6
-#   [usertests] PASS 33/33
+#   [usertests] PASS 35/35
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 6/6|\[usertests\] PASS 33/33' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 6/6|\[usertests\] PASS 35/35' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 

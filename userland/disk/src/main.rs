@@ -252,8 +252,8 @@ fn node_read(
 /// Tag IPC FS (devono combaciare con userfs).
 const FS_BUF_REG: u64 = 0x31;
 const FS_REGISTER: u64 = 0x30;
-/// Tag frame nel request ring (come libr).
-const R_REGISTER: u32 = 0x30;
+/// Tag frame nel request ring (single source in `syscall-numbers`, Fase 17).
+use libr::R_REGISTER;
 
 /// Scrive un request frame `[tag:4][w0:8][w1:8][payload]` nel ring FS proprio
 /// (a FS_REQ_VA). Ritorna false se non c'e' spazio (il chiamante riprova).

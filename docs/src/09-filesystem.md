@@ -192,6 +192,7 @@ usertests 17/17, shell 3/3.
 16   Disk driver in userspace (userdisk + userfs senza ATA)        [x]
 16b  Mount/umount espliciti (tabella Vec<FsMount>, R_MOUNT/R_UMOUNT) [x]
 16c  Resolve nome→handle lato driver (DISK_RESOLVE, single source)   [x]
+17   Diritti per-canale lato server ([ADR-0014](../adr/0014-channel-rights-serverside.md): tabella chan→{ops,subtree}, DROP solo-shrink + GET, fd capability pure) [x]
 ```
 
 ## File coinvolti

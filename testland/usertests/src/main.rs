@@ -1862,6 +1862,107 @@ fn t_resolve() -> bool {
     true
 }
 
+/// t34 — diritti per-canale lato server (Fase 17, self-restriction).
+/// Diretto sul canale di usertests (nessun helper: la semantica e' proprio
+/// "riduco i MIEI diritti"). ESEGUITO PER ULTIMO: i drop sono irrevocabili.
+/// (1) GET default = ALL+root, baseline write+read ok. (2) drop WRITE:
+/// write -1, read ok (riapertura: OPEN resta). (3) drop MOUNT + subtree /fat:
+/// mount -1, open fuori -1, open dentro + read + readdir dentro ok, readdir
+/// fuori -1 (ogni rifiuto e' seguito da un'op valida: nessun disallineamento
+/// ring). (4) widen a root rifiutato, GET conferma i diritti invariati.
+fn t_rights() -> bool {
+    drain_stray();
+    // 1. Default {ALL, root}: GET ritorna ALL, subtree vuoto (= root).
+    let mut sb = [0u8; 32];
+    if libr::rights_get(&mut sb) != libr::RIGHTS_ALL as i64 || sb[0] != 0 {
+        println!("[usertests] t34: GET default non ALL+root");
+        return false;
+    }
+    let fd = libr::open("/t34.txt", 0);
+    if fd < 0 {
+        println!("[usertests] t34: open baseline FAILED");
+        return false;
+    }
+    if libr::write_fs(fd, b"abcdef", 6) != 6 {
+        println!("[usertests] t34: write baseline FAILED");
+        let _ = libr::close(fd);
+        return false;
+    }
+    let _ = libr::close(fd);
+    // 2. Drop solo-ops (WRITE via, resto invariato): write -1, read ok.
+    if libr::rights_drop(libr::RIGHTS_ALL & !libr::RIGHTS_WRITE, None) != 0 {
+        println!("[usertests] t34: rights_drop WRITE FAILED");
+        return false;
+    }
+    let fd = libr::open("/t34.txt", 0);
+    if fd < 0 {
+        println!("[usertests] t34: reopen dopo drop FAILED");
+        return false;
+    }
+    if libr::write_fs(fd, b"x", 1) >= 0 {
+        println!("[usertests] t34: write accettata dopo drop?!");
+        let _ = libr::close(fd);
+        return false;
+    }
+    let mut rb = [0u8; 8];
+    if libr::read_fs(fd, &mut rb, 6) != 6 || rb[..6] != *b"abcdef" {
+        println!("[usertests] t34: read dopo drop FAILED/corrotto");
+        let _ = libr::close(fd);
+        return false;
+    }
+    let _ = libr::close(fd);
+    // 3. Drop MOUNT + subtree /fat.
+    if libr::rights_drop(
+        libr::RIGHTS_ALL & !libr::RIGHTS_WRITE & !libr::RIGHTS_MOUNT,
+        Some("/fat"),
+    ) != 0
+    {
+        println!("[usertests] t34: rights_drop MOUNT+/fat FAILED");
+        return false;
+    }
+    if libr::mount("/dev/sda", "/mnt") == 0 {
+        println!("[usertests] t34: mount accettato senza bit?!");
+        return false;
+    }
+    if libr::open("/hello.txt", 0) >= 0 {
+        println!("[usertests] t34: open fuori subtree accettato?!");
+        return false;
+    }
+    let fd = libr::open("/fat/HELLO.TXT", 0);
+    if fd < 0 {
+        println!("[usertests] t34: open dentro subtree FAILED");
+        return false;
+    }
+    let mut hb = [0u8; 32];
+    let n = t33_read_all(fd, &mut hb);
+    let _ = libr::close(fd);
+    if n != FAT_HELLO.len() || hb[..FAT_HELLO.len()] != *FAT_HELLO {
+        println!("[usertests] t34: /fat/HELLO.TXT corrotto");
+        return false;
+    }
+    let mut eb = [0u8; 256];
+    if libr::readdir("/fat", &mut eb, 256) < 0 {
+        println!("[usertests] t34: readdir dentro subtree FAILED");
+        return false;
+    }
+    if libr::readdir("/", &mut eb, 256) != -1 {
+        println!("[usertests] t34: readdir fuori subtree accettato?!");
+        return false;
+    }
+    // 4. Widen a root rifiutato (da /fat): -1 e diritti invariati.
+    if libr::rights_drop(libr::RIGHTS_ALL, Some("/")) != -1 {
+        println!("[usertests] t34: widen a root accettato?!");
+        return false;
+    }
+    let mut sb2 = [0u8; 32];
+    let want = (libr::RIGHTS_ALL & !libr::RIGHTS_WRITE & !libr::RIGHTS_MOUNT) as i64;
+    if libr::rights_get(&mut sb2) != want || sb2[..3] != *b"fat" || sb2[3] != 0 {
+        println!("[usertests] t34: GET finale non mask+/fat");
+        return false;
+    }
+    true
+}
+
 /// t32 — disk driver in userspace (Fase 16).
 /// (A) Baseline: /dev/sda leggibile raw con firma boot. (B) Kill userdisk
 /// (pid via `service_pid`, non figlio nostro) e attesa init-restart come
@@ -1969,6 +2070,8 @@ pub extern "C" fn _start() -> ! {
     report(&mut total, &mut ok, "t32 disk kill + init restart", t_disk());
     report(&mut total, &mut ok, "t33 mount/umount espliciti", t_mount());
     report(&mut total, &mut ok, "t35 resolve nome->handle lato driver", t_resolve());
+    // t34 per ULTIMO: i drop sono irrevocabili sul canale di usertests.
+    report(&mut total, &mut ok, "t34 diritti per-canale lato server", t_rights());
 
     println!("[usertests] SUMMARY {}/{} PASS", ok, total);
     let _ = libr::send(libr::CHANNEL_PARENT, 0x7E, ok as u64, 0); // init: test finito

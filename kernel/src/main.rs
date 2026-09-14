@@ -35,6 +35,32 @@ use x86_64::instructions::hlt;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_main(boot_info_phys: u64) -> ! {
+    // Guard mappa di boot (PRIMA di qualunque print): l'identity map iniziale
+    // copre [0, BOOT_MAP_LIMIT) e i print con timestamp leggono `pit::TICKS`
+    // (.bss). Se il kernel — ingrossato dai binari embedded — supera il tetto,
+    // il primo print farebbe triple fault a ZERO output (Fase 17: .bss oltre
+    // i 2 MiB). Fail loud qui con raw serial (porta diretta, niente TICKS,
+    // niente heap, niente format): solo immediati e indirizzo linker.
+    {
+        unsafe extern "C" {
+            static _kernel_end: u8;
+        }
+        let kend = unsafe { &_kernel_end as *const u8 as u64 };
+        if kend >= boot_tables::BOOT_MAP_LIMIT {
+            const MSG: &[u8] = b"BOOT MAP TOO SMALL: kernel exceeds boot identity map\r\n";
+            let mut i = 0usize;
+            while i < MSG.len() {
+                unsafe {
+                    core::arch::asm!("out dx, al", in("dx") 0x3F8u16, in("al") MSG[i]);
+                }
+                i += 1;
+            }
+            loop {
+                unsafe { core::arch::asm!("hlt") };
+            }
+        }
+    }
+
     gdt::init();
     interrupts::init();
     pic::init();
