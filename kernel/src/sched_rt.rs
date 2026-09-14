@@ -184,7 +184,7 @@ pub fn spawn(name: &'static str, priority: Priority, entry: crate::process::Proc
     let sched = guard.as_mut().expect("scheduler non inizializzato");
 
     let id = sched.alloc_pid()?;
-    let process = match Process::create(id, name, priority, entry, parent, parent_chan, &[]) {
+    let process = match Process::create(name, priority, entry, parent, parent_chan, &[]) {
         Some(p) => p,
         None => {
             sched.release_pid(id);
@@ -216,7 +216,7 @@ pub unsafe fn create_user(
 
     let id = sched.alloc_pid()?;
     let process = match unsafe {
-        Process::create_user(id, name, priority, code_phys, code_frames, entry, parent, parent_chan, io_ranges)
+        Process::create_user(name, priority, code_phys, code_frames, entry, parent, parent_chan, io_ranges)
     } {
         Some(p) => p,
         None => {
@@ -352,66 +352,14 @@ pub fn on_tick() {
     switch_to(prev, next, guard);
 }
 
-pub fn block_current() {
-    if !INITIALIZED.load(Ordering::Acquire) {
-        return;
-    }
-
-    let mut guard = SCHED.lock();
-    let action: Option<(Option<usize>, usize)> = {
-        let sched = guard.as_mut().expect("scheduler non inizializzato");
-        let Some(prev) = sched.current else {
-            return;
-        };
-
-        if sched.processes[prev].pending_wake {
-            sched.processes[prev].pending_wake = false;
-            None
-        } else {
-            sched.processes[prev].state = State::Blocked;
-            sched.clear_ready(prev);
-            match sched.pick_next() {
-                Some(n) if n != prev => Some((Some(prev), n)),
-                _ => {
-                    sched.processes[prev].state = State::Ready;
-                    sched.set_ready(prev);
-                    None
-                }
-            }
-        }
-    };
-    if let Some((prev, next)) = action {
-        switch_to(prev, next, guard);
-    }
-}
-
-pub fn wake(id: usize) {
-    if !INITIALIZED.load(Ordering::Acquire) {
-        return;
-    }
-    let mut guard = SCHED.lock();
-    if let Some(sched) = guard.as_mut() {
-        if id < sched.processes.len() {
-            let p = &mut sched.processes[id];
-            if p.state == State::Blocked {
-                p.state = State::Ready;
-                sched.set_ready(id);
-            } else {
-                p.pending_wake = true;
-            }
-        }
-    }
-}
-
 /// Sveglia un driver su IRQ accodandogli una notify (Fase 15, bridge
-/// interrupt→IPC): un `wake()` da solo non basta — se il processo dorme in
-/// `recv()` con coda vuota, il wake lo rende Ready ma al primo giro, non
-/// trovando messaggi, si ri-blocca senza mai tornare in userspace (il dato
-/// hardware resterebbe unread). Con un messaggio in coda, `recv()` ritorna e
-/// il driver drena l'hardware. Fire-and-forget: se la coda e' piena la notify
-/// si perde (il drain successivo recupera comunque — il driver drena SEMPRE
-/// l'hardware a ogni giro, anche su wake spurio). Sicuro da IRQ (solo lock
-/// SCHED, come `wake`).
+/// interrupt→IPC): svegliare e basta non basta — se il processo dorme in
+/// `recv()` con coda vuota, tornato Ready al primo giro, non trovando
+/// messaggi, si ri-blocca senza mai tornare in userspace (il dato hardware
+/// resterebbe unread). Con un messaggio in coda, `recv()` ritorna e il driver
+/// drena l'hardware. Fire-and-forget: se la coda e' piena la notify si perde
+/// (il drain successivo recupera comunque — il driver drena SEMPRE l'hardware
+/// a ogni giro, anche su wake spurio). Sicuro da IRQ (solo lock SCHED).
 pub fn notify_irq(id: usize, tag: u64) {
     if !INITIALIZED.load(Ordering::Acquire) {
         return;
@@ -714,7 +662,6 @@ pub fn ipc_reply(tag: u64, w0: u64, w1: u64) -> IpcResult {
     ok_result()
 }
 
-#[allow(dead_code)]
 pub fn process_of(target: usize) -> Option<*mut Process> {
     let guard = SCHED.lock();
     let sched = guard.as_ref()?;
@@ -805,7 +752,7 @@ pub fn kill(pid: usize, code: i64) -> bool {
         return false;
     }
     if p.cr3 == crate::vmm_user::kernel_cr3() {
-        return false; // processo kernel (idle, keyboard)
+        return false; // processo kernel (solo idle oltre init)
     }
     let name = p.name;
     sched.terminate(pid, code);

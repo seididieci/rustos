@@ -1,4 +1,5 @@
-//! DEBUG FACILITY temporanea (ADR-0005 §3): migra al console server userspace in Fase 8.
+//! DEBUG FACILITY intenzionale (ADR-0005 §3): resta nel kernel, la console
+//! vera vive nel console server userspace.
 
 use core::fmt;
 use spin::Mutex;
@@ -12,6 +13,7 @@ pub static WRITER: Mutex<Writer> = Mutex::new(Writer {
     color_code: ColorCode::new(Color::LightGreen, Color::Black),
 });
 
+/// Palette VGA completa (usate solo alcune: resto per debug futuro).
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]

@@ -85,7 +85,7 @@ rustos/
 ├── kernel/         # Il kernel (src/, boot.asm, linker.ld con nota PVH)
 ├── libs/libr/      # Libreria di sistema condivisa (userland + testland)
 ├── syscall-numbers/# Costanti syscall + costanti condivise (kernel+user)
-├── scripts/        # Build userland/testland, mkfat, mkimage, ...
+├── scripts/        # Build userland/testland, mkfat, ...
 ├── run.sh          # Build userland + testland + kernel + QEMU (PVH)
 ├── userland/       # Servizi utente: init, console, fs, devfs, shell, uptime
 ├── testland/       # Test suite + repro + demo (usertests, testfs, testfat, ...)

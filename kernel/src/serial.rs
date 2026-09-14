@@ -1,4 +1,5 @@
-//! DEBUG FACILITY temporanea (ADR-0005 §3): migra al console server userspace in Fase 8.
+//! DEBUG FACILITY intenzionale (ADR-0005 §3): resta nel kernel, la console
+//! vera vive nel console server userspace.
 
 use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};

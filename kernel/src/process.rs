@@ -121,22 +121,15 @@ pub type ProcessFn = unsafe extern "C" fn() -> !;
 pub const MAX_NOTIFY_PEERS: usize = 31;
 
 pub struct Process {
-    #[allow(dead_code)]
-    pub id: usize,
     pub name: &'static str,
     /// Priorita' BASE del processo (0 = massima, 31 = minima). Immutabile.
     pub priority: crate::sched::Priority,
     pub state: State,
     /// Processo padre (chi ha creato questo processo via `spawn`). `None` per i
-    /// processi creati direttamente dal kernel (es. init, idle, keyboard).
-    #[allow(dead_code)]
+    /// processi creati direttamente dal kernel (es. init, idle).
     pub parent: Option<usize>,
     /// Indirizzo base (basso) dello stack kernel, per un futuro rilascio.
-    #[allow(dead_code)]
     pub stack_base: u64,
-    /// Indirizzo alto dello stack kernel.
-    #[allow(dead_code)]
-    pub stack_top: u64,
     /// CR3 (page table) del processo. Per i processi kernel e' la CR3 di base.
     pub cr3: u64,
     /// Top dello stack kernel usato come RSP0 del TSS quando il processo
@@ -158,7 +151,7 @@ pub struct Process {
     pub msg_queue: MsgQueue,
     /// Canale di nascita verso il parent (ADR-0008): il figlio lo riceve alla
     /// creazione e lo usa come "canale 0" per parlare col parent. `None` per i
-    /// processi kernel (init/idle/keyboard) che non hanno un parent user.
+    /// processi kernel (init/idle) che non hanno un parent user.
     pub parent_chan: Option<usize>,
     /// Il canale del messaggio che questo processo sta correntemente
     /// elaborando (impostato da `recv`): la prossima `reply` risponde su quel
@@ -202,7 +195,6 @@ impl Process {
     /// processi, radicato in init), `parent_chan` = canale di nascita verso il
     /// creatore (`None` per init/idle/... creati dal kernel).
     pub fn create(
-        id: usize,
         name: &'static str,
         priority: crate::sched::Priority,
         entry: ProcessFn,
@@ -221,13 +213,11 @@ impl Process {
         let tss_sel = crate::gdt::selectors().tss_selector(tss_slot);
 
         Some(Process {
-            id,
             name,
             priority,
             state: State::Ready,
             parent,
             stack_base,
-            stack_top,
             cr3: crate::vmm_user::kernel_cr3(),
             kernel_stack_top: stack_top,
             saved,
@@ -261,7 +251,6 @@ impl Process {
     /// `parent` e' il processo che richiede la creazione (`None` se dal kernel).
     /// `io_ranges` = porte I/O (inclusive) consentite a ring 3 (TSS ADR-0006).
     pub unsafe fn create_user(
-        id: usize,
         name: &'static str,
         priority: crate::sched::Priority,
         code_phys: u64,
@@ -291,13 +280,11 @@ impl Process {
         let tss_sel = crate::gdt::selectors().tss_selector(tss_slot);
 
         Some(Process {
-            id,
             name,
             priority,
             state: State::Ready,
             parent,
             stack_base,
-            stack_top,
             cr3,
             kernel_stack_top: stack_top,
             saved,

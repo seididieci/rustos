@@ -10,10 +10,23 @@ fn main() {
 
     println!("cargo:rerun-if-changed={}", boot_src.display());
 
-    // Il binario user embeddato (user_binary.rs) viene rigenerato da
-    // scripts/build-userland.sh: se cambia il kernel va ricompilato.
-    let user_bin = manifest_dir.join("../userland/build/userdemo.bin");
-    println!("cargo:rerun-if-changed={}", user_bin.display());
+    // I binari user embeddati (user_binary.rs) vengono rigenerati da
+    // scripts/build-userland.sh e scripts/build-tests.sh: se cambiano il
+    // kernel va ricompilato. Le dir (add/remove di un .bin) + ogni .bin
+    // presente (cambio contenuto): senza i per-file, modificare un binario
+    // esistente non invaliderebbe la build (stale silenzioso, osservato).
+    for dir in ["../userland/build", "../testland/build"] {
+        let d = manifest_dir.join(dir);
+        println!("cargo:rerun-if-changed={}", d.display());
+        if let Ok(rd) = std::fs::read_dir(&d) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().map_or(false, |x| x == "bin") {
+                    println!("cargo:rerun-if-changed={}", p.display());
+                }
+            }
+        }
+    }
 
     let status = Command::new("nasm")
         .args(["-f", "elf64"])

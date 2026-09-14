@@ -7,13 +7,6 @@
 //!
 //! Nota: kernel resta identity map (bassa); il higher-half e' rimandato a una
 //! fase futura (ADR-0005 / docs/03-memory.md).
-//!
-//! Le funzioni di bordo (indici 4-livelli, allocazione/clonazione page table)
-//! sono infrastruttura destinata alle sotto-fasi 6.2/6.4 (entry ring 3 e
-//! caricamento binario user): per ora restano riferite solo in parte, quindi
-//! si sopprime il warning dead_code senza disattivare i controlli generali.
-
-#![allow(dead_code)]
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -29,9 +22,6 @@ const PAGE_SIZE: u64 = 0x1000;
 
 /// Indirizzo virtuale del codice user (inizio della regione user).
 pub const USER_CODE: u64 = USER_BASE;
-
-/// Indirizzo virtuale del frame buffer VGA mappato nel console server.
-pub const USER_VGA: u64 = USER_BASE + 0x100_000;
 
 /// Indirizzo virtuale della finestra request ring del processo corrente.
 pub const USER_FS_BUFFER: u64 = USER_BASE + 0x200_000;

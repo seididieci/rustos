@@ -203,7 +203,6 @@ pub fn alloc_contiguous(n: usize) -> Option<u64> {
     None
 }
 
-#[allow(dead_code)]
 pub fn free(frame: u64) {
     let _lock = LOCK.lock();
     let i = (frame / FRAME_SIZE) as usize;
@@ -228,11 +227,11 @@ pub fn free_contiguous(start: u64, count: usize) {
     FREE.fetch_add(count as u64, Ordering::Relaxed);
 }
 
-#[allow(dead_code)]
 pub fn free_frames() -> u64 {
     FREE.load(Ordering::Relaxed)
 }
 
+/// Usato solo dai selftest (`#[cfg(feature = "selftest")]` in main.rs).
 #[allow(dead_code)]
 pub fn used_frames() -> u64 {
     TOTAL.load(Ordering::Relaxed) - FREE.load(Ordering::Relaxed)

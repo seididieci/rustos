@@ -19,7 +19,6 @@ pub const CBS_BW_CAP: f64 = 0.70;
 
 #[derive(Clone, Copy, Debug)]
 pub struct CbsServer {
-    pub id: usize,
     /// Budget garantito per periodo (in tick di PIT, 1 tick = 10 ms).
     pub budget_ticks: u32,
     /// Periodo (in tick).
@@ -70,7 +69,6 @@ pub fn create(budget_ticks: u32, period_ticks: u32) -> Result<usize, ()> {
         if slot.is_none() {
             let now = crate::pit::ticks();
             *slot = Some(CbsServer {
-                id: i,
                 budget_ticks,
                 period_ticks,
                 remaining_budget: budget_ticks as i32,
@@ -105,12 +103,12 @@ pub fn attach(server_id: usize, pid: usize) -> Result<(), ()> {
     Err(())
 }
 
-/// Informazioni di debug su un server CBS.
+/// Informazioni di debug su un server CBS (bandwidth esclusa: userspace non
+/// la legge — `cbs_get_info` ritorna solo budget/period/remaining).
 pub struct CbsInfo {
     pub budget: u32,
     pub period: u32,
     pub remaining: i32,
-    pub bandwidth: f64,
 }
 
 /// Ritorna le informazioni di un server CBS (budget/period/remaining/bw).
@@ -121,7 +119,6 @@ pub fn get_info(server_id: usize) -> Option<CbsInfo> {
             budget: s.budget_ticks,
             period: s.period_ticks,
             remaining: s.remaining_budget,
-            bandwidth: s.bandwidth,
         })
     } else {
         None
