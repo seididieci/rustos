@@ -543,6 +543,9 @@ fn sys_sbrk(inc: u64) -> i64 {
 /// corrente, le mappa a `USER_FS_BUFFER` e `USER_FS_BUFFER+0x1000`, e
 /// ritorna gli indirizzi fisici via IpcResult (req_phys in rax, resp_phys
 /// in rdi). -1 su OOM o errore.
+/// Ogni chiamata da' pagine FRESCHE (Fase 16: un processo puo' allocare piu'
+/// coppie, es. userdisk FS+DISK). Il mapping e' NON-owned: il free avviene via
+/// record a teardown (`free_ring_pages`), mai double-free col walk owned.
 fn sys_ring_alloc() -> i64 {
     let cur = current_id() as usize;
     let (req_phys, resp_phys) = match crate::vmm_user::alloc_ring_pages(cur) {
@@ -557,8 +560,8 @@ fn sys_ring_alloc() -> i64 {
         return -1;
     }
     unsafe {
-        crate::vmm_user::map_user_region_owned(cr3, crate::vmm_user::USER_FS_BUFFER, req_phys, 1);
-        crate::vmm_user::map_user_region_owned(cr3, crate::vmm_user::USER_RESP_RING, resp_phys, 1);
+        crate::vmm_user::map_user_region(cr3, crate::vmm_user::USER_FS_BUFFER, req_phys, 1);
+        crate::vmm_user::map_user_region(cr3, crate::vmm_user::USER_RESP_RING, resp_phys, 1);
     }
     crate::vmm_user::flush_page(crate::vmm_user::USER_FS_BUFFER);
     crate::vmm_user::flush_page(crate::vmm_user::USER_RESP_RING);

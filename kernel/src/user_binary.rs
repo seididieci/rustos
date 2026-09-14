@@ -43,6 +43,7 @@ mod fs_bin { user_binary!(userfs_phys, userfs_frames, "/../userland/build/userfs
 mod testfs_bin { user_binary!(usertestfs_phys, usertestfs_frames, "/../testland/build/usertestfs.bin"); }
 mod testfat_bin { user_binary!(usertestfat_phys, usertestfat_frames, "/../testland/build/usertestfat.bin"); }
 mod devfs_bin { user_binary!(userdevfs_phys, userdevfs_frames, "/../userland/build/userdevfs.bin"); }
+mod disk_bin { user_binary!(userdisk_phys, userdisk_frames, "/../userland/build/userdisk.bin"); }
 mod kbd_bin { user_binary!(userkbd_phys, userkbd_frames, "/../userland/build/userkbd.bin"); }
 mod tty_bin { user_binary!(usertty_phys, usertty_frames, "/../userland/build/usertty.bin"); }
 mod shell_bin { user_binary!(usershell_phys, usershell_frames, "/../userland/build/usershell.bin"); }
@@ -61,6 +62,7 @@ use fs_bin::{userfs_frames, userfs_phys};
 use testfs_bin::{usertestfs_frames, usertestfs_phys};
 use testfat_bin::{usertestfat_frames, usertestfat_phys};
 use devfs_bin::{userdevfs_frames, userdevfs_phys};
+use disk_bin::{userdisk_frames, userdisk_phys};
 use kbd_bin::{userkbd_frames, userkbd_phys};
 use tty_bin::{usertty_frames, usertty_phys};
 use shell_bin::{usershell_frames, usershell_phys};
@@ -141,14 +143,21 @@ struct NamedBinary {
     phys: fn() -> u64,
     frames: fn() -> usize,
     /// Porte I/O (inclusive) consentite a ring 3 per questo processo (TSS
-    /// per-processo). `&[]` = nessuna porta. Es. `userfs` → ATA PIO.
+    /// per-processo). `&[]` = nessuna porta. Es. `userdisk` → ATA PIO.
     io_ranges: &'static [(u16, u16)],
     /// Priorita' di scheduling del processo.
     priority: crate::sched::Priority,
 }
 
-/// Porte del controller ATA PIO primario (drive master) per il fs server.
-const ATA_PIO_RANGES: &[(u16, u16)] = &[(0x1F0, 0x1F7), (0x3F6, 0x3F7)];
+/// Porte dei controller ATA PIO primario + secondario per il disk driver
+/// (Fase 16, `userdisk`: enumerazione master/slave su entrambi i canali).
+/// `userfs` non tocca piu' porte (Fase 16.2): qualunque `in/out` li' e' #GP.
+const ATA_PIO_RANGES: &[(u16, u16)] = &[
+    (0x1F0, 0x1F7),
+    (0x3F6, 0x3F7),
+    (0x170, 0x177),
+    (0x376, 0x377),
+];
 
 /// Porte CRTC del cursore hardware VGA per il console server (terminale).
 const VGA_CURSOR_RANGES: &[(u16, u16)] = &[(0x3D4, 0x3D5)];
@@ -166,10 +175,11 @@ const NAMED_BINARIES: &[NamedBinary] = &[
     NamedBinary { name: "userconsole", phys: userconsole_phys, frames: userconsole_frames, io_ranges: VGA_CURSOR_RANGES, priority: Priority::Normal },
     NamedBinary { name: "userdemo",    phys: userdemo_phys,    frames: userdemo_frames,    io_ranges: &[], priority: Priority::Low },
     NamedBinary { name: "useruptime",  phys: useruptime_phys,  frames: useruptime_frames,  io_ranges: &[], priority: Priority::Low },
-    NamedBinary { name: "userfs",      phys: userfs_phys,      frames: userfs_frames,      io_ranges: ATA_PIO_RANGES, priority: Priority::Normal },
+    NamedBinary { name: "userfs",      phys: userfs_phys,      frames: userfs_frames,      io_ranges: &[], priority: Priority::Normal },
     NamedBinary { name: "usertestfs",  phys: usertestfs_phys,  frames: usertestfs_frames,  io_ranges: &[], priority: Priority::Normal },
     NamedBinary { name: "usertestfat", phys: usertestfat_phys, frames: usertestfat_frames, io_ranges: &[], priority: Priority::Normal },
     NamedBinary { name: "userdevfs",   phys: userdevfs_phys,   frames: userdevfs_frames,   io_ranges: &[], priority: Priority::Normal },
+    NamedBinary { name: "userdisk",    phys: userdisk_phys,    frames: userdisk_frames,    io_ranges: ATA_PIO_RANGES, priority: Priority::Normal },
     NamedBinary { name: "userkbd",     phys: userkbd_phys,     frames: userkbd_frames,     io_ranges: KBD_PS2_RANGES, priority: Priority::Normal },
     NamedBinary { name: "usertty",     phys: usertty_phys,     frames: usertty_frames,     io_ranges: &[], priority: Priority::Normal },
     NamedBinary { name: "usershell",   phys: usershell_phys,   frames: usershell_frames,   io_ranges: &[], priority: Priority::Normal },
