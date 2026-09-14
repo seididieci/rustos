@@ -112,7 +112,8 @@ rustos/
 | 14 | Cleanup processi: exit/kill, notifica al parent, slot a generazioni (ADR-0010) | ✅ Completata |
 | 15 | Keyboard + Terminal server in userspace (sgancio tastiera/VGA) | ✅ Completata |
 | 16 | Disk/ATA driver server in userspace (sgancio ATA/FS) | ✅ Completata |
-| 17 | Shell + utility utente | ⏳ Pianificata |
+| 17 | Diritti per-canale lato server (capability su IPC) | ⏳ Piano |
+| 18 | Shell + utility utente | ⏳ Pianificata |
 
 ## Risorse
 
