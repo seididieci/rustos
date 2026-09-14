@@ -1796,6 +1796,72 @@ fn t_mount() -> bool {
     true
 }
 
+/// t35 — resolve nome→handle lato driver (Fase 16c).
+/// Nomi ignoti (ben formati ma assenti, o malformati) rifiutati SENZA cambio
+/// di stato (nessuna spec fantasma: l'umount successivo deve fallire);
+/// replace-con-bad-source su target attivo non distrugge il buon mount;
+/// mount valido ancora operativo dopo i rifiuti (tabella intatta).
+/// (t34 resta libero per la Fase 17.)
+fn t_resolve() -> bool {
+    drain_stray();
+    // 1. Nome ben formato ma assente (fat.img non partizionata: niente sda1).
+    if libr::mount("/dev/sda1", "/phantom") == 0 {
+        println!("[usertests] t35: mount sda1 assente accettato?!");
+        return false;
+    }
+    // Nessuna spec fantasma: umount deve fallire.
+    if libr::umount("/phantom") == 0 {
+        println!("[usertests] t35: spec fantasma dopo mount fallito?!");
+        return false;
+    }
+    // 2. Nome malformato/ignoto: stesso contratto.
+    if libr::mount("/dev/zzz", "/phantom2") == 0 {
+        println!("[usertests] t35: mount nome ignoto accettato?!");
+        return false;
+    }
+    if libr::umount("/phantom2") == 0 {
+        println!("[usertests] t35: spec fantasma (nome ignoto)?!");
+        return false;
+    }
+    // 3. Mount valido ancora operativo dopo i rifiuti (tabella intatta).
+    if libr::mount("/dev/sda", "/mnt") < 0 {
+        println!("[usertests] t35: mount /dev/sda /mnt FAILED");
+        return false;
+    }
+    let fd = libr::open("/mnt/HELLO.TXT", 0);
+    if fd < 0 {
+        println!("[usertests] t35: open /mnt/HELLO.TXT FAILED");
+        let _ = libr::umount("/mnt");
+        return false;
+    }
+    let mut hb = [0u8; 32];
+    let n = t33_read_all(fd, &mut hb);
+    let _ = libr::close(fd);
+    if n != FAT_HELLO.len() || hb[..FAT_HELLO.len()] != *FAT_HELLO {
+        println!("[usertests] t35: /mnt/HELLO.TXT corrotto");
+        let _ = libr::umount("/mnt");
+        return false;
+    }
+    // 4. Replace con bad source non distrugge il buon mount.
+    if libr::mount("/dev/zzz", "/mnt") == 0 {
+        println!("[usertests] t35: replace con bad source accettato?!");
+        let _ = libr::umount("/mnt");
+        return false;
+    }
+    let fd = libr::open("/mnt/HELLO.TXT", 0);
+    if fd < 0 {
+        println!("[usertests] t35: buon mount distrutto dal bad replace?!");
+        let _ = libr::umount("/mnt");
+        return false;
+    }
+    let _ = libr::close(fd);
+    if libr::umount("/mnt") < 0 {
+        println!("[usertests] t35: umount /mnt FAILED");
+        return false;
+    }
+    true
+}
+
 /// t32 — disk driver in userspace (Fase 16).
 /// (A) Baseline: /dev/sda leggibile raw con firma boot. (B) Kill userdisk
 /// (pid via `service_pid`, non figlio nostro) e attesa init-restart come
@@ -1902,6 +1968,7 @@ pub extern "C" fn _start() -> ! {
     report(&mut total, &mut ok, "t31 kbd/tty presence", t_kbd_presence());
     report(&mut total, &mut ok, "t32 disk kill + init restart", t_disk());
     report(&mut total, &mut ok, "t33 mount/umount espliciti", t_mount());
+    report(&mut total, &mut ok, "t35 resolve nome->handle lato driver", t_resolve());
 
     println!("[usertests] SUMMARY {}/{} PASS", ok, total);
     let _ = libr::send(libr::CHANNEL_PARENT, 0x7E, ok as u64, 0); // init: test finito

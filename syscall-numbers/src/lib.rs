@@ -75,6 +75,24 @@ pub const FS_NOTIFY: u64 = 0x32;
 /// (Fase 14, ADR-0010). Non e' una richiesta: il parent non deve rispondere.
 pub const EXIT_NOTIFY: u64 = 0x7C;
 
+// ── Protocollo DISK_* (data-plane userfs→userdisk, Fase 16) ───────────────
+// Single source of truth dei tag (Fase 16c): prima duplicati in
+// `userland/fs/src/ipc_disk.rs` e `userland/disk/src/main.rs`. I tag viaggiano
+// nei registri IPC; i payload (nomi, settori) nei ring dedicati.
+//
+// Canale diretto userfs→userdisk (service_lookup(Disk)):
+// - HELLO/OPEN/CLOSE: solo registri, niente frame.
+// - READ: un settore per chiamata, frame `[512:8][0:8][settore]` nel ring DISK_RESP.
+// - RESOLVE (16c): il nome nodo ("sda", "sda1") viaggia in un frame
+//   `[namelen:8][name]` nel ring DISK_REQ; la reply porta l'handle in w0
+//   (o ERR). userdisk e' l'unico proprietario della mappa nome→handle:
+//   userfs non indovina piu' nulla dal nome.
+pub const DISK_HELLO: u64 = 0x50;
+pub const DISK_OPEN: u64 = 0x51;
+pub const DISK_READ: u64 = 0x52;
+pub const DISK_CLOSE: u64 = 0x53;
+pub const DISK_RESOLVE: u64 = 0x54;
+
 // ── Costanti condivise kernel/userland ─────────────────────────────────────
 // Pagina fisica scratch riservata dal kernel all'avvio (phys_mem::reserve):
 // usata dalla test suite per verificare `map_physical` (aliasing write/read)

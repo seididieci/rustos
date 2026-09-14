@@ -84,6 +84,7 @@ Righe di gate:
 | t31 | presenza keyboard stack userspace (Fase 15): servizi `Kbd`/`Tty` registrati + open `/dev/kbd/kbd` e `/dev/input/keyboard` (path DEV del tty). Niente digitazione reale (serve QMP/sendkey: coperta da `test-shell.py` 3/3) |
 | t32 | disk driver in userspace (Fase 16): open raw `/dev/sda` + settore 0 con firma boot 0x55AA; kill userdisk via `service_pid` → sparizione/ricomparsa (init-restart) → raw di nuovo operativo + `/fat/HELLO.TXT` leggibile via riconnessione lazy di userfs |
 | t33 | mount/umount espliciti (Fase 16b): mkdir ramfs + mount `/dev/sda`→`/mnt` + contenuto FAT + re-mount idempotente + umount busy rifiutato + umount ok (`/mnt` torna ramfs) + error paths (sorgente/target invalidi, doppio umount, umount `/`) |
+| t35 | resolve nome→handle lato driver (Fase 16c): nomi ignoti senza stato (niente spec fantasma), bad-replace innocuo, mount valido operativo |
 
 > Il CBS e' sempre attivo (lo scheduler RT e' l'unico): t18/t19 sono test
 > reali, non ci sono modalita' "vuote".

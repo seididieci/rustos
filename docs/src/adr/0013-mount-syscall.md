@@ -30,6 +30,23 @@ La "syscall" mount e' API `libr` su IPC esistente (come `open`/`read`):
   doppi mount (replace idempotente), `umount` rifiutato con fd aperti
   (EBUSY via scan `FileTable`), `/` non smontabile, fstype per sniffing
   (solo FAT32: BPB invalida = errore).
+
+## Addendum Fase 16c (2026-09-14): resolve via driver, niente parse in userfs
+
+La regola "handle dal nome" cambia proprietario: userfs non parsa piu'
+(`disk_handle` resta solo per gli open raw `/dev/sdX`, relay `DEV_*`).
+`normalize_source` e' solo sintattica (`/dev/` + singolo componente);
+l'handle si chiede a userdisk con `DISK_RESOLVE` (`apply_mount_spec` una
+volta, lazy/`reactivate` per nome a ogni riattivazione):
+
+- resolve fallito = nessun cambio di stato (mai spec fantasma, mai
+  distruggere un buon mount con un replace sbagliato — t33 "doppio umount"
+  e t35 lo blindano);
+- morte di userdisk = drop d'epoca dell'istanza (non dello spec): il prossimo
+  accesso re-risolve per nome e rimonta — fail-loud, mai shadow ramfs, mai
+  handle stale silenzioso dopo un reorder d'enumerazione;
+- lettere ancora instabili (ordine di probe): niente UUID/label/serial —
+  rimandati alla fase mount persistente (16c.3 futura).
 - Shell: builtin `mount`/`umount` (+ `help`).
 
 ## Permessi: quanto costera' (domanda 16b)
