@@ -54,19 +54,11 @@ const ERR: u64 = !0u64;
 const ERR_NOHANDSHAKE: u64 = !0u64 - 1;
 
 // ── Tag delle operazioni (nei frame del ring) ─────────────────────
-
-const R_OPEN: u32 = 0x10;
-const R_READ: u32 = 0x11;
-const R_WRITE: u32 = 0x12;
-const R_CLOSE: u32 = 0x13;
-const R_READDIR: u32 = 0x14;
-const R_MKDIR: u32 = 0x15;
-/// Monta una sorgente su un target (Fase 16b): payload "source\0target\0".
-const R_MOUNT: u32 = 0x16;
-/// Smonta un target (Fase 16b): payload "target".
-const R_UMOUNT: u32 = 0x17;
-/// Un driver registra il proprio prefix di mount.
-const R_REGISTER: u32 = 0x30;
+// Single source in `syscall-numbers` (Fase 17): include R_RIGHTS_DROP/GET.
+use libr::{
+    R_CLOSE, R_MKDIR, R_MOUNT, R_OPEN, R_READ, R_READDIR, R_REGISTER, R_UMOUNT, R_WRITE,
+    R_RIGHTS_DROP, R_RIGHTS_GET,
+};
 
 /// IPC tag: il client ha scritto nel request ring e notifica il server.
 const FS_NOTIFY: u64 = 0x32;
@@ -638,6 +630,131 @@ impl FileTable {
     }
 }
 
+// ── Diritti per-canale (Fase 17, self-restriction only) ─────────────
+// Un `Channel` e' tutto-o-niente: chi ha l'id manda qualunque cosa. Primo
+// passo verso IPC a capability, senza kernel (userfs conosce gia' ogni peer
+// dal canale): tabella `chan → {ops bitmask, subtree prefix}`, SOLO in
+// riduzione (DROP fa AND, mai widen, nessuna auth: nessuno puo' darsi
+// diritti, solo toglierseli — nessun GRANT, i canali non sono trasferibili).
+// Default (entry assente): {ALL, root} = tutto verde, zero alloc, suite
+// invariata. Purge su EXIT_NOTIFY come rings/ftable. Effimeri: restart
+// userfs = re-handshake full (limite dichiarato).
+//
+// Check su DUE livelli nel dispatch FS_NOTIFY:
+// - ops bit: CENTRALE, prima di qualunque contatto handler/driver;
+// - subtree: solo alle op con path (OPEN/MKDIR/READDIR/MOUNT-target/
+//   UMOUNT-target); gli fd restano capability pure (read/write/close non
+//   ricontrollano il path aperto).
+// CLOSE sempre consentito (rilascia stato, mai escalation: nessun bit).
+// DROP/GET sempre consentiti (gestire i propri diritti non si nega).
+// Registrazione driver (FS_REGISTER, altro IPC tag) non gatata: handshake
+// server-to-server, fuori dal modello self-restriction (limite dichiarato).
+
+/// Diritti di un canale client: mask ops + subtree normalizzato senza slash
+/// ("" = root).
+#[derive(Clone)]
+struct ChanRights {
+    ops: u32,
+    subtree: String,
+}
+
+/// Mask ops effettiva (default ALL a entry assente).
+fn rights_ops(rights: &BTreeMap<u64, ChanRights>, chan: u64) -> u32 {
+    rights.get(&chan).map_or(libr::RIGHTS_ALL, |r| r.ops)
+}
+
+/// Subtree effettivo (default root "" a entry assente).
+fn rights_subtree<'a>(rights: &'a BTreeMap<u64, ChanRights>, chan: u64) -> &'a str {
+    rights.get(&chan).map_or("", |r| r.subtree.as_str())
+}
+
+/// Normalizza subtree/path ("//fat//" → "fat", "/" o "" → "").
+fn normalize_sub(path: &str) -> String {
+    String::from(path.trim().trim_matches('/'))
+}
+
+/// true se il path normalizzato `p` e' dentro il subtree `sub` ("" = root).
+fn within_subtree(sub: &str, p: &str) -> bool {
+    sub.is_empty()
+        || p == sub
+        || (p.len() > sub.len()
+            && p.as_bytes().get(sub.len()) == Some(&b'/')
+            && p.starts_with(sub))
+}
+
+/// Bit ops richiesto dall'op_tag. None = sempre consentito (CLOSE, DROP, GET).
+fn op_bit(op_tag: u32) -> Option<u32> {
+    match op_tag {
+        R_OPEN => Some(libr::RIGHTS_OPEN),
+        R_READ => Some(libr::RIGHTS_READ),
+        R_WRITE => Some(libr::RIGHTS_WRITE),
+        R_READDIR => Some(libr::RIGHTS_READDIR),
+        R_MKDIR => Some(libr::RIGHTS_MKDIR),
+        R_MOUNT => Some(libr::RIGHTS_MOUNT),
+        R_UMOUNT => Some(libr::RIGHTS_UMOUNT),
+        _ => None,
+    }
+}
+
+/// R_RIGHTS_DROP: w0 = mask da tenere, payload = subtree (vuoto = solo-ops).
+/// Solo shrink (ops &= mask&ALL); subtree sostituito solo se dentro il
+/// corrente, altrimenti widen = None senza NESSUN cambio (prima valida, poi
+/// applica). Crea l'entry da default se assente. Ritorna Some(0) o None.
+fn handle_rights_drop(
+    rights: &mut BTreeMap<u64, ChanRights>,
+    chan: u64,
+    keep: u32,
+    payload: &[u8],
+) -> Option<u64> {
+    let sub = match core::str::from_utf8(payload) {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+    let (cur_ops, cur_sub) = match rights.get(&chan) {
+        Some(r) => (r.ops, r.subtree.clone()),
+        None => (libr::RIGHTS_ALL, String::new()),
+    };
+    // Subtree richiesto (raw non-vuoto: "/" esplicita conta come richiesta di
+    // root, NON come no-op — da "/fat" sarebbe widen e va rifiutata).
+    let norm = if sub.is_empty() {
+        None
+    } else {
+        let n = normalize_sub(sub);
+        if !within_subtree(&cur_sub, &n) {
+            return None;
+        }
+        Some(n)
+    };
+    let entry = rights.entry(chan).or_insert(ChanRights {
+        ops: libr::RIGHTS_ALL,
+        subtree: String::new(),
+    });
+    entry.ops = cur_ops & (keep & libr::RIGHTS_ALL);
+    if let Some(n) = norm {
+        entry.subtree = n;
+    }
+    Some(0)
+}
+
+/// R_RIGHTS_GET: scrive il response frame `[ops:8][sublen:8][subtree]`
+/// (self-written come read/readdir: il dispatch generico NON riscrive) e
+/// ritorna Some(ops). Sempre consentito.
+fn handle_rights_get(
+    rights: &BTreeMap<u64, ChanRights>,
+    rings: &BTreeMap<u64, (u64, u64)>,
+    chan: u64,
+) -> Option<u64> {
+    let (ops, sub) = match rights.get(&chan) {
+        Some(r) => (r.ops, r.subtree.as_str()),
+        None => (libr::RIGHTS_ALL, ""),
+    };
+    if rings.contains_key(&chan) {
+        map_client_resp_ring(rings, chan);
+        resp_ring_write(ops as u64, sub.len() as u64, sub.as_bytes());
+    }
+    Some(ops as u64)
+}
+
 // ── Ring I/O (Fase 10.2) ─────────────────────────────────────────
 
 /// Legge head e tail dal ring a `ring_va`.
@@ -1101,6 +1218,9 @@ pub extern "C" fn _start() -> ! {
     // Client registrati: pid → (req_ring_phys, resp_ring_phys).
     let mut rings: BTreeMap<u64, (u64, u64)> = BTreeMap::new();
 
+    // Diritti per-canale (Fase 17): entry assente = {ALL, root}.
+    let mut rights: BTreeMap<u64, ChanRights> = BTreeMap::new();
+
     // Pre-populate: file di esempio
     if let Some(data) = fs.create_file("hello.txt") {
         data.extend_from_slice(b"Hello from Velordor ramfs!\n");
@@ -1200,6 +1320,9 @@ pub extern "C" fn _start() -> ! {
                 let _ = libr::send(srv, DEV_CLOSE, rfd as u64, 0);
             }
             rings.remove(&chan);
+            // Diritti effimeri (Fase 17): col peer muore anche la sua riga —
+            // al re-handshake riparte da default {ALL, root} (limite dichiarato).
+            rights.remove(&chan);
             // Se il morto era un driver, i suoi mount tornano registrabili:
             // lo stale, primo in lista, avvelenerebbe resolve_mount anche
             // dopo una re-registrazione dello stesso prefix.
@@ -1251,8 +1374,8 @@ pub extern "C" fn _start() -> ! {
         // il resto resta per la propria notifica.
         let expect: usize = match op_tag {
             R_OPEN | R_MKDIR | R_READDIR | R_REGISTER | R_MOUNT | R_UMOUNT => w0 as usize,
-            R_WRITE => w1 as usize,
-            R_READ | R_CLOSE => 0,
+            R_WRITE | R_RIGHTS_DROP => w1 as usize,
+            R_READ | R_CLOSE | R_RIGHTS_GET => 0,
             _ => {
                 // Tag impossibile: scarta tutto e riallinea (vedi req_resync).
                 req_resync();
@@ -1267,6 +1390,20 @@ pub extern "C" fn _start() -> ! {
             req_resync();
             let _ = libr::reply(0, ERR, 0);
             continue;
+        }
+
+        // Diritti per-canale, check ops (Fase 17): CENTRALE, prima di
+        // qualunque contatto handler/driver. A diniego il frame va comunque
+        // consumato (20 + expect esatti) o il prossimo request del client
+        // legge spazzatura — vale anche per il WRITE remoto negato (mai
+        // map_in/send al driver in quel caso).
+        if let Some(bit) = op_bit(op_tag) {
+            if rights_ops(&rights, chan) & bit == 0 {
+                req_ring_consume(20 + expect);
+                resp_ring_write(ERR, 0, &[]);
+                let _ = libr::reply(0, ERR, 0);
+                continue;
+            }
         }
 
         // R_WRITE verso un device remoto: NON consumare il request frame. Il
@@ -1286,6 +1423,37 @@ pub extern "C" fn _start() -> ! {
         // la loro notifica invece di essere inghiottiti.
         let mut payload = vec![0u8; expect];
         req_ring_read_payload(&mut payload, expect);
+
+        // Diritti per-canale, check subtree (Fase 17): solo le op con path.
+        // Gli fd restano capability pure (read/write/close non ricontrollano
+        // il path aperto). UTF-8 invalido o spec malformata: passa oltre, lo
+        // rifiuta l'handler (i diritti non decidono la validita').
+        let subtree_ok = match op_tag {
+            R_OPEN | R_MKDIR | R_READDIR => match core::str::from_utf8(&payload) {
+                Ok(p) => within_subtree(rights_subtree(&rights, chan), &normalize_sub(p)),
+                Err(_) => true,
+            },
+            R_MOUNT => match core::str::from_utf8(&payload) {
+                Ok(spec) => match spec.split_once('\0') {
+                    Some((_, target)) => within_subtree(
+                        rights_subtree(&rights, chan),
+                        &normalize_sub(target.trim_end_matches('\0')),
+                    ),
+                    None => true,
+                },
+                Err(_) => true,
+            },
+            R_UMOUNT => match core::str::from_utf8(&payload) {
+                Ok(t) => within_subtree(rights_subtree(&rights, chan), &normalize_sub(t)),
+                Err(_) => true,
+            },
+            _ => true,
+        };
+        if !subtree_ok {
+            resp_ring_write(ERR, 0, &[]);
+            let _ = libr::reply(0, ERR, 0);
+            continue;
+        }
 
         // Dispatch in base all'op_tag del ring. Ogni handler riceve gia' il
         // payload estratto: il frame e' stato interamente consumato sopra.
@@ -1338,6 +1506,10 @@ pub extern "C" fn _start() -> ! {
                 }
             }
 
+            R_RIGHTS_DROP => handle_rights_drop(&mut rights, chan, w0 as u32, &payload),
+
+            R_RIGHTS_GET => handle_rights_get(&rights, &rings, chan),
+
             _ => {
                 // Tag sconosciuto: frame gia' consumato sopra, ritorna errore.
                 None
@@ -1347,11 +1519,11 @@ pub extern "C" fn _start() -> ! {
         // Scrivi il response frame (se non e' gia' stato scritto dall'handler).
         // Gli handler locali (read, readdir) scrivono direttamente nella response
         // ring; qui scriviamo solo il result frame per conferma.
-        // NOTA: handle_read e handle_readdir locali scrivono payload+result,
-        // quindi qui NON dobbiamo scrivere di nuovo. Per gli altri handler,
-        // scriviamo solo il result.
+        // NOTA: handle_read, handle_readdir e handle_rights_get scrivono
+        // payload+result, quindi qui NON dobbiamo scrivere di nuovo. Per gli
+        // altri handler, scriviamo solo il result.
         match op_tag {
-            R_READ | R_READDIR => {
+            R_READ | R_READDIR | R_RIGHTS_GET => {
                 // Gli handler locali hanno gia' scritto nella response ring.
                 // Per i remote, il driver ha gia' scritto nella response ring.
                 // Non fare nulla — il result e' gia' nel frame.

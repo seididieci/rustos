@@ -39,3 +39,4 @@
 - [ADR-0011: Tastiera e terminale in userspace](./adr/0011-userspace-keyboard-terminal.md)
 - [ADR-0012: Disk driver ATA in userspace](./adr/0012-userspace-disk-driver.md)
 - [ADR-0013: Mount espliciti in userspace](./adr/0013-mount-syscall.md)
+- [ADR-0014: Diritti per-canale lato server](./adr/0014-channel-rights-serverside.md)

@@ -1,8 +1,16 @@
-//! Tabelle di boot: identity map dei primi 2 MiB + GDT temporanea.
+//! Tabelle di boot: identity map dei primi 8 MiB + GDT temporanea.
 //!
 //! Sono `static` const-valutate: il compilatore le emette già pronte nell'ELF
 //! e il loader PVH le carica in RAM insieme al resto dell'immagine. Lo stub
 //! assembly (`boot.asm`) si limita a puntare CR3 e GDTR agli indirizzi fissi.
+//!
+//! Layout: PD[0] → PT a pagine 4 KiB per [0, 2 MiB) (copre kernel basso a
+//! 1 MiB e VGA a 0xB8000); PD[1..3] → large page 2 MiB per [2 MiB, 8 MiB).
+//! Il kernel cresce coi binari embedded (`include_bytes!` in `user_binary.rs`):
+//! il `.bss` ha superato i 2 MiB in Fase 17 (triple fault silenzioso al primo
+//! print con timestamp, che legge `pit::TICKS` oltre il limite) — 8 MiB danno
+//! margine, e `rust_main` verifica `_kernel_end < BOOT_MAP_LIMIT` fail-loud
+//! prima di qualunque print (mai piu' morte a zero output).
 //!
 //! NB: in long mode le entry delle page table sono larghe 8 byte — qui è
 //! garantito dal tipo (`u64`), l'errore classico dello stride a 4 byte non
@@ -18,6 +26,12 @@ pub const PD_ADDR: u64 = 0x0009_2000;
 pub const PT_ADDR: u64 = 0x0009_3000;
 
 const PRESENT_WRITABLE: u64 = 0x003;
+/// Bit PS (large page 2 MiB) per le entry PD.
+const LARGE_PAGE: u64 = 0x080;
+
+/// Tetto (esclusivo) dell'identity map di boot. `rust_main` abortisce fail-loud
+/// se `_kernel_end` lo supera (vedi nota in testa).
+pub const BOOT_MAP_LIMIT: u64 = 0x800000;
 
 /// Tabella con allineamento garantito a pagina.
 #[repr(C, align(4096))]
@@ -49,10 +63,16 @@ pub static BOOT_PDPT: PageTable = {
 pub static BOOT_PD: PageTable = {
     let mut t = [0u64; 512];
     t[0] = PT_ADDR | PRESENT_WRITABLE;
+    // Large page 2 MiB: coprono [2 MiB, 8 MiB) per la crescita del kernel
+    // (binari embedded). Vedi nota in testa: 2 MiB non bastano piu'.
+    t[1] = 0x200000 | PRESENT_WRITABLE | LARGE_PAGE;
+    t[2] = 0x400000 | PRESENT_WRITABLE | LARGE_PAGE;
+    t[3] = 0x600000 | PRESENT_WRITABLE | LARGE_PAGE;
     PageTable(t)
 };
 
-/// Identity map dei primi 2 MiB: copre kernel (1 MiB) e VGA (0xB8000).
+/// Identity map dei primi 8 MiB: PT a 4 KiB per [0, 2 MiB) + large page PD
+/// per [2 MiB, 8 MiB). Copre kernel basso (1 MiB), VGA (0xB8000) e crescita.
 #[unsafe(link_section = ".pagetables.pt")]
 #[unsafe(no_mangle)]
 pub static BOOT_PT: PageTable = {

@@ -93,6 +93,42 @@ pub const DISK_READ: u64 = 0x52;
 pub const DISK_CLOSE: u64 = 0x53;
 pub const DISK_RESOLVE: u64 = 0x54;
 
+// ── Tag delle operazioni FS (nel frame del ring, non nell'IPC) ────────────
+// Single source of truth (Fase 17): prima duplicati in `libr`, `userfs` e
+// (R_REGISTER) `userdisk`. Il formato frame e' `[tag:4][w0:8][w1:8][payload]`.
+pub const R_OPEN: u32 = 0x10;
+pub const R_READ: u32 = 0x11;
+pub const R_WRITE: u32 = 0x12;
+pub const R_CLOSE: u32 = 0x13;
+pub const R_READDIR: u32 = 0x14;
+pub const R_MKDIR: u32 = 0x15;
+/// Monta una sorgente su un target: payload "source\0target\0".
+pub const R_MOUNT: u32 = 0x16;
+/// Smonta un target: payload "target".
+pub const R_UMOUNT: u32 = 0x17;
+/// Un driver registra il proprio prefix di mount.
+pub const R_REGISTER: u32 = 0x30;
+/// Riduce i propri diritti sul canale (Fase 17, self-restriction only):
+/// w0 = mask dei bit da TENERE (solo shrink: new = old & w0), w1 = len
+/// subtree, payload = subtree (vuoto = solo-ops). Mai widen, mai auth.
+pub const R_RIGHTS_DROP: u32 = 0x18;
+/// Legge i propri diritti (Fase 17): niente payload; risposta self-written
+/// `[ops:8][sublen:8][subtree]` (subtree normalizzato, "" = root).
+pub const R_RIGHTS_GET: u32 = 0x19;
+
+// ── Bit dei diritti per-canale lato userfs (Fase 17) ──────────────────────
+// Solo riduzione (DROP fa AND), default ALL. CLOSE sempre consentito (rilascia
+// stato, mai escalation: nessun bit). Diritti effimeri: restart userfs =
+// re-handshake full; niente policy per-identita' (serve il kernel).
+pub const RIGHTS_OPEN: u32 = 0x01;
+pub const RIGHTS_READ: u32 = 0x02;
+pub const RIGHTS_WRITE: u32 = 0x04;
+pub const RIGHTS_READDIR: u32 = 0x08;
+pub const RIGHTS_MKDIR: u32 = 0x10;
+pub const RIGHTS_MOUNT: u32 = 0x20;
+pub const RIGHTS_UMOUNT: u32 = 0x40;
+pub const RIGHTS_ALL: u32 = 0x7F;
+
 // ── Costanti condivise kernel/userland ─────────────────────────────────────
 // Pagina fisica scratch riservata dal kernel all'avvio (phys_mem::reserve):
 // usata dalla test suite per verificare `map_physical` (aliasing write/read)
