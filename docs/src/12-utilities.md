@@ -1,4 +1,4 @@
-# Utilities (shell + utility utente, Fase 17)
+# Utilities (shell + utility utente, Fase 18)
 
 ## Panoramica
 
@@ -6,8 +6,9 @@ Velordor ha una **shell interattiva** (`usershell`) e vari **servizi
 userspace** che eseguono in Ring 3. Tutti usano `libr` come libreria
 condivisa.
 
-> **Fase 17**: la shell interattiva esiste gia' (Fase 8/9); il completamento
-> della fase (utility "utente" aggiuntive) e' in backlog (vedi AGENTS.md).
+> **Fase 18** (era 17, slittata per i diritti per-canale): la shell interattiva
+> esiste gia' (Fase 8/9); il completamento della fase (utility "utente"
+> aggiuntive) e' in backlog (vedi AGENTS.md).
 
 ## Programmi implementati
 

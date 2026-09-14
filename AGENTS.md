@@ -83,7 +83,7 @@ velordor/
 ├── run.sh              # build userland + testland + kernel + QEMU (PVH)
 ├── userland/           # SOLO binari ad uso utente: init, console server,
 │   │                   #   fs server, devfs, shell, uptime, kbd/tty (Fase 15),
-│   │                   #   disk server (Fase 16); futuri: utility (Fase 17)
+│   │                   #   disk server (Fase 16); futuri: utility (Fase 18)
 │   └── build/          # output .bin dei servizi utente
 ├── testland/           # TEST SUITE + repro + demo (nessun binario "utente")
 │   │                   #   demo, testfs, testfat, hogheap, devreader,
@@ -637,9 +637,30 @@ velordor/
     boundary. Confronto MINIX (tabella nel VFS) / QNX (namespace separato,
     check live futuro) in ADR-0013.
   - Verifica: testfs 5/5, testfat 6/6, usertests 33/33, zero FAIL/PANIC/FAULT.
-- [ ] Fase 17: Shell + utility utente — in backlog (shell interattiva esiste;
-      restano utility "utente" aggiuntive). Da rivedere/ridimensionare quando
-      ripresa.
+- [ ] Fase 17: diritti per-canale lato server (capability su IPC) — PIANO
+  - Motivazione: oggi un `Channel` e' tutto-o-niente (chi ha l'id manda
+    qualunque cosa). Il passo verso IPC a capability: diritti attaccati al
+    canale, solo in riduzione, senza kernel (userfs conosce gia' ogni peer
+    dal canale).
+  - Design (self-restriction only): tabella `chan → {ops bitmask, subtree
+    prefix}` in userfs (default `{ALL, /}` = tutto verde, purge su
+    EXIT_NOTIFY come rings/ftable); check ops CENTRALE nel dispatch +
+    check subtree solo a open/mkdir (l'fd resta capability pura);
+    `R_RIGHTS_DROP` (solo shrink, irrevocabile, no auth) + `R_RIGHTS_GET` +
+    `libr::rights_drop/get`; niente GRANT (canali non trasferibili).
+  - Limiti dichiarati: diritti effimeri (restart userfs = re-handshake full);
+    niente policy per-identita' (serve il kernel: fase channel-rights);
+    niente revoca selettiva (solo per-morte, esistente).
+  - 17.1 userfs: tabella + check (suite verde a default pieni).
+  - 17.2 libr: tag + wrapper (pattern mkdir, retry NOHANDSHAKE gratis).
+  - 17.3 Test t34 (helper `usertestcli` modo RIGHTSDROP: write rifiutata +
+        read ok, subtree /fat: open /hello.txt rifiutato + /fat ok, GET).
+        Suite → 34/34.
+  - 17.4 Docs: AGENTS (questa voce), ADR-0014, libro (09/11).
+  - Verifica: testfs 5/5, testfat 6/6, usertests 34/34, zero FAIL/PANIC/FAULT.
+- [ ] Fase 18: Shell + utility utente — in backlog (era 17, slittata per la
+      nuova 17; shell interattiva esiste; restano utility "utente"
+      aggiuntive). Da rivedere/ridimensionare quando ripresa.
 
 ## Important Notes
 
