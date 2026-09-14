@@ -1298,19 +1298,85 @@ pub fn rights_get(buf: &mut [u8]) -> i64 {
     }
 }
 
+/// Identità stabile di un volume FAT32 dal boot sector (Fase 16d):
+/// `(seriale, label_raw_11B)`. Seriale solo con firma estesa `0x29` (layout
+/// standard firma-a-66/volid-67-70, o variante mkfat firma-a-67/volid-68-71);
+/// label sempre (11 byte raw, trim a carico del chiamante). `None` se il
+/// settore non e' un BPB FAT valido (stessi check minimi di mount: 55AA,
+/// bps 512, spc potenza di 2 non zero, almeno una FAT non vuota, root ≥ 2).
+/// Usato sia dal parser (`userfs/fat32.rs`) che dallo sniff per-nodo del
+/// driver (`userdisk`): un nodo annuncia UUID/label sse monta davvero.
+pub fn fat_bpb_identity(boot: &[u8; 512]) -> Option<(Option<u32>, [u8; 11])> {
+    if boot[510] != 0x55 || boot[511] != 0xAA {
+        return None;
+    }
+    let bps = u16::from_le_bytes([boot[11], boot[12]]);
+    let spc = boot[13];
+    let num_fats = boot[16];
+    let fat_size = u32::from_le_bytes([boot[36], boot[37], boot[38], boot[39]]);
+    let root = u32::from_le_bytes([boot[44], boot[45], boot[46], boot[47]]);
+    if bps != 512 || spc == 0 || (spc & (spc - 1)) != 0 {
+        return None;
+    }
+    if num_fats == 0 || fat_size == 0 || root < 2 {
+        return None;
+    }
+    let vol_serial = if boot[66] == 0x29 {
+        Some(u32::from_le_bytes([boot[67], boot[68], boot[69], boot[70]]))
+    } else if boot[67] == 0x29 {
+        Some(u32::from_le_bytes([boot[68], boot[69], boot[70], boot[71]]))
+    } else {
+        None
+    };
+    let mut vol_label = [0u8; 11];
+    vol_label.copy_from_slice(&boot[71..82]);
+    Some((vol_serial, vol_label))
+}
+
 /// `fs_register(prefix)`: un driver (devfs/console) registra il proprio prefix
 /// di mount presso userfs. Ritorna 0 su successo o -1 su errore (anche se
 /// userfs non e' ancora pronto: il chiamante puo' ritentare).
 #[inline]
 pub fn fs_register(prefix: &[u8]) -> i64 {
+    fs_register_multi(&[prefix])
+}
+
+/// `fs_register_multi(prefixes)`: registra PIU' prefix con UNA SOLA IPC
+/// sincrona (Fase 16d). Serve ai driver multi-nodo (devfs: `/dev/null` +
+/// `/dev/zero`): due register sincroni consecutivi creerebbero un mount
+/// forwardable dopo il primo, e se userfs in quel momento sta inoltrando una
+/// richiesta al driver (single-threaded, `send` bloccante) si crea un
+/// deadlock incrociato (driver→userfs register, userfs→driver forward).
+/// Payload = prefix separati da NUL. Ritorna 0 se TUTTI registrati, -1 se
+/// almeno uno fallisce o i buffer non bastano.
+pub fn fs_register_multi(prefixes: &[&[u8]]) -> i64 {
     if !fs_init() || fs_async_pending() {
         return -1;
     }
-    if !req_ring_write(R_REGISTER, prefix.len() as u64, 0, prefix) {
+    let mut buf = [0u8; 520];
+    let mut n = 0usize;
+    for (i, p) in prefixes.iter().enumerate() {
+        if i > 0 {
+            if n + 1 > buf.len() {
+                return -1;
+            }
+            buf[n] = 0;
+            n += 1;
+        }
+        if n + p.len() > buf.len() {
+            return -1;
+        }
+        buf[n..n + p.len()].copy_from_slice(p);
+        n += p.len();
+    }
+    if n == 0 {
+        return -1;
+    }
+    if !req_ring_write(R_REGISTER, n as u64, 0, &buf[..n]) {
         return -1;
     }
     match fs_notify_result(FS_REGISTER, || {
-        req_ring_write(R_REGISTER, prefix.len() as u64, 0, prefix)
+        req_ring_write(R_REGISTER, n as u64, 0, &buf[..n])
     }) {
         Some((result, _, _)) => {
             resp_ring_consume(16);

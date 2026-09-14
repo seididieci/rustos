@@ -46,8 +46,27 @@ volta, lazy/`reactivate` per nome a ogni riattivazione):
   accesso re-risolve per nome e rimonta — fail-loud, mai shadow ramfs, mai
   handle stale silenzioso dopo un reorder d'enumerazione;
 - lettere ancora instabili (ordine di probe): niente UUID/label/serial —
-  rimandati alla fase mount persistente (16c.3 futura).
+  rimandati alla fase mount persistente (realizzata in 16d).
 - Shell: builtin `mount`/`umount` (+ `help`).
+
+## Addendum Fase 16d (2026-09-14): chiavi stabili UUID=/LABEL= + listing
+
+Il resolve per lettera `sdX` e' sostituito da chiavi stabili. `normalize_source`
+accetta tre forme: `/dev/<nodo|disk/by-*>` (raw), `UUID=<hex8>`,
+`LABEL=<nome>`; `resolve_key`/`resolve_mount_source` traducono la chiave in un
+nome nodo via userdisk (`resolve_node`: nome → UUID → label) e da li' l'handle.
+Il mount statico a boot e' ora `UUID=5253544F` (mai piu' `/dev/sda`).
+
+- Listing sintetizzato: `synth_children` deriva le voci dei padri (es. `/dev`,
+  `/dev/disk/by-uuid`, `/dev/disk/by-label`) dai prefix della Mount table —
+  nessun cambio al protocollo `DEV_READDIR` dei driver.
+- Open raw by-path: `/dev/disk/by-uuid/<H>` e `/dev/disk/by-label/<N>` sono
+  risolti dal driver (solo per i by-path, mai a ogni open di device: un
+  round-trip a disco per `/dev/null` amplificava il flood di t30).
+- Registrazione multi-prefix: `libr::fs_register_multi` (payload NUL-separato)
+  permette a un driver multi-nodo (devfs) di registrare tutti i prefix in UNA
+  IPC — vedi ADR-0012, addendum deadlock.
+- Test: t36 + `scripts/test-uuid-reorder.py`; suite 35/35 → 36/36.
 
 ## Permessi: quanto costera' (domanda 16b)
 

@@ -1,7 +1,7 @@
 //! userdevfs — Device file server (Fase 9.3 + 9.6).
 //!
 //! Gestisce `/dev/null` e `/dev/zero`. Si registra presso userfs all'avvio con
-//! la IPC FS_REGISTER (prefix="/dev", via `libr::fs_register`). userfs instrada
+//! la IPC FS_REGISTER (prefix="/dev/null" + "/dev/zero", via `libr::fs_register`). userfs instrada
 //! le richieste di apertura/lettura/scrittura/chiusura verso questo processo e
 //! mappa la pagina FS del client a `USER_FS_BUFFER` in questo processo prima di
 //! inoltrarle: i dati (write) sono letti da li', i risultati (read/readdir)
@@ -112,10 +112,13 @@ impl DevTable {
 
 use libr::println;
 
-/// Assicura il mount "/dev" presso userfs (Fase 14, t28): attende Fs via soli
-/// lookup (NESSUN frame scritto finche' userfs non c'e': niente spam nel ring
-/// che disallineerebbe gli altri client), poi UN tentativo di registrazione;
-/// se fallisce (race: userfs rimorto nel mentre) ricomincia dal lookup.
+/// Assicura i mount "/dev/null" + "/dev/zero" presso userfs (Fase 14, t28;
+/// prefix espliciti per-device da 16d, come ogni altro driver: niente
+/// ombrello "/dev", cosi' il listing dei padri e' sintetizzato da userfs
+/// dalla Mount table): attende Fs via soli lookup (NESSUN frame scritto
+/// finche' userfs non c'e': niente spam nel ring che disallineerebbe gli
+/// altri client), poi UN tentativo di registrazione per prefix; se fallisce
+/// (race: userfs rimorto nel mentre) ricomincia dal lookup.
 /// Stessa funzione a boot e su EXIT_NOTIFY: boot e restart sono la stessa
 /// condizione ("Fs non c'e'"). Unbounded come `fs_chan`: senza Fs il driver
 /// e' comunque inutile. Idempotente grazie al replace-on-register in userfs.
@@ -131,7 +134,7 @@ fn ensure_mounted() -> bool {
                 core::hint::spin_loop();
             }
         }
-        if libr::fs_register(b"/dev") == 0 {
+        if libr::fs_register_multi(&[b"/dev/null", b"/dev/zero"]) == 0 {
             return true;
         }
     }
@@ -146,11 +149,11 @@ pub extern "C" fn _start() -> ! {
         println!("[userdevfs] registered as service Devfs");
     }
 
-    // Registra il prefix "/dev" presso userfs (unbounded: senza Fs il driver
-    // e' comunque inutile; init ha gia' atteso userfs pronto, quindi riesce
-    // subito a boot).
+    // Registra i prefix "/dev/null" + "/dev/zero" presso userfs (unbounded:
+    // senza Fs il driver e' comunque inutile; init ha gia' atteso userfs
+    // pronto, quindi riesce subito a boot).
     ensure_mounted();
-    println!("[userdevfs] registered /dev with userfs");
+    println!("[userdevfs] registered /dev/null + /dev/zero with userfs");
 
     // Avvisa il parent (init) di essere pronto (SVC_READY, come userfs):
     // serve al supervisore init-restart per l'attesa prontezza (Fase 14).
@@ -176,7 +179,7 @@ pub extern "C" fn _start() -> ! {
         // userfs morto e rinato (t28): re-mount. L'unico peer mortale e'
         // userfs: ricontrolla incondizionato (idempotente). Mai reply.
         if msg.tag == libr::EXIT_NOTIFY {
-            println!("[userdevfs] peer morto, re-mount /dev");
+            println!("[userdevfs] peer morto, re-mount /dev/null + /dev/zero");
             ensure_mounted();
             continue;
         }

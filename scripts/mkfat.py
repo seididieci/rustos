@@ -25,6 +25,7 @@ TOTAL_SEC = 527000      # ~257 MiB -> >= 65525 cluster (minimo FAT32)
 FAT_SIZE_SEC = 516
 ROOT_CLUSTER = 2
 VOL_LABEL = b"RUSTOS   "
+VOL_SERIAL = 0x5253544F  # "RSTO" LE: UUID stabile del disco di boot (16d)
 SPT = 63                # settori per traccia (CHS, solo per compatibilita' tool)
 HEADS = 255
 
@@ -35,11 +36,13 @@ EOC = 0x0FFFFFFF
 
 
 class Builder:
-    def __init__(self):
+    def __init__(self, vol_serial=VOL_SERIAL, vol_label=VOL_LABEL):
         self.img = bytearray(BYTES_PER_SEC * TOTAL_SEC)
         self.next_cluster = ROOT_CLUSTER + 1
         self.fat = [0] * (ROOT_CLUSTER + TOTAL_CLUSTERS)
         self.fat[ROOT_CLUSTER] = EOC                 # catena della root dir
+        self.vol_serial = vol_serial
+        self.vol_label = vol_label
 
     def alloc_chain(self, length_bytes: int) -> list:
         clusters = []
@@ -136,11 +139,15 @@ class Builder:
         struct.pack_into("<I", boot, 44, ROOT_CLUSTER)
         struct.pack_into("<H", boot, 48, 1)
         struct.pack_into("<H", boot, 50, 6)
-        boot[64:66] = b"\x80\x00"
-        boot[66] = 0
-        boot[67] = 0x29
-        struct.pack_into("<I", boot, 68, 0x5253544F)
-        boot[71:82] = VOL_LABEL
+        boot[64] = 0x80
+        boot[65] = 0
+        # Layout STANDARD (firma a 66, volid 67-70, label 71-81): il vecchio
+        # layout (firma a 67, volid 68-71) faceva sovrapporre label[0] al 4°
+        # byte del seriale per seriali arbitrari (16d). Il parser accetta
+        # entrambi, il generatore emette solo questo.
+        boot[66] = 0x29
+        struct.pack_into("<I", boot, 67, self.vol_serial)
+        boot[71:82] = self.vol_label
         boot[82:90] = b"FAT32   "
         boot[510:512] = b"\x55\xAA"
         self.img[0:512] = boot
@@ -164,10 +171,24 @@ class Builder:
 
 
 def main() -> None:
-    out = Path(sys.argv[1] if len(sys.argv) > 1 else "userland/fs/fat.img")
-    b = Builder()
+    import argparse
+    ap = argparse.ArgumentParser(description="Immagine FAT32 per rustOS (16d: seriale/label/marker parametrici)")
+    ap.add_argument("out", nargs="?", default="userland/fs/fat.img")
+    ap.add_argument("--serial", default="5253544F",
+                    help="seriale volume esadecimale (UUID stabile, default 5253544F)")
+    ap.add_argument("--label", default="RUSTOS",
+                    help="label volume (max 11 char, default RUSTOS)")
+    ap.add_argument("--marker", default=None, metavar="TESTO",
+                    help="se dato, aggiunge il file MARKER.TXT con TESTO (disco secondario di test)")
+    args = ap.parse_args()
+    out = Path(args.out)
+    serial = int(args.serial, 16)
+    label = (args.label.upper() + " " * 11)[:11].encode()
+    b = Builder(vol_serial=serial, vol_label=label)
     b.add_file("HELLO.TXT", b"Hello from rustOS FAT32!\n")
     b.add_file("README.TXT", b"rustOS FAT32 read-only demo (Fase 9.2)\n")
+    if args.marker is not None:
+        b.add_file("MARKER.TXT", args.marker.encode())
     b.add_subdir("SUB", [("NOTES.TXT", b"Subdirectory note.\n")])
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(b.build())

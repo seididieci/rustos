@@ -20,21 +20,32 @@ else
     cargo build --release
 fi
 
-# Immagine disco FAT32 per il fs server (Fase 9.2): generata a ogni run.
+# Immagini disco FAT32 (Fase 9.2 + 16d): generate a ogni run.
+# fat.img = disco di boot (UUID 5253544F, label RUSTOS, montato a /fat);
+# fat2.img = secondo disco (UUID e label diversi + MARKER.TXT) per i test di
+# identità stabile (t36) e il reorder (SWAP_DRIVES=1 inverte l'ordine IDE:
+# le lettere sdX si scambiano, UUID=/LABEL= restano validi).
 python3 scripts/mkfat.py userland/fs/fat.img
+python3 scripts/mkfat.py userland/fs/fat2.img --serial C0FFEE01 --label SECOND --marker "second disk marker"
 
 KERNEL=target/x86_64-unknown-none/release/rustos-kernel
 DISPLAY="${RUN_DISPLAY:-none}"   # RUN_DISPLAY=gtk per vedere la VGA in locale
 
 # Boot diretto via protocollo PVH (ELF64 + nota XEN_ELFNOTE_PHYS32_ENTRY):
 # QEMU carica il kernel e trasferisce il controllo in protected mode 32-bit.
-# Il drive IDE monta il FAT32 che userdisk legge via ATA PIO (Fase 16) e userfs
-# monta a /fat via IPC (porte ATA solo a userdisk).
+# Due drive IDE (Fase 16d): userdisk li enumera sda,sdb in ordine di probe
+# e userfs monta a /fat per UUID (mai per lettera).
+if [ "${SWAP_DRIVES:-0}" = "1" ]; then
+    DRIVES="-drive file=userland/fs/fat2.img,format=raw,if=ide -drive file=userland/fs/fat.img,format=raw,if=ide"
+else
+    DRIVES="-drive file=userland/fs/fat.img,format=raw,if=ide -drive file=userland/fs/fat2.img,format=raw,if=ide"
+fi
+# shellcheck disable=SC2086
 exec qemu-system-x86_64 \
     -m 256M \
     -display "$DISPLAY" \
     -serial stdio \
     -no-reboot \
     -kernel "$KERNEL" \
-    -drive file=userland/fs/fat.img,format=raw,if=ide \
+    $DRIVES \
     "$@"

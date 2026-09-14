@@ -1963,6 +1963,128 @@ fn t_rights() -> bool {
     true
 }
 
+/// Fixture disco secondario (Fase 16d, accoppiate a run.sh: fat2.img
+/// generata con `--serial C0FFEE01 --label SECOND --marker ...`).
+const DISK2_UUID: &str = "C0FFEE01";
+const DISK2_LABEL: &str = "SECOND";
+const DISK2_MARKER: &[u8] = b"second disk marker";
+
+/// true se il buffer readdir (voci NUL-separate) contiene `name` intero.
+fn readdir_contains(buf: &[u8], name: &[u8]) -> bool {
+    let mut i = 0usize;
+    while i < buf.len() && buf[i] != 0 {
+        let start = i;
+        while i < buf.len() && buf[i] != 0 {
+            i += 1;
+        }
+        if &buf[start..i] == name {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// t36 — identità stabile UUID/LABEL + discovery (Fase 16d).
+/// Mount per UUID e per LABEL del secondo disco (contenuto MARKER prova il
+/// disco giusto), open raw dei by-path (firma + seriale dal settore 0),
+/// listing sintetizzato (/dev ∋ disk+sda, by-uuid ∋ U2, by-label ∋ L2).
+/// Gira in entrambi gli ordini IDE (SWAP_DRIVES): le lettere possono
+/// cambiare, le chiavi stabili no.
+fn t_stable_id() -> bool {
+    drain_stray();
+    if libr::mkdir("/u2") < 0 {
+        println!("[usertests] t36: mkdir /u2 FAILED");
+        return false;
+    }
+    // 1. Mount per UUID.
+    if libr::mount("UUID=C0FFEE01", "/u2") < 0 {
+        println!("[usertests] t36: mount UUID=C0FFEE01 FAILED");
+        return false;
+    }
+    let fd = libr::open("/u2/MARKER.TXT", 0);
+    if fd < 0 {
+        println!("[usertests] t36: open MARKER via UUID FAILED");
+        let _ = libr::umount("/u2");
+        return false;
+    }
+    let mut mb = [0u8; 32];
+    let n = t33_read_all(fd, &mut mb);
+    let _ = libr::close(fd);
+    if n != DISK2_MARKER.len() || mb[..n] != *DISK2_MARKER {
+        println!("[usertests] t36: MARKER via UUID corrotto (disco sbagliato?)");
+        let _ = libr::umount("/u2");
+        return false;
+    }
+    if libr::umount("/u2") < 0 {
+        println!("[usertests] t36: umount /u2 FAILED");
+        return false;
+    }
+    // 2. Mount per LABEL.
+    if libr::mount("LABEL=SECOND", "/u2") < 0 {
+        println!("[usertests] t36: mount LABEL=SECOND FAILED");
+        return false;
+    }
+    let fd = libr::open("/u2/MARKER.TXT", 0);
+    if fd < 0 {
+        println!("[usertests] t36: open MARKER via LABEL FAILED");
+        let _ = libr::umount("/u2");
+        return false;
+    }
+    let mut mb = [0u8; 32];
+    let n = t33_read_all(fd, &mut mb);
+    let _ = libr::close(fd);
+    let _ = libr::umount("/u2");
+    if n != DISK2_MARKER.len() || mb[..n] != *DISK2_MARKER {
+        println!("[usertests] t36: MARKER via LABEL corrotto");
+        return false;
+    }
+    // 3. Open raw dei by-path: settore 0 con firma + seriale atteso.
+    for path in ["/dev/disk/by-uuid/C0FFEE01", "/dev/disk/by-label/SECOND"] {
+        let fd = libr::open(path, 0);
+        if fd < 0 {
+            println!("[usertests] t36: open raw {} FAILED", path);
+            return false;
+        }
+        let mut sec = [0u8; 512];
+        let r = libr::read_fs(fd, &mut sec, 512);
+        let _ = libr::close(fd);
+        if r != 512 || sec[510] != 0x55 || sec[511] != 0xAA {
+            println!("[usertests] t36: settore 0 raw {} invalido", path);
+            return false;
+        }
+        let serial = u32::from_le_bytes([sec[67], sec[68], sec[69], sec[70]]);
+        if serial != 0xC0FFEE01 {
+            println!("[usertests] t36: seriale raw {} = {:08X} (atteso C0FFEE01)", path, serial);
+            return false;
+        }
+    }
+    // 4. Listing sintetizzato.
+    let mut eb = [0u8; 512];
+    if libr::readdir("/dev", &mut eb, 512) < 0
+        || !readdir_contains(&eb, b"disk")
+        || !readdir_contains(&eb, b"sda")
+    {
+        println!("[usertests] t36: readdir /dev senza disk/sda");
+        return false;
+    }
+    let mut eb = [0u8; 256];
+    if libr::readdir("/dev/disk/by-uuid", &mut eb, 256) < 0
+        || !readdir_contains(&eb, DISK2_UUID.as_bytes())
+    {
+        println!("[usertests] t36: readdir by-uuid senza C0FFEE01");
+        return false;
+    }
+    let mut eb = [0u8; 256];
+    if libr::readdir("/dev/disk/by-label", &mut eb, 256) < 0
+        || !readdir_contains(&eb, DISK2_LABEL.as_bytes())
+    {
+        println!("[usertests] t36: readdir by-label senza SECOND");
+        return false;
+    }
+    true
+}
+
 /// t32 — disk driver in userspace (Fase 16).
 /// (A) Baseline: /dev/sda leggibile raw con firma boot. (B) Kill userdisk
 /// (pid via `service_pid`, non figlio nostro) e attesa init-restart come
@@ -2070,6 +2192,7 @@ pub extern "C" fn _start() -> ! {
     report(&mut total, &mut ok, "t32 disk kill + init restart", t_disk());
     report(&mut total, &mut ok, "t33 mount/umount espliciti", t_mount());
     report(&mut total, &mut ok, "t35 resolve nome->handle lato driver", t_resolve());
+    report(&mut total, &mut ok, "t36 UUID/LABEL + discovery stabile", t_stable_id());
     // t34 per ULTIMO: i drop sono irrevocabili sul canale di usertests.
     report(&mut total, &mut ok, "t34 diritti per-canale lato server", t_rights());
 
