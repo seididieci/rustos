@@ -12,7 +12,7 @@ libs/libr   libreria di sistema condivisa (runtime + allocatore)
 testland/   test suite + repro + demo storiche
   testfs        usertestfs   — ramfs (read/write/mkdir/errori)   → PASS 5/5
   testfat       usertestfat  — FAT32 read-only + /dev/null, /dev/zero → PASS 6/6
-  usertests     usertests    — suite completa (31 test)          → PASS 31/31
+  usertests     usertests    — suite completa (32 test)          → PASS 32/32
   usertest-client usertestcli  — helper a modalita' (ECHO/ZEROREAD/NULLW/SRV)
   usertest-spin  usertestspin  — busy-loop a budget di tick (priorita')
   utcbstest     utcbstest    — helper CBS: crea server e si attacha (Fase 11.5)
@@ -44,10 +44,10 @@ Righe di gate:
 ```
 [testfs] PASS 5/5
 [testfat] PASS 6/6
-[usertests] PASS 31/31
+[usertests] PASS 32/32
 ```
 
-## Cosa copre `usertests` (31 test)
+## Cosa copre `usertests` (32 test)
 
 | Test | Cosa verifica |
 |------|----------------|
@@ -82,6 +82,7 @@ Righe di gate:
 | t29 | map-flap isolation (diagnosi t28): martella `map_physical` su una VA verificando marker, da solo poi con helper sulla stessa VA (altre tabelle/frame) → niente cross-talk |
 | t30 | fairness scheduler sotto carico IPC: helper FLOOD (open+write+close /dev/null a regime dopo warm-up) + kill devfs + latenza mount (bound 300 tick, osservato 0–1) → becca regressioni di rotazione/starvation (es. bug di parita' round-robin). NON misura saturazione userfs: con client sync (≤1 in volo) la coda non si riempie mai |
 | t31 | presenza keyboard stack userspace (Fase 15): servizi `Kbd`/`Tty` registrati + open `/dev/kbd/kbd` e `/dev/input/keyboard` (path DEV del tty). Niente digitazione reale (serve QMP/sendkey: coperta da `test-shell.py` 3/3) |
+| t32 | disk driver in userspace (Fase 16): open raw `/dev/sda` + settore 0 con firma boot 0x55AA; kill userdisk via `service_pid` → sparizione/ricomparsa (init-restart) → raw di nuovo operativo + `/fat/HELLO.TXT` leggibile via riconnessione lazy di userfs |
 
 > Il CBS e' sempre attivo (lo scheduler RT e' l'unico): t18/t19 sono test
 > reali, non ci sono modalita' "vuote".

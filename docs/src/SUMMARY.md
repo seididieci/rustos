@@ -37,3 +37,4 @@
 - [ADR-0009: IPC asincrono — request-id interno](./adr/0009-async-ipc.md)
 - [ADR-0010: Process lifecycle — cleanup kernel-side](./adr/0010-process-lifecycle-cleanup.md)
 - [ADR-0011: Tastiera e terminale in userspace](./adr/0011-userspace-keyboard-terminal.md)
+- [ADR-0012: Disk driver ATA in userspace](./adr/0012-userspace-disk-driver.md)

@@ -111,7 +111,7 @@ rustos/
 | 13 | IPC asincrono: send/recv non bloccanti, request-id (ADR-0009) | ✅ Completata |
 | 14 | Cleanup processi: exit/kill, notifica al parent, slot a generazioni (ADR-0010) | ✅ Completata |
 | 15 | Keyboard + Terminal server in userspace (sgancio tastiera/VGA) | ✅ Completata |
-| 16 | Disk/ATA driver server in userspace (sgancio ATA/FS) | ⏳ Prossima |
+| 16 | Disk/ATA driver server in userspace (sgancio ATA/FS) | ✅ Completata |
 | 17 | Shell + utility utente | ⏳ Pianificata |
 
 ## Risorse
