@@ -82,8 +82,8 @@ velordor/
 │   └── putc16.inc
 ├── run.sh              # build userland + testland + kernel + QEMU (PVH)
 ├── userland/           # SOLO binari ad uso utente: init, console server,
-│   │                   #   fs server, devfs, shell, uptime, kbd/tty (Fase 15);
-│   │                   #   futuri: disk server dedicato (Fase 16), utility (Fase 17)
+│   │                   #   fs server, devfs, shell, uptime, kbd/tty (Fase 15),
+│   │                   #   disk server (Fase 16); futuri: utility (Fase 17)
 │   └── build/          # output .bin dei servizi utente
 ├── testland/           # TEST SUITE + repro + demo (nessun binario "utente")
 │   │                   #   demo, testfs, testfat, hogheap, devreader,
@@ -582,24 +582,39 @@ velordor/
     (4) handshake BUF_REG per-canale; (5) open di file device, mai mount-root.
   - Init: spawn console→fs→uptime→devfs→kbd→tty + supervisione kbd/tty; t31
     (Kbd/Tty + open /dev/kbd/kbd + /dev/input/keyboard). Suite → 31/31.
-- [ ] Fase 16: Disk/ATA driver server in userspace (sgancio ATA/FS) — in backlog
-  - Motivazione: oggi userfs possiede il driver ATA PIO (`block.rs`, `io.rs`) e
-    il parser FAT32 nello stesso processo, con le porte ATA abilitate solo per
-    lui; ogni read `/fat` blocca il server nel polling PIO.
-  - Design:
-    - `userdisk` (nuovo): proprietario porte ATA `0x1F0-0x1F7` (+
-      `0x3F6-0x3F7`), espone blocchi via IPC per nome (slot `Service` o prefix
-      `/dev/ata`).
-    - `userfs`: rimuove `io.rs`/`block.rs`; mantiene il parser FAT32 con un
-      client disco (read block via IPC al disk server). `io_ranges` ATA spostati
-      da userfs a userdisk.
-    - Flusso `/fat/*` invariato per i client (userfs risolve il path come oggi).
-  - 16.1 Nuovo `userland/disk` (lettura settore/cluster via IPC).
-  - 16.2 `userfs`: FAT32 parametrizzato su un "block source" (trait/tipo);
-        rimozione porte ATA da userfs in `user_binary.rs`.
-  - 16.3 Opportunita' (non requisito): caching settori nel disk server.
-  - Verifica: /fat leggibile identico a oggi, userfs senza porte ATA, suite
-        testfat 6/6 invariata.
+- [x] Fase 16: Disk/ATA driver server in userspace (sgancio ATA/FS)
+  - Motivazione: userfs possedeva driver ATA PIO + parser FAT32 con porte
+    abilitate solo per lui; ogni read `/fat` bloccava il server nel polling.
+  - [x] 16.1 Nuovo `userland/disk`: `io.rs`+`block.rs` da userfs
+        (generalizzato a qualunque canale/drive + LBA48 EXT), `detect.rs`
+        (reset SRST, probe 2 canali x master/slave via IDENTIFY, ATAPI
+        skippato con log, tutto bound), `part.rs` (MBR primarie, graceful se
+        assente), `main.rs` (servizio `Disk`=7, `FS_REGISTER` per nodo
+        `/dev/sdX`, protocolli `DISK_*`+`DEV_*`, `SVC_READY` pre-mount).
+  - [x] 16.2 `userfs` senza ATA: `fat32.rs` generico su trait `BlockSource`,
+        nuovo `ipc_disk.rs` (client `DISK_*` sync con riconnessione lazy su
+        morte driver); mount con binding `/dev/sda→/fat` (handle 0), fallback
+        ramfs-only; open raw `/dev/sdX` via parse nome Linux (rel vuota);
+        `EXIT_NOTIFY` invalida il client. Cancellati `io.rs`/`block.rs`.
+        Handle codificati `disco<<16|sub` (niente lista nodi).
+  - [x] 16.3 Wiring assorbito in 16.2 (da solo lasciava il tree rosso):
+        `ATA_PIO_RANGES` (primario+secondario) a userdisk, userfs `&[]`
+        (= qualunque `in/out` e' #GP), voce `NamedBinary` + embed, init spawna
+        userdisk prima di userfs (+READY entrambi) e lo supervisiona.
+        Kernel `ring_alloc`: coppie FRESCHE a ogni chiamata + record
+        multi-coppia con free a teardown (mapping non-owned, mai double-free)
+        — la cache single-pair aliasava FS/DISK (stesse pagine due volte).
+  - [x] 16.4 Test t32 (raw `/dev/sda` con firma boot + kill/restart userdisk
+        + smoke `/fat` via riconnessione) + verifica manuale multi-disco
+        (secondo `-drive if=ide`: `sdb` + `sdb1` da MBR). Suite → 32/32.
+  - [x] 16.5 Docs: ADR-0012 + AGENTS + SUMMARY/00/08/09/11.
+  - Bug trovati: (1) deadlock boot da doppia sync incrociata HELLO/
+        FS_REGISTER → userdisk MAI sync verso userfs (SM async, nemmeno
+        `fs_init`); (2) SM congelata da throttle+recv senza waker → retry a
+        ogni wakeup; (3) frame letto a head invece che tail; (4) vedi kernel.
+  - Limiti noti (futuro): mount syscall esplicita (16b), ATAPI/ISO9660, catene
+    extended, scritture disco, caching, DMA+IRQ.
+  - Verifica: /fat identica a oggi, testfat 6/6 invariata, suite 32/32.
 - [ ] Fase 17: Shell + utility utente — in backlog (shell interattiva esiste;
       restano utility "utente" aggiuntive). Da rivedere/ridimensionare quando
       ripresa.
@@ -767,9 +782,9 @@ timeout 60 ./run.sh > /tmp/boot.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 6/6
-#   [usertests] PASS 31/31
+#   [usertests] PASS 32/32
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 6/6|\[usertests\] PASS 31/31' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 6/6|\[usertests\] PASS 32/32' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 

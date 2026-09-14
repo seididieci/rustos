@@ -272,15 +272,16 @@ processi user — il filesystem arriverà solo in Fase 9.
 `spawn(name)` (numero 20) per creare i servizi come suoi figli. Dalla **Fase 12**
 (ADR-0008) `spawn` crea il **canale di nascita** tra init e il figlio (il figlio
 lo usa come canale 0 = parent) e ritorna il channel id. L'ordine di spawn resta
-importante: `userconsole` per primo (+ attesa READY), poi `userfs` (+ attesa
-READY), poi uptime, `userdevfs` (+ attesa READY), i test in sequenza e la shell
+importante: `userconsole` per primo (+ attesa READY), poi `userdisk` (+ attesa
+READY, Fase 16), poi `userfs` (+ attesa READY), poi uptime, `userdevfs`
+(+ attesa READY), i test in sequenza e la shell
 per ultima. I READY sono fire-and-forget via `send_async` (consumati senza
 reply): una `send` sync resterebbe bloccata perché a boot init non aspetta
 console/devfs (e console registra `/dev/input` solo dopo userfs: attendere
 dopo sarebbe deadlock).
 
-Dalla **Fase 14 (init-restart)** init è anche **supervisore**: console/fs/devfs
-vengono riavviati alla morte (tabella bin/servizio/chan/pid + loop su
+Dalla **Fase 14 (init-restart)** init è anche **supervisore**: console, disk,
+fs, devfs, kbd e tty vengono riavviati alla morte (tabella bin/servizio/chan/pid + loop su
 `EXIT_NOTIFY`, condiviso con l'attesa dei test così i restart funzionano anche
 a suite in corso). Backoff anti spawn-storm (20 tick prima di ogni tentativo;
 oltre 3 restart in 300 tick → hold + log). Shell/uptime/test: log-only.
@@ -311,9 +312,13 @@ in tre direzioni pianificate (vedi `AGENTS.md`):
   client FS puramente async ed event-driven); console ridotto a rendering
   (`/dev/console`). Regole: mai IPC sincrone servendo, mai spinner, boot
   async senza attese di wake, handshake per canale.
-- **Fase 16 — Disk/ATA server in userspace**: oggi `userfs` possiede il driver
-  ATA PIO e il parser FAT32. Obiettivo: server disco separato (porte ATA
-  0x1F0-0x1F7) che espone blocchi via IPC; userfs resta file system.
+- **Fase 16 — Disk/ATA server in userspace** (implementata,
+  [ADR-0012](./adr/0012-userspace-disk-driver.md)): `userdisk` (driver ATA in
+  ring 3, entrambi i canali via `io_ranges`, enumerazione IDENTIFY + MBR,
+  `/dev/sdX`, servizio `Disk`) + `userfs` senza porte ne' codice ATA (parser
+  FAT32 generico su `BlockSource`, client `DISK_*` con riconnessione lazy).
+  Regole: mai sync incrociate tra server (registrazione async), mai throttle
+  senza waker, consumer SPSC a `tail`, `ring_alloc` a coppie fresche.
 - **Fase 17 — Shell + utility utente** (slittata in coda).
 
 ## Riferimenti

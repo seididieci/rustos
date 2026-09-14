@@ -28,7 +28,8 @@ DISPLAY="${RUN_DISPLAY:-none}"   # RUN_DISPLAY=gtk per vedere la VGA in locale
 
 # Boot diretto via protocollo PVH (ELF64 + nota XEN_ELFNOTE_PHYS32_ENTRY):
 # QEMU carica il kernel e trasferisce il controllo in protected mode 32-bit.
-# Il drive IDE monta il FAT32 che userfs legge via ATA PIO (porte 0x1F0-0x1F7).
+# Il drive IDE monta il FAT32 che userdisk legge via ATA PIO (Fase 16) e userfs
+# monta a /fat via IPC (porte ATA solo a userdisk).
 exec qemu-system-x86_64 \
     -m 256M \
     -display "$DISPLAY" \

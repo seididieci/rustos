@@ -119,6 +119,11 @@ alle porte 0x1F0-0x1F7 via **TSS per-processo** (ADR-0006).
 
 **Checkpoint:** FAT32 read funziona (usertestfat PASS 6/6).
 
+> Fase 16: il driver ATA e' migrato in `userdisk` (entrambi i canali,
+> enumerazione IDENTIFY, `/dev/sdX`, [ADR-0012](../adr/0012-userspace-disk-driver.md));
+> userfs tiene solo il parser (generico su `BlockSource`) e non ha piu' porte
+> ATA. Flusso `/fat/*` invariato per i client.
+
 ### 9.3 -- devfs server separato + IPC routing
 
 Device file server (`/dev/null`, `/dev/zero`) registrato presso userfs
@@ -179,17 +184,20 @@ usertests 17/17, shell 3/3.
 9.5  Split layout userland/testland + suite di regressione        [x]
 9.6  Buffer per-processo + zero-copy IPC (rimozione shared buf)  [x]
 10.2 Ring SPSC per-processo (sostituisce 9.6)                     [x]
+16   Disk driver in userspace (userdisk + userfs senza ATA)        [x]
 ```
 
 ## File coinvolti
 
 | File | Ruolo |
 |------|-------|
-| `kernel/src/vmm_user.rs` | Ring per-processo (`RING_PHYS`, `alloc_ring_pages`, `USER_FS_BUFFER`, `USER_RESP_RING`) |
+| `kernel/src/vmm_user.rs` | Ring per-processo (`RING_PHYS` multi-coppia, `alloc_ring_pages` a coppie fresche, `USER_FS_BUFFER`, `USER_RESP_RING`) |
 | `kernel/src/syscall.rs` | Handler `sys_ring_alloc` (26), `sys_map_in` (27, generico) |
 | `kernel/src/sched_rt.rs` (esposto come `crate::sched`) | `process_cr3` (per map_in) |
-| `libs/libr/src/lib.rs` | Wrappers FS su ring + `fs_init` lazy + chunking read/write + `map_in` |
+| `libs/libr/src/lib.rs` | Wrappers FS su ring + `fs_init` lazy + chunking read/write + `map_in` + `ring_alloc_raw` (coppia senza handshake, Fase 16) |
 | `userland/fs/src/main.rs` | userfs: finestra ring, registro `pid→(req,resp)`, map_in per device remoti |
+| `userland/fs/src/ipc_disk.rs` | client `DISK_*` verso userdisk (`BlockSource`, riconnessione lazy, Fase 16) |
+| `userland/disk/src/main.rs` | userdisk: detect+part, `/dev/sdX`, protocolli `DISK_*`+`DEV_*` (Fase 16) |
 | `userland/devfs/src/main.rs` | devfs: `/dev/null`, `/dev/zero` |
 | `userland/console/src/main.rs` | console: `/dev/input/keyboard`, VGA |
 | `userland/init/src/main.rs` | init: spawn servizi + test in sequenza |
