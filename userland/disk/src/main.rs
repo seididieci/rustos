@@ -16,8 +16,10 @@
 //!
 //! Due protocolli serviti, entrambi con reply implicita (ADR-0008):
 //! - `DISK_*` (canale diretto userfs→userdisk, service_lookup(Disk)): HELLO
-//!   (fisici nelle reply: w0 = req_phys riservato, w1 = resp_phys), OPEN/READ
-//!   settoriali, CLOSE. Un settore per chiamata (1:1 con BlockSource).
+//!   (fisici nelle reply: w0 = req_phys del DISK_REQ ring, w1 = resp_phys),
+//!   OPEN/READ settoriali, CLOSE, RESOLVE nome→handle (Fase 16c: userdisk e'
+//!   l'unico proprietario della mappa nomi; userfs non indovina piu' nulla).
+//!   Un settore per chiamata (1:1 con BlockSource).
 //! - `DEV_*` (relay userfs per gli open raw `/dev/sdX`): OPEN(w0=handle
 //!   codificato disco<<16|sub), READ sequenziale con posizione per-fd (solo
 //!   multipli di 512), WRITE sempre ERR (read-only), CLOSE, READDIR vuota.
@@ -51,17 +53,21 @@ const DEV_CLOSE: u64 = 0x23;
 const DEV_READDIR: u64 = 0x24;
 
 /// Handshake data-plane: userfs chiede i fisici dei ring DISK.
-/// Reply: w0 = req_phys (riservato, userfs non scrive mai il request ring),
+/// Reply: w0 = req_phys (anello delle richieste di resolve, Fase 16c),
 /// w1 = resp_phys (mappato da userfs per leggere i frame). Niente frame:
 /// i fisici stanno nei registri.
-const DISK_HELLO: u64 = 0x50;
+use libr::DISK_HELLO;
 /// Valida un nodo (w0 = handle codificato). Reply OK/ERR, niente frame.
-const DISK_OPEN: u64 = 0x51;
+use libr::DISK_OPEN;
 /// Legge UN settore (w0 = handle, w1 = lba nel nodo).
 /// Frame: [512:8][0:8][settore]. Fuori range/errore → reply ERR, niente frame.
-const DISK_READ: u64 = 0x52;
+use libr::DISK_READ;
 /// Chiude (stateless: sempre OK, frame vuoto).
-const DISK_CLOSE: u64 = 0x53;
+use libr::DISK_CLOSE;
+/// Risolve un nome nodo ("sda", "sda1") in handle (Fase 16c, single source
+/// of truth nel driver). Richiesta: frame `[namelen:8][name]` nel DISK_REQ
+/// ring; reply w0 = handle o ERR, niente frame.
+use libr::DISK_RESOLVE;
 
 // ── Ring I/O ────────────────────────────────────────────────────────
 // Due coppie SEPARATE (lezione CLI_* del fix kbd/tty: mai protocolli diversi
@@ -131,6 +137,44 @@ unsafe fn resp_ring_write_client(data: &[u8]) {
     }
 }
 
+/// Lunghezza massima del nome nodo in un frame di resolve ("sda1" = 4;
+/// bound difensivo: oltre e' spazzatura di un'epoca morta).
+const DISK_MAX_NAME: usize = 16;
+
+/// Legge un frame di resolve `[namelen:8][name]` dal DISK_REQ ring e lo
+/// consuma (SPSC: si legge a `tail`, il producer userfs avanza `head`).
+/// Ritorna il nome o None a ring vuoto/frame malformato (resync tail=head:
+/// il mittente scrive il frame intero prima di notificare, quindi un frame
+/// incompleto appartiene a un'epoca morta — stessa invariante dei ring FS).
+fn disk_req_read_name() -> Option<String> {
+    unsafe {
+        let head = core::ptr::read_volatile((DISK_REQ_VA + RING_HEAD as u64) as *const u32);
+        let tail = core::ptr::read_volatile((DISK_REQ_VA + RING_TAIL as u64) as *const u32);
+        let avail = (head.wrapping_sub(tail)) % RING_DATA_CAP as u32;
+        if avail < 8 {
+            return None;
+        }
+        let src = DISK_REQ_VA as *const u8;
+        let t = tail as usize;
+        let mut len_b = [0u8; 8];
+        for i in 0..8 {
+            len_b[i] = core::ptr::read_volatile(src.add((t + i) % RING_DATA_CAP));
+        }
+        let len = u64::from_le_bytes(len_b) as usize;
+        if len == 0 || len > DISK_MAX_NAME || avail < (8 + len) as u32 {
+            core::ptr::write_volatile((DISK_REQ_VA + RING_TAIL as u64) as *mut u32, head);
+            return None;
+        }
+        let mut name_b = [0u8; DISK_MAX_NAME];
+        for i in 0..len {
+            name_b[i] = core::ptr::read_volatile(src.add((t + 8 + i) % RING_DATA_CAP));
+        }
+        let new_tail = (t + 8 + len) % RING_DATA_CAP;
+        core::ptr::write_volatile((DISK_REQ_VA + RING_TAIL as u64) as *mut u32, new_tail as u32);
+        core::str::from_utf8(&name_b[..len]).ok().map(String::from)
+    }
+}
+
 /// Consuma `count` byte di payload WRITE dal request ring del client relay
 /// (avanza la tail di 20 + count): anche rifiutando la scrittura la tail va
 /// avanzata o il prossimo request del client e' male (come devfs).
@@ -144,11 +188,15 @@ unsafe fn req_ring_consume_client(count: usize) {
 
 // ── Nodi ────────────────────────────────────────────────────────────
 
-/// Nodo esposto: whole-disk o partizione MBR (solo il nome serve qui: gli
-/// handle viaggiano gia' codificati dai client e si risolvono con `locate`).
+/// Nodo esposto: whole-disk o partizione MBR (Fase 16c: la tabella e' la
+/// single source of truth della mappa nome→handle; userfs risolve via
+/// DISK_RESOLVE invece di ricalcolare l'handle dal nome).
 struct Node {
     /// Nome breve ("sda", "sda1"): prefix registrato = "/dev/" + nome.
     name: String,
+    /// Handle codificato (disco<<16|sub, 0 = whole-disk): allocato qui,
+    /// mai indovinato altrove.
+    handle: u32,
 }
 
 /// Partizione MBR (coordinate fisiche, dal parse del settore 0).
@@ -438,8 +486,8 @@ pub extern "C" fn _start() -> ! {
     }
 
     // 2. Nodi: whole-disk + partizioni MBR primarie (graceful se assenti).
-    // Handle = disco<<16|sub: userfs li ricava dai nomi, qui serve solo la
-    // tabella coordinata (settori disco + partizioni per il locate).
+    // Handle = disco<<16|sub, allocato QUI (Fase 16c): la tabella `nodes' e'
+    // la single source of truth nome→handle; userfs lo chiede con DISK_RESOLVE.
     let mut nodes: Vec<Node> = Vec::new();
     let mut disk_sectors: Vec<u64> = Vec::new();
     let mut parts: Vec<Vec<PartLoc>> = Vec::new();
@@ -448,6 +496,7 @@ pub extern "C" fn _start() -> ! {
         disk_sectors.push(infos[i].sectors);
         nodes.push(Node {
             name: alloc::format!("sd{}", letter),
+            handle: (i as u32) << 16,
         });
         let mut disk_parts: Vec<PartLoc> = Vec::new();
         let mut sec0 = [0u8; 512];
@@ -465,6 +514,7 @@ pub extern "C" fn _start() -> ! {
                 );
                 nodes.push(Node {
                     name: alloc::format!("sd{}{}", letter, p + 1),
+                    handle: ((i as u32) << 16) | (p as u32 + 1),
                 });
                 disk_parts.push(PartLoc { start: part.start, sectors: part.sectors });
             }
@@ -586,6 +636,17 @@ pub extern "C" fn _start() -> ! {
         }
         if msg.tag == DISK_CLOSE {
             let _ = libr::reply(0, 0, 0);
+            continue;
+        }
+        if msg.tag == DISK_RESOLVE {
+            // Single source of truth nome→handle (Fase 16c): il nome corto
+            // ("sda", "sda1") arriva nel frame DISK_REQ, l'handle torna in w0.
+            // Sconosciuto/malformato → ERR, mai frame, mai wedge.
+            let result = match disk_req_read_name() {
+                Some(name) => nodes.iter().find(|n| n.name == name).map(|n| n.handle as u64),
+                None => None,
+            };
+            let _ = libr::reply(0, result.unwrap_or(ERR), 0);
             continue;
         }
 

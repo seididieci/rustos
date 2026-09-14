@@ -4,7 +4,8 @@
 //! gestisce:
 //!   - ramfs in memoria sul mount point `/` (scrivibile, Fase 9.1)
 //!   - FAT32 read-only dal disco via `userdisk` sul mount point `/fat`
-//!     (Fase 9.2 su ATA locale, Fase 16 via IPC `DISK_*`)
+//!     (Fase 9.2 su ATA locale, Fase 16 via IPC `DISK_*`, Fase 16c con
+//!     resolve nome→handle lato driver: userfs chiede, non indovina)
 //!   - devfs/console remoti via IPC per device `/dev/*` (Fase 9.3)
 //!
 //! Trasferimento dati (Fase 10.2): ogni client ha DUE pagine ring SPSC
@@ -166,10 +167,9 @@ fn dev_type(name: &str) -> Option<u64> {
 }
 
 /// Parsa un nome nodo disco Linux ("sda".."sdp", "sda1"..) in handle codificato
-/// (disco<<16|sub, 0 = whole-disk). Usato per gli open raw `/dev/sdX`, dove il
-/// prefix matchato e' il nodo stesso (rel vuota): userdisk valida davvero
-/// (quante partizioni ha il disco) e rifiuta gli handle impossibili.
-/// Ritorna None se non e' un nome disco.
+/// (disco<<16|sub, 0 = whole-disk). SOLO per gli open raw `/dev/sdX` (rel
+/// vuota): il mount (Fase 16c) risolve l'handle presso userdisk via
+/// DISK_RESOLVE invece di indovinarlo qui. Ritorna None se non e' un nome disco.
 fn disk_handle(name: &str) -> Option<u32> {
     let rest = name.strip_prefix("sd")?;
     let mut chars = rest.chars();
@@ -240,32 +240,56 @@ fn normalize_target(target: &str) -> Option<String> {
     Some(String::from(t))
 }
 
-/// Normalizza una source ("/dev/sda" → (source, handle)). Solo nodi disco.
-fn normalize_source(source: &str) -> Option<(String, u32)> {
+/// Normalizza una source ("/dev/sda" → source). Solo controllo sintattico
+/// (Fase 16c): l'handle NON si ricava piu' dal nome qui — lo alloca userdisk
+/// via DISK_RESOLVE (`resolve_mount_source`). Nomi non-disco o fuori `/dev/`
+/// → None.
+fn normalize_source(source: &str) -> Option<String> {
     let s = source.trim();
     let name = s.strip_prefix("/dev/")?;
-    if name.is_empty() || name.contains('/') {
+    if name.is_empty() || name.contains('/') || name.len() > 16 {
         return None;
     }
-    let handle = disk_handle(name)?;
-    Some((String::from(s), handle))
+    Some(String::from(s))
+}
+
+/// Risolve una source ("/dev/sda") in handle presso userdisk (Fase 16c:
+/// single source of truth nel driver). Ritorna None a nome sconosciuto o
+/// driver irraggiungibile (bound, mai wedge): il chiamante registra la spec
+/// inattiva e ritenta lazy al prossimo accesso.
+fn resolve_mount_source(source: &str) -> Option<u32> {
+    let name = source.strip_prefix("/dev/")?;
+    IpcDisk::new(0).resolve(name)
 }
 
 /// Applica una spec (statica o dinamica): valida e registra/aggiorna sempre la
-/// spec (idempotente sul target), monta subito se il disco c'e'. Ritorna true
-/// se il mount e' ATTIVO.
+/// spec (idempotente sul target). L'handle si chiede a userdisk (Fase 16c).
+/// Resolve fallito (nome sconosciuto o driver irraggiungibile): NESSUN cambio
+/// di stato (come il parse fallito di prima) — la distinzione nome-ignoto vs
+/// driver-down non serve: a driver caduto il client riprova (restart ~50 tick,
+/// bound 500 dentro `resolve`); l'inattivita' lazy resta per BPB invalida e
+/// drop d'epoca (`note_peer_death`). Ritorna true se il mount e' ATTIVO
+/// (BPB valida subito), false altrimenti (spec inattiva registrata solo a
+/// resolve riuscito ma BPB illeggibile: ritenta lazy, mai shadow ramfs).
 fn apply_mount_spec(
     mounts: &mut Vec<FsMount>,
     source: &str,
     target: &str,
     opts: &str,
 ) -> bool {
-    let (norm_source, handle) = match normalize_source(source) {
+    let norm_source = match normalize_source(source) {
         Some(x) => x,
         None => return false,
     };
     let norm_target = match normalize_target(target) {
         Some(x) => x,
+        None => return false,
+    };
+    // Resolve una sola volta qui (vale per spec nuove e sostituite): a
+    // fallimento la tabella resta intatta (mai distruggere un buon mount con
+    // una source sbagliata, mai registrare nomi ignoti).
+    let handle = match resolve_mount_source(&norm_source) {
+        Some(h) => h,
         None => return false,
     };
     if let Some(m) = mounts.iter_mut().find(|m| m.target == norm_target) {
@@ -287,6 +311,34 @@ fn apply_mount_spec(
     active
 }
 
+/// Riattiva un mount inattivo (Fase 16c): re-resolve del nome presso userdisk
+/// (gli handle possono cambiare dopo un restart del driver) + remount.
+/// Fast path: mount gia' attivo → true senza IPC. Ritorna true se attivo.
+fn reactivate_mount(mounts: &mut Vec<FsMount>, mi: usize) -> bool {
+    if mounts.get(mi).map_or(false, |m| m.is_active()) {
+        return true;
+    }
+    let name = match mounts.get(mi) {
+        Some(m) => match m.source.strip_prefix("/dev/") {
+            Some(n) => String::from(n),
+            None => return false,
+        },
+        None => return false,
+    };
+    let handle = match IpcDisk::new(0).resolve(&name) {
+        Some(h) => h,
+        None => return false,
+    };
+    match mounts.get_mut(mi) {
+        Some(m) => {
+            m.handle = handle;
+            m.fs = MountedFs::Fat(Fat32::mount(IpcDisk::new(handle)));
+            m.is_active()
+        }
+        None => false,
+    }
+}
+
 impl FsMount {
     /// Istanza FAT se montata e attiva (None se altra variante o inattiva).
     /// Le future varianti (ext2/ISO) aggiungono i loro accessor qui; gli
@@ -299,9 +351,15 @@ impl FsMount {
 
     /// Invalida il client disco alla morte del peer (solo variante Fat con
     /// mount attivo; le future varianti con client propri fanno lo stesso).
-    fn note_peer_death(&self, dead_chan: u64) {
+    /// Se eravamo connessi (cambio d'epoca) droppa anche l'istanza: gli handle
+    /// possono cambiare dopo un restart del driver (Fase 16c) e un handle
+    /// stale leggerebbe il disco sbagliato in silenzio — il prossimo accesso
+    /// re-risolve per nome e rimonta (fail-loud, mai shadow ramfs).
+    fn note_peer_death(&mut self, dead_chan: u64) {
         if let MountedFs::Fat(Some(f)) = &self.fs {
-            f.disk().note_peer_death(dead_chan);
+            if f.disk().note_peer_death(dead_chan) {
+                self.fs = MountedFs::Fat(None);
+            }
         }
     }
 
@@ -327,8 +385,9 @@ fn target_match(mounts: &[FsMount], path: &str) -> bool {
 }
 
 /// Risolve un path nel mount col prefix piu' lungo. Attiva lazy se il mount e'
-/// inattivo (ritenta il mount ora; solo variante Fat: le future varianti
-/// aggiungono il loro ramo qui). Ritorna (indice mount, rel).
+/// inattivo (re-resolve per nome + remount via `reactivate_mount`; solo
+/// variante Fat: le future varianti aggiungono il loro ramo qui).
+/// Ritorna (indice mount, rel).
 fn resolve_fsmount<'a>(mounts: &mut Vec<FsMount>, path: &'a str) -> Option<(usize, &'a str)> {
     let t = path.trim_start_matches('/');
     let mut best: Option<(usize, &str)> = None;
@@ -348,16 +407,7 @@ fn resolve_fsmount<'a>(mounts: &mut Vec<FsMount>, path: &'a str) -> Option<(usiz
         }
     }
     let (i, rel) = best?;
-    let handle = mounts[i].handle;
-    let active = match &mut mounts[i].fs {
-        MountedFs::Fat(opt) => {
-            if opt.is_none() {
-                *opt = Fat32::mount(IpcDisk::new(handle));
-            }
-            opt.is_some()
-        }
-    };
-    if !active {
+    if !reactivate_mount(mounts, i) {
         return None;
     }
     Some((i, rel))
@@ -774,7 +824,7 @@ fn handle_open(
 fn handle_read(
     fs: &RamFs,
     ftable: &mut FileTable,
-    mounts_fat: &Vec<FsMount>,
+    mounts_fat: &mut Vec<FsMount>,
     rings: &BTreeMap<u64, (u64, u64)>,
     chan: u64,
     fd: u32,
@@ -818,6 +868,12 @@ fn handle_read(
         }
         FsKind::Fat => {
             let mi = mnt?;
+            // Il mount puo' essere caduto inattivo alla morte di userdisk
+            // (drop d'epoca in `note_peer_death`): riattiva per nome qui, come
+            // `resolve_fsmount` fa per open/readdir (fail-loud, mai shadow).
+            if !reactivate_mount(mounts_fat, mi) {
+                return None;
+            }
             let fat = mounts_fat.get(mi)?.fat()?;
             let info = fat.find(path)?;
             let mut buf = vec![0u8; count];
@@ -970,9 +1026,10 @@ fn handle_mkdir(fs: &mut RamFs, mounts: &[FsMount], path: &str) -> Option<u64> {
 }
 
 /// Monta una sorgente sul target (Fase 16b, payload "source\0target\0").
-/// Ritorna Some(0) se il mount e' ATTIVO, None altrimenti (sorgente/target
-/// invalidi o disco assente: la spec resta comunque registrata e ritenta
-/// lazy, ma al client risponde errore subito).
+/// Ritorna Some(0) se il mount e' ATTIVO, None altrimenti: a resolve fallito
+/// (sorgente/target invalidi, nome ignoto, driver irraggiungibile) nessun
+/// cambio di stato; a BPB illeggibile la spec resta registrata INATTIVA e
+/// ritenta lazy (mai shadow ramfs).
 fn handle_mount(mounts: &mut Vec<FsMount>, payload: &str) -> Option<u64> {
     let mut parts = payload.split('\0');
     let source = parts.next()?;
@@ -1148,9 +1205,9 @@ pub extern "C" fn _start() -> ! {
             // dopo una re-registrazione dello stesso prefix.
             mounts.retain(|m| m.driver_chan != chan);
             // Se il morto era userdisk, invalida i client disco di tutti i
-            // mount (il prossimo read riconnette da solo: lookup + HELLO +
-            // remap, t32). Veloce: solo compare dentro IpcDisk.
-            for m in fat_mounts.iter() {
+            // mount (Fase 16c: drop d'epoca — il prossimo accesso re-risolve
+            // per nome e rimonta, t32). Veloce: solo compare dentro IpcDisk.
+            for m in fat_mounts.iter_mut() {
                 m.note_peer_death(chan);
             }
             continue;
@@ -1241,7 +1298,7 @@ pub extern "C" fn _start() -> ! {
             }
 
             R_READ => {
-                handle_read(&fs, &mut ftable, &fat_mounts, &rings, chan, w0 as u32, w1 as usize)
+                handle_read(&fs, &mut ftable, &mut fat_mounts, &rings, chan, w0 as u32, w1 as usize)
             }
 
             R_WRITE => {

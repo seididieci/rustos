@@ -42,6 +42,25 @@ chiamata, 1:1 con `BlockSource`). Solo `READ` ha frame (`[512:8][0:8][settore]`
 nel ring DISK dedicato a `0x24/0x25`, mai interleaving col traffico FS).
 Handle dal nome, validita' nel driver (quante partizioni ha davvero il disco).
 
+## Addendum Fase 16c (2026-09-14): resolve nome→handle lato driver
+
+La mappa nome→handle era duplicata: `disk_handle()` in userfs indovinava
+l'handle dal nome e `locate()` in userdisk lo validava. Ogni nuovo bus avrebbe
+richiesto un parser nuovo in userfs. Ora userdisk e' la single source of
+truth:
+
+- Nuovo `DISK_RESOLVE` (`0x54`, tag centralizzati in `syscall-numbers`,
+  riesportati da `libr`): richiesta frame `[namelen:8][name]` nel DISK_REQ
+  ring (userfs mappa anche il req-phys da `HELLO.w0` a `0x24`, prima riservato
+  e inutilizzato), reply w0 = handle o ERR. Stesse invarianti SPSC degli altri
+  ring (consumer legge a `tail`, resync d'epoca a frame malformato).
+- La tabella `nodes` alloca gli handle (disco<<16|sub); il relay raw `DEV_*`
+  resta a handle (raw path intoccato).
+- Decisione multi-bus bloccata (opzione d): userdisk resta l'unico owner del
+  servizio `Disk` — SATA/NVMe futuri entrano come backend interni dietro un
+  trait, nessun cambio kernel ne' emendamento ADR-0008 (registro a slot
+  singolo: due driver separati non potrebbero coesistere sullo slot 7).
+
 ## Regole emerse (vincolanti)
 
 1. **Mai sync incrociate tra server.** `userdisk` fa `FS_BUF_REG` + `R_REGISTER`

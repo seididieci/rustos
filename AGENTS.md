@@ -637,27 +637,42 @@ velordor/
     boundary. Confronto MINIX (tabella nel VFS) / QNX (namespace separato,
     check live futuro) in ADR-0013.
   - Verifica: testfs 5/5, testfat 6/6, usertests 33/33, zero FAIL/PANIC/FAULT.
-- [ ] Fase 17: diritti per-canale lato server (capability su IPC) — PIANO
+- [x] Fase 16c: resolve nome→handle lato driver (single source of truth)
+  - Motivazione: il mount indovinava l'handle parsando `/dev/sdX` in userfs
+    (`disk_handle`), duplicando la mappa posseduta dal driver (fragile con
+    lettere instabili e futuri bus SATA: ogni bus avrebbe richiesto un parser
+    nuovo in userfs). Ora mount chiede a userfs, che chiede al driver.
+  - [x] 16c.1 Protocollo `DISK_*` centralizzato in `syscall-numbers`
+        (HELLO/OPEN/READ/CLOSE + nuovo `DISK_RESOLVE` 0x54); `libr` riesporta.
+        userdisk unico owner del servizio `Disk` (opzione d bloccata: SATA
+        futuro come backend interno, nessun cambio kernel/ADR-0008).
+  - [x] 16c.2 userdisk fonte della verita': tabella `nodes` con handle allocato
+        qui; handler `DISK_RESOLVE` (frame `[namelen:8][name]` nel DISK_REQ ring,
+        reply w0 = handle o ERR, resync d'epoca come i ring FS). Raw `/dev/sdX`
+        (`DEV_*`) intoccato.
+  - [x] 16c.3 userfs broker: `IpcDisk::connect` (HELLO + map di ENTRAMBI i ring,
+        bound) + `OPEN` a tentativo singolo; `resolve(name)` con un retry solo
+        su morte driver (nome ignoto = errore legittimo, mai retry).
+        `apply_mount_spec` risolve una volta (fallito = nessun cambio di stato:
+        mai spec fantasma, mai distruggere un buon mount); lazy/`reactivate`
+        per nome in `resolve_fsmount` e `handle_read`; drop d'epoca su
+        EXIT_NOTIFY (fail-loud, mai shadow ramfs, mai handle stale silenzioso).
+  - [x] 16c.4 Test t35 (nomi ignoti senza stato, bad-replace innocuo, mount
+        valido operativo; t34 resta libero per la Fase 17) + t32 invariato
+        (kill/restart ora esercita re-resolve). Suite → 34/34.
+  - [x] 16c.5 Docs: emendamenti ADR-0012/0013 + AGENTS + libro (08/09/11).
+  - Bug trovati: spec fantasma a resolve fallito (registrava inattiva e
+        avvelenava `umount`: t33 "doppio umount accettato") → resolve fallito
+        non tocca la tabella; header di t32 mangiato da un edit (ripristinato).
+  - Limiti noti (16c.3 futura, mount persistente): lettere ancora instabili
+        (ordine di probe), niente UUID/label/serial, mount attivo + reorder
+        dopo restart coperto solo via drop+re-resolve per nome (stesso nome).
+  - Verifica: testfs 5/5, testfat 6/6, usertests 34/34 (x2), shell 3/3,
+        zero FAIL/PANIC/FAULT.
   - Motivazione: oggi un `Channel` e' tutto-o-niente (chi ha l'id manda
     qualunque cosa). Il passo verso IPC a capability: diritti attaccati al
     canale, solo in riduzione, senza kernel (userfs conosce gia' ogni peer
     dal canale).
-  - Design (self-restriction only): tabella `chan → {ops bitmask, subtree
-    prefix}` in userfs (default `{ALL, /}` = tutto verde, purge su
-    EXIT_NOTIFY come rings/ftable); check ops CENTRALE nel dispatch +
-    check subtree solo a open/mkdir (l'fd resta capability pura);
-    `R_RIGHTS_DROP` (solo shrink, irrevocabile, no auth) + `R_RIGHTS_GET` +
-    `libr::rights_drop/get`; niente GRANT (canali non trasferibili).
-  - Limiti dichiarati: diritti effimeri (restart userfs = re-handshake full);
-    niente policy per-identita' (serve il kernel: fase channel-rights);
-    niente revoca selettiva (solo per-morte, esistente).
-  - 17.1 userfs: tabella + check (suite verde a default pieni).
-  - 17.2 libr: tag + wrapper (pattern mkdir, retry NOHANDSHAKE gratis).
-  - 17.3 Test t34 (helper `usertestcli` modo RIGHTSDROP: write rifiutata +
-        read ok, subtree /fat: open /hello.txt rifiutato + /fat ok, GET).
-        Suite → 34/34.
-  - 17.4 Docs: AGENTS (questa voce), ADR-0014, libro (09/11).
-  - Verifica: testfs 5/5, testfat 6/6, usertests 34/34, zero FAIL/PANIC/FAULT.
 - [ ] Fase 18: Shell + utility utente — in backlog (era 17, slittata per la
       nuova 17; shell interattiva esiste; restano utility "utente"
       aggiuntive). Da rivedere/ridimensionare quando ripresa.

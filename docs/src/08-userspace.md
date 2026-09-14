@@ -319,6 +319,9 @@ in tre direzioni pianificate (vedi `AGENTS.md`):
   FAT32 generico su `BlockSource`, client `DISK_*` con riconnessione lazy).
   Regole: mai sync incrociate tra server (registrazione async), mai throttle
   senza waker, consumer SPSC a `tail`, `ring_alloc` a coppie fresche.
+  Fase 16c: mappa nome→handle di proprieta' del driver (`DISK_RESOLVE` 0x54,
+  tag centralizzati in `syscall-numbers`) — userfs chiede, non indovina;
+  userdisk unico owner di `Disk` (SATA futuro come backend interno).
 - **Fase 17 — Shell + utility utente** (slittata in coda).
 
 ## Riferimenti

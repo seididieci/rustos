@@ -31,6 +31,10 @@ pub use syscall_numbers::Service;
 pub use syscall_numbers::EXIT_NOTIFY;
 /// Tag della notify kernel→userkbd su IRQ1 (Fase 15, bridge interrupt→IPC).
 pub use syscall_numbers::IRQ_NOTIFY_KBD;
+/// Protocollo DISK_* userfs→userdisk (Fase 16, single source in
+/// `syscall-numbers`, Fase 16c): handshake/open/read/close + resolve
+/// nome→handle di proprieta' del driver.
+pub use syscall_numbers::{DISK_CLOSE, DISK_HELLO, DISK_OPEN, DISK_READ, DISK_RESOLVE};
 
 /// Allocatore globale on-demand (free-list + `sbrk`): unico per tutto il
 /// userland. Vive qui cosi' ogni binario che linka `libr` lo usa senza
