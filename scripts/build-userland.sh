@@ -30,6 +30,7 @@ build_one userland/init    userland/init/src/init.ld       userinit.bin    useri
 build_one userland/console userland/console/src/console.ld userconsole.bin userconsole
 build_one userland/fs      userland/fs/src/fs.ld           userfs.bin      userfs
 build_one userland/devfs   userland/devfs/src/devfs.ld     userdevfs.bin   userdevfs
+build_one userland/disk    userland/disk/src/disk.ld       userdisk.bin    userdisk
 build_one userland/kbd     userland/kbd/src/kbd.ld         userkbd.bin     userkbd
 build_one userland/tty     userland/tty/src/tty.ld         usertty.bin     usertty
 build_one userland/uptime  userland/uptime/src/uptime.ld   useruptime.bin  useruptime
