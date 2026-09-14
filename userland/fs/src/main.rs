@@ -135,17 +135,18 @@ fn resolve_mount<'a>(path: &'a str, mounts: &[Mount]) -> Option<(u64, &'a str)> 
     best
 }
 
-/// Risolve un path in FsKind per i filesystem locali (ram, fat).
-/// Per i path remoti, ritorna None (usa resolve_mount).
-fn resolve_local(path: &str) -> Option<FsKind> {
+/// Risolve un path in FsKind (ramfs di default).
+/// Per i path remoti (/dev/*), ritorna None (usa resolve_mount).
+/// Per i path sotto un mount noto, ritorna Fat (usa resolve_fsmount per indice+rel).
+fn resolve_local(mounts_fat: &[FsMount], path: &str) -> Option<FsKind> {
     let t = path.trim_start_matches('/');
-    if t == "fat" || t.starts_with("fat/") {
-        Some(FsKind::Fat)
-    } else if t.starts_with("dev/") || t == "dev" {
-        None // gestito da resolve_mount
-    } else {
-        Some(FsKind::Ram)
+    if t.starts_with("dev/") || t == "dev" {
+        return None; // gestito da resolve_mount
     }
+    if target_match(mounts_fat, path) {
+        return Some(FsKind::Fat);
+    }
+    Some(FsKind::Ram)
 }
 
 /// Converte device name in tipo devfs (w0 di DEV_OPEN).
@@ -186,12 +187,176 @@ fn disk_handle(name: &str) -> Option<u32> {
     Some((disk << 16) | sub)
 }
 
-/// Path relativo al mount FAT (`/fat/HELLO.TXT` -> `HELLO.TXT`, `/fat` -> ``).
-fn fat_rel_path(path: &str) -> &str {
-    path.trim_start_matches('/')
-        .strip_prefix("fat")
-        .map(|s| s.trim_start_matches('/'))
-        .unwrap_or("")
+// ── Mount locali dinamici (Fase 16b) ─────────────────────────────────
+// Tabella VFS userspace (nessun kernel coinvolto, ADR-0005): binding
+// target → filesystem montato. La radice resta sempre ramfs. Il contenitore
+// e' generico (`FsMount` + `MountedFs`): oggi solo FAT32, domani ext2/ISO9660
+// aggiungono una variante senza reshuffle della tabella.
+
+/// Filesystem montato su un target. Le varianti tengono l'istanza viva
+/// (parser + client); `None` = spec registrata ma inattiva (sorgente assente
+/// all'ultimo tentativo: gli accessi sotto il target falliscono invece di
+/// finire shadow in ramfs, e il prossimo accesso ritenta l'attivazione).
+enum MountedFs {
+    Fat(Option<Fat32<IpcDisk>>),
+}
+
+/// Mount locale: binding target → sorgente + istanza.
+struct FsMount {
+    /// Target normalizzato senza slash ("fat", "mnt").
+    target: String,
+    /// Source originale ("/dev/sda") per diagnostica e re-apply.
+    source: String,
+    /// Opzioni mount (placeholder Strato 0: conservate, non interpretate —
+    /// futuro: uid=/gid=/mode per i permessi FAT finti alla Linux).
+    opts: String,
+    /// Handle nodo disco codificato (disco<<16|sub, vedi `disk_handle`).
+    /// Ha senso solo per sorgenti a blocchi (variante Fat); le future
+    /// varianti non-blocco lo ignoreranno.
+    handle: u32,
+    /// Filesystem montato.
+    fs: MountedFs,
+}
+
+/// Spec statiche applicate a OGNI boot (fresco o restart): sostituiscono il
+/// binding hardcodato con lo stesso codice dei mount dinamici (dogfood).
+/// Dinamici (R_MOUNT, 16b.2) si aggiungono alla tabella ma si perdono al
+/// restart (stato runtime, come fd e handshake: i client ristabiliscono).
+const STATIC_MOUNTS: &[(&str, &str)] = &[("/dev/sda", "fat")];
+
+/// Normalizza un target ("//mnt//" → "mnt"). Rifiuta root, vuoti, `.`/`..`.
+fn normalize_target(target: &str) -> Option<String> {
+    let t = target.trim().trim_matches('/');
+    if t.is_empty() {
+        return None;
+    }
+    if t.split('/').any(|c| c.is_empty() || c == "." || c == "..") {
+        return None;
+    }
+    Some(String::from(t))
+}
+
+/// Normalizza una source ("/dev/sda" → (source, handle)). Solo nodi disco.
+fn normalize_source(source: &str) -> Option<(String, u32)> {
+    let s = source.trim();
+    let name = s.strip_prefix("/dev/")?;
+    if name.is_empty() || name.contains('/') {
+        return None;
+    }
+    let handle = disk_handle(name)?;
+    Some((String::from(s), handle))
+}
+
+/// Applica una spec (statica o dinamica): valida e registra/aggiorna sempre la
+/// spec (idempotente sul target), monta subito se il disco c'e'. Ritorna true
+/// se il mount e' ATTIVO.
+fn apply_mount_spec(
+    mounts: &mut Vec<FsMount>,
+    source: &str,
+    target: &str,
+    opts: &str,
+) -> bool {
+    let (norm_source, handle) = match normalize_source(source) {
+        Some(x) => x,
+        None => return false,
+    };
+    let norm_target = match normalize_target(target) {
+        Some(x) => x,
+        None => return false,
+    };
+    if let Some(m) = mounts.iter_mut().find(|m| m.target == norm_target) {
+        m.source = norm_source;
+        m.opts = String::from(opts);
+        m.handle = handle;
+        m.fs = MountedFs::Fat(Fat32::mount(IpcDisk::new(handle)));
+        return matches!(&m.fs, MountedFs::Fat(Some(_)));
+    }
+    let fs = MountedFs::Fat(Fat32::mount(IpcDisk::new(handle)));
+    let active = matches!(&fs, MountedFs::Fat(Some(_)));
+    mounts.push(FsMount {
+        target: norm_target,
+        source: norm_source,
+        opts: String::from(opts),
+        handle,
+        fs,
+    });
+    active
+}
+
+impl FsMount {
+    /// Istanza FAT se montata e attiva (None se altra variante o inattiva).
+    /// Le future varianti (ext2/ISO) aggiungono i loro accessor qui; gli
+    /// handler matchano la variante una sola volta per op.
+    fn fat(&self) -> Option<&Fat32<IpcDisk>> {
+        match &self.fs {
+            MountedFs::Fat(opt) => opt.as_ref(),
+        }
+    }
+
+    /// Invalida il client disco alla morte del peer (solo variante Fat con
+    /// mount attivo; le future varianti con client propri fanno lo stesso).
+    fn note_peer_death(&self, dead_chan: u64) {
+        if let MountedFs::Fat(Some(f)) = &self.fs {
+            f.disk().note_peer_death(dead_chan);
+        }
+    }
+
+    /// true se il mount e' attivo (istanza viva).
+    fn is_active(&self) -> bool {
+        match &self.fs {
+            MountedFs::Fat(opt) => opt.is_some(),
+        }
+    }
+}
+
+/// Match puro target (longest prefix, SENZA attivazione): true se il path e'
+/// sotto un mount FAT noto (anche inattivo). Usato per rifiutare le op di
+/// scrittura/creazione ramfs sotto target FAT (niente shadow).
+fn target_match(mounts: &[FsMount], path: &str) -> bool {
+    let t = path.trim_start_matches('/');
+    mounts.iter().any(|m| {
+        t == m.target
+            || (t.len() > m.target.len()
+                && t.as_bytes().get(m.target.len()) == Some(&b'/')
+                && t.starts_with(m.target.as_str()))
+    })
+}
+
+/// Risolve un path nel mount col prefix piu' lungo. Attiva lazy se il mount e'
+/// inattivo (ritenta il mount ora; solo variante Fat: le future varianti
+/// aggiungono il loro ramo qui). Ritorna (indice mount, rel).
+fn resolve_fsmount<'a>(mounts: &mut Vec<FsMount>, path: &'a str) -> Option<(usize, &'a str)> {
+    let t = path.trim_start_matches('/');
+    let mut best: Option<(usize, &str)> = None;
+    for (i, m) in mounts.iter().enumerate() {
+        let rel = if t == m.target {
+            ""
+        } else if t.len() > m.target.len()
+            && t.as_bytes().get(m.target.len()) == Some(&b'/')
+            && t.starts_with(m.target.as_str())
+        {
+            &t[m.target.len() + 1..]
+        } else {
+            continue;
+        };
+        if best.map_or(true, |(_, r)| rel.len() < r.len()) {
+            best = Some((i, rel));
+        }
+    }
+    let (i, rel) = best?;
+    let handle = mounts[i].handle;
+    let active = match &mut mounts[i].fs {
+        MountedFs::Fat(opt) => {
+            if opt.is_none() {
+                *opt = Fat32::mount(IpcDisk::new(handle));
+            }
+            opt.is_some()
+        }
+    };
+    if !active {
+        return None;
+    }
+    Some((i, rel))
 }
 
 // ── Helper conversione ─────────────────────────────────────────────
@@ -205,10 +370,20 @@ fn to_reply(val: Option<u64>) -> u64 {
 // ── ramfs ──────────────────────────────────────────────────────────
 
 #[derive(Clone)]
+#[allow(dead_code)] // `mode`: placeholder Strato 0 (16b), enforcement futuro
 enum FsNode {
-    File(Vec<u8>),
-    Dir(BTreeMap<String, FsNode>),
+    File { data: Vec<u8>, mode: u32 },
+    Dir { entries: BTreeMap<String, FsNode>, mode: u32 },
 }
+
+/// Mode Unix di default (placeholder Strato 0, Fase 16b): conservati, MAI
+/// enforcement (nessun uid nel sistema; i check R/W/X arrivano col login
+/// boundary, futuro). FAT e' mappata fissa a mount (file 0o444, dir 0o555:
+/// tanto e' read-only).
+pub const MODE_FILE_DEF: u32 = 0o666;
+pub const MODE_DIR_DEF: u32 = 0o777;
+pub const MODE_FAT_FILE: u32 = 0o444;
+pub const MODE_FAT_DIR: u32 = 0o555;
 
 struct RamFs {
     root: BTreeMap<String, FsNode>,
@@ -229,7 +404,7 @@ impl RamFs {
         let mut final_node = None;
         for &part in &parts {
             match current_dir.get(part) {
-                Some(FsNode::Dir(d)) => {
+                Some(FsNode::Dir { entries: d, .. }) => {
                     current_dir = d;
                 }
                 Some(node) => {
@@ -253,13 +428,13 @@ impl RamFs {
         for (i, &part) in parts.iter().enumerate() {
             if i == parts.len() - 1 {
                 current.entry(String::from(part))
-                    .or_insert_with(|| FsNode::File(Vec::new()));
+                    .or_insert_with(|| FsNode::File { data: Vec::new(), mode: MODE_FILE_DEF });
                 return current.get_mut(part);
             }
             let entry = current.entry(String::from(part))
-                .or_insert_with(|| FsNode::Dir(BTreeMap::new()));
+                .or_insert_with(|| FsNode::Dir { entries: BTreeMap::new(), mode: MODE_DIR_DEF });
             match entry {
-                FsNode::Dir(dir) => current = dir,
+                FsNode::Dir { entries: dir, .. } => current = dir,
                 _ => return None,
             }
         }
@@ -270,8 +445,8 @@ impl RamFs {
     fn create_file(&mut self, path: &str) -> Option<&mut Vec<u8>> {
         let node = self.find_or_create(path)?;
         match node {
-            FsNode::File(data) => Some(data),
-            FsNode::Dir(_) => None,
+            FsNode::File { data, .. } => Some(data),
+            FsNode::Dir { .. } => None,
         }
     }
 
@@ -282,7 +457,7 @@ impl RamFs {
         }
         let node = self.find(path)?;
         match node {
-            FsNode::Dir(entries) => Some(entries.keys().cloned().collect()),
+            FsNode::Dir { entries, .. } => Some(entries.keys().cloned().collect()),
             _ => None,
         }
     }
@@ -297,13 +472,13 @@ impl RamFs {
         for (i, &part) in parts.iter().enumerate() {
             if i == parts.len() - 1 {
                 current.entry(String::from(part))
-                    .or_insert_with(|| FsNode::Dir(BTreeMap::new()));
+                    .or_insert_with(|| FsNode::Dir { entries: BTreeMap::new(), mode: MODE_DIR_DEF });
                 return Some(());
             }
             let entry = current.entry(String::from(part))
-                .or_insert_with(|| FsNode::Dir(BTreeMap::new()));
+                .or_insert_with(|| FsNode::Dir { entries: BTreeMap::new(), mode: MODE_DIR_DEF });
             match entry {
-                FsNode::Dir(dir) => current = dir,
+                FsNode::Dir { entries: dir, .. } => current = dir,
                 _ => return None,
             }
         }
@@ -314,7 +489,10 @@ impl RamFs {
 // ── Open file table ────────────────────────────────────────────────
 
 enum FileEntry {
-    Local { path: String, kind: FsKind, offset: usize },
+    /// File locale: `path` e' relativo al suo filesystem (ramfs: path assoluto
+    /// senza slash iniziale; FAT: relativo al mount). `mnt` = indice in
+    /// `mounts_fat` per i file FAT, None per ramfs (radice sempre locale).
+    Local { path: String, kind: FsKind, offset: usize, mnt: Option<usize> },
     Remote { server_chan: u64, remote_fd: u32 },
 }
 
@@ -338,12 +516,13 @@ impl FileTable {
         current
     }
 
-    fn open(&mut self, chan: u64, path: &str, kind: FsKind) -> u64 {
+    fn open(&mut self, chan: u64, path: &str, kind: FsKind, mnt: Option<usize>) -> u64 {
         let fd = self.alloc_fd(chan);
         self.files.insert((chan, fd), FileEntry::Local {
             path: String::from(path),
             kind,
             offset: 0,
+            mnt,
         });
         fd as u64
     }
@@ -375,9 +554,11 @@ impl FileTable {
         self.next_fd.remove(&chan);
     }
 
-    fn get(&self, chan: u64, fd: u32) -> Option<(&str, FsKind, usize)> {
+    fn get(&self, chan: u64, fd: u32) -> Option<(&str, FsKind, usize, Option<usize>)> {
         match self.files.get(&(chan, fd))? {
-            FileEntry::Local { path, kind, offset } => Some((path.as_str(), *kind, *offset)),
+            FileEntry::Local { path, kind, offset, mnt } => {
+                Some((path.as_str(), *kind, *offset, *mnt))
+            }
             FileEntry::Remote { .. } => None,
         }
     }
@@ -528,7 +709,7 @@ fn map_client_resp_ring(rings: &BTreeMap<u64, (u64, u64)>, chan: u64) -> bool {
 fn handle_open(
     fs: &mut RamFs,
     ftable: &mut FileTable,
-    fat: Option<&Fat32<IpcDisk>>,
+    mounts_fat: &mut Vec<FsMount>,
     mounts: &[Mount],
     chan: u64,
     path: &str,
@@ -562,16 +743,19 @@ fn handle_open(
         return Some(ftable.open_remote(chan, driver_chan, remote_fd));
     }
 
-    // Filesystem locali (ram, fat).
-    match resolve_local(path)? {
-        FsKind::Fat => {
-            let fat = fat?;
-            fat.find(fat_rel_path(path))?;
-            Some(ftable.open(chan, fat_rel_path(path), FsKind::Fat))
-        }
+    // Filesystem locali: prima i mount FAT (con attivazione lazy), poi ramfs.
+    // resolve_local copre ramfs + il caso "mount noto ma inattivo" (→ None,
+    // mai shadow in ramfs: stesso contratto di prima).
+    if let Some((mi, rel)) = resolve_fsmount(mounts_fat, path) {
+        let fat = mounts_fat[mi].fat()?;
+        fat.find(rel)?;
+        return Some(ftable.open(chan, rel, FsKind::Fat, Some(mi)));
+    }
+    match resolve_local(mounts_fat, path)? {
+        FsKind::Fat => None, // mount inattivo: errore, mai shadow ramfs
         FsKind::Ram => {
             fs.create_file(path);
-            Some(ftable.open(chan, path, FsKind::Ram))
+            Some(ftable.open(chan, path, FsKind::Ram, None))
         }
     }
 }
@@ -579,7 +763,7 @@ fn handle_open(
 fn handle_read(
     fs: &RamFs,
     ftable: &mut FileTable,
-    fat: Option<&Fat32<IpcDisk>>,
+    mounts_fat: &Vec<FsMount>,
     rings: &BTreeMap<u64, (u64, u64)>,
     chan: u64,
     fd: u32,
@@ -606,12 +790,12 @@ fn handle_read(
         return None;
     }
 
-    let (path, kind, offset) = ftable.get(chan, fd)?;
+    let (path, kind, offset, mnt) = ftable.get(chan, fd)?;
 
     let data: Vec<u8> = match kind {
         FsKind::Ram => {
             let d = match fs.find(path)? {
-                FsNode::File(d) => d,
+                FsNode::File { data: d, .. } => d,
                 _ => return None,
             };
             if offset >= d.len() {
@@ -622,7 +806,8 @@ fn handle_read(
             }
         }
         FsKind::Fat => {
-            let fat = fat?;
+            let mi = mnt?;
+            let fat = mounts_fat.get(mi)?.fat()?;
             let info = fat.find(path)?;
             let mut buf = vec![0u8; count];
             let n = fat.read_file(&info, offset, count, &mut buf);
@@ -679,13 +864,13 @@ fn handle_write_local(
     count: usize,
     payload: &[u8],
 ) -> Option<u64> {
-    let (path, kind, offset) = ftable.get(chan, fd)?;
+    let (path, kind, offset, _mnt) = ftable.get(chan, fd)?;
     if kind == FsKind::Fat {
         return None; // FAT32 read-only
     }
 
     match fs.find_or_create(path)? {
-        FsNode::File(file_data) => {
+        FsNode::File { data: file_data, .. } => {
             if offset + count > file_data.len() {
                 file_data.resize(offset + count, 0);
             }
@@ -707,7 +892,7 @@ fn handle_close(ftable: &mut FileTable, chan: u64, fd: u32) -> Option<u64> {
 
 fn handle_readdir(
     fs: &RamFs,
-    fat: Option<&Fat32<IpcDisk>>,
+    mounts_fat: &mut Vec<FsMount>,
     mounts: &[Mount],
     rings: &BTreeMap<u64, (u64, u64)>,
     chan: u64,
@@ -723,12 +908,25 @@ fn handle_readdir(
         return Some(reply.w0);
     }
 
-    let entries: Vec<String> = match resolve_local(path)? {
-        FsKind::Fat => {
-            let fat = fat?;
-            let rel = fat_rel_path(path);
-            fat.list_dir(rel).into_iter().map(|d| d.name).collect()
+    if let Some((mi, rel)) = resolve_fsmount(mounts_fat, path) {
+        let fat = mounts_fat[mi].fat()?;
+        let entries: Vec<String> =
+            fat.list_dir(rel).into_iter().map(|d| d.name).collect();
+        let mut buf = Vec::new();
+        for entry in &entries {
+            buf.extend_from_slice(entry.as_bytes());
+            buf.push(0);
         }
+        buf.push(0);
+        if let Some(&(_, _)) = rings.get(&chan) {
+            map_client_resp_ring(rings, chan);
+            resp_ring_write(entries.len() as u64, 0, &buf);
+        }
+        return Some(entries.len() as u64);
+    }
+
+    let entries: Vec<String> = match resolve_local(mounts_fat, path)? {
+        FsKind::Fat => return None, // mount noto ma inattivo: errore, mai shadow
         FsKind::Ram => fs.readdir(path)?,
     };
 
@@ -746,12 +944,13 @@ fn handle_readdir(
     Some(entries.len() as u64)
 }
 
-fn handle_mkdir(fs: &mut RamFs, path: &str) -> Option<u64> {
+fn handle_mkdir(fs: &mut RamFs, mounts_fat: &[FsMount], path: &str) -> Option<u64> {
     if path.is_empty() || path.len() > MAX_PATH {
         return None;
     }
-    // mkdir solo su ramfs (FAT32 e' read-only).
-    match resolve_local(path)? {
+    // mkdir solo su ramfs (FAT32 e' read-only, e sotto un target FAT noto ma
+    // inattivo si rifiuta invece di creare shadow in ramfs).
+    match resolve_local(mounts_fat, path)? {
         FsKind::Ram => {
             fs.mkdir(path)?;
             Some(0)
@@ -778,14 +977,20 @@ pub extern "C" fn _start() -> ! {
         println!("[userfs] FAILED to register service Fs");
     }
 
-    // Monta il FAT32 via userdisk (Fase 16, nodo /dev/sda = handle 0):
-    // IpcDisk riconnette da solo a ogni restart di userdisk (lazy), quindi il
-    // mount sopravvive alla morte del driver (t32). Se userdisk/disco assenti
-    // a boot, ramfs-only (come prima quando mancava il disco).
-    let fat = Fat32::mount(IpcDisk::new(0));
-    match &fat {
-        Some(_) => println!("[userfs] FAT32 montato a /fat (via userdisk)"),
-        None => println!("[userfs] FAT32 assente: ramfs only"),
+    // Mount FAT32 dalle spec statiche (Fase 16b: stesso codice dei mount
+    // dinamici; IpcDisk riconnette da solo a ogni restart di userdisk, quindi
+    // i mount sopravvivono alla morte del driver — t32). Spec inattive
+    // (disco assente) restano in tabella e ritentano lazy al primo accesso.
+    let mut fat_mounts: Vec<FsMount> = Vec::new();
+    for (src, tgt) in STATIC_MOUNTS {
+        if apply_mount_spec(&mut fat_mounts, src, tgt, "") {
+            println!("[userfs] FAT32 montato a /{} (via userdisk)", tgt);
+        } else {
+            println!("[userfs] mount {} -> {} inattivo (disco assente?)", src, tgt);
+        }
+    }
+    if fat_mounts.iter().all(|m| !m.is_active()) {
+        println!("[userfs] nessun FAT attivo: ramfs only");
     }
 
     let mut fs = RamFs::new();
@@ -898,11 +1103,11 @@ pub extern "C" fn _start() -> ! {
             // lo stale, primo in lista, avvelenerebbe resolve_mount anche
             // dopo una re-registrazione dello stesso prefix.
             mounts.retain(|m| m.driver_chan != chan);
-            // Se il morto era userdisk, invalida il client IPC (il prossimo
-            // read FAT riconnette da solo: lookup + HELLO + remap, t32).
-            // Veloce: solo un compare dentro IpcDisk.
-            if let Some(f) = fat.as_ref() {
-                f.disk().note_peer_death(chan);
+            // Se il morto era userdisk, invalida i client disco di tutti i
+            // mount (il prossimo read riconnette da solo: lookup + HELLO +
+            // remap, t32). Veloce: solo compare dentro IpcDisk.
+            for m in fat_mounts.iter() {
+                m.note_peer_death(chan);
             }
             continue;
         }
@@ -986,13 +1191,13 @@ pub extern "C" fn _start() -> ! {
         let result = match op_tag {
             R_OPEN => {
                 match core::str::from_utf8(&payload) {
-                    Ok(path) => handle_open(&mut fs, &mut ftable, fat.as_ref(), &mounts, chan, path),
+                    Ok(path) => handle_open(&mut fs, &mut ftable, &mut fat_mounts, &mounts, chan, path),
                     Err(_) => None,
                 }
             }
 
             R_READ => {
-                handle_read(&fs, &mut ftable, fat.as_ref(), &rings, chan, w0 as u32, w1 as usize)
+                handle_read(&fs, &mut ftable, &fat_mounts, &rings, chan, w0 as u32, w1 as usize)
             }
 
             R_WRITE => {
@@ -1005,15 +1210,15 @@ pub extern "C" fn _start() -> ! {
 
             R_READDIR => {
                 match core::str::from_utf8(&payload) {
-                    Ok("") | Ok("/") => handle_readdir(&fs, fat.as_ref(), &mounts, &rings, chan, "/"),
-                    Ok(path) => handle_readdir(&fs, fat.as_ref(), &mounts, &rings, chan, path),
+                    Ok("") | Ok("/") => handle_readdir(&fs, &mut fat_mounts, &mounts, &rings, chan, "/"),
+                    Ok(path) => handle_readdir(&fs, &mut fat_mounts, &mounts, &rings, chan, path),
                     Err(_) => None,
                 }
             }
 
             R_MKDIR => {
                 match core::str::from_utf8(&payload) {
-                    Ok(path) => handle_mkdir(&mut fs, path),
+                    Ok(path) => handle_mkdir(&mut fs, &fat_mounts, path),
                     Err(_) => None,
                 }
             }
