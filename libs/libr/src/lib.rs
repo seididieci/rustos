@@ -564,6 +564,10 @@ const R_WRITE: u32 = 0x12;
 const R_CLOSE: u32 = 0x13;
 const R_READDIR: u32 = 0x14;
 const R_MKDIR: u32 = 0x15;
+/// Monta una sorgente su un target (Fase 16b): payload "source\0target\0".
+const R_MOUNT: u32 = 0x16;
+/// Smonta un target (Fase 16b): payload "target".
+const R_UMOUNT: u32 = 0x17;
 /// Un driver (devfs/console) registra il proprio prefix di mount.
 const R_REGISTER: u32 = 0x30;
 
@@ -1147,6 +1151,62 @@ pub fn mkdir(path: &str) -> i64 {
     }
     match fs_notify_result(FS_NOTIFY, || {
         req_ring_write(R_MKDIR, path.len() as u64, 0, path.as_bytes())
+    }) {
+        Some((result, _, _)) => {
+            resp_ring_consume(16);
+            fs_reply_val(result)
+        }
+        None => -1,
+    }
+}
+
+/// Scrive un frame "source\0target\0" e lo notifica (helper di `mount`).
+fn mount_frame(source: &str, target: &str) -> bool {
+    // Path lunghi al massimo MAX_PATH (256) l'uno + 2 NUL.
+    let total = source.len() + 1 + target.len() + 1;
+    if total > RING_MAX_PAYLOAD || total > 514 {
+        return false;
+    }
+    let mut buf = [0u8; 520];
+    buf[..source.len()].copy_from_slice(source.as_bytes());
+    buf[source.len()] = 0;
+    buf[source.len() + 1..source.len() + 1 + target.len()].copy_from_slice(target.as_bytes());
+    buf[source.len() + 1 + target.len()] = 0;
+    req_ring_write(R_MOUNT, total as u64, 0, &buf[..total])
+}
+
+/// `mount(source, target)`: monta una sorgente a blocchi (es. "/dev/sda")
+/// su un target (es. "/mnt", Fase 16b). Ritorna 0 su successo o -1 su errore
+/// (sorgente non disco, target invalido, mount fallito).
+#[inline]
+pub fn mount(source: &str, target: &str) -> i64 {
+    if !fs_init() || fs_async_pending() {
+        return -1;
+    }
+    if !mount_frame(source, target) {
+        return -1;
+    }
+    match fs_notify_result(FS_NOTIFY, || mount_frame(source, target)) {
+        Some((result, _, _)) => {
+            resp_ring_consume(16);
+            fs_reply_val(result)
+        }
+        None => -1,
+    }
+}
+
+/// `umount(target)`: smonta un target (Fase 16b). Rifiutato se ci sono fd
+/// aperti sotto il target. Ritorna 0 su successo o -1 su errore.
+#[inline]
+pub fn umount(target: &str) -> i64 {
+    if !fs_init() || fs_async_pending() {
+        return -1;
+    }
+    if !req_ring_write(R_UMOUNT, target.len() as u64, 0, target.as_bytes()) {
+        return -1;
+    }
+    match fs_notify_result(FS_NOTIFY, || {
+        req_ring_write(R_UMOUNT, target.len() as u64, 0, target.as_bytes())
     }) {
         Some((result, _, _)) => {
             resp_ring_consume(16);

@@ -4,7 +4,7 @@
 //! stesso fd per leggere i tasti (read) e per scrivere l'output (write): il
 //! console server possiede la VGA, disegna l'output e fa l'echo dei tasti
 //! (Opzione B). La shell gestisce solo la linea logica dei comandi.
-//! Comandi: ls, cat, touch, mkdir, exit, help.
+//! Comandi: ls, cat, touch, mkdir, mount, umount, exit, help.
 
 #![no_std]
 #![no_main]
@@ -171,8 +171,28 @@ fn cmd_mkdir(args: &[&str]) {
     }
 }
 
+fn cmd_mount(args: &[&str]) {
+    if args.len() < 3 {
+        term_print("mount: usage: mount <source> <target>\n");
+        return;
+    }
+    if libr::mount(args[1], args[2]) < 0 {
+        term_print("mount: failed\n");
+    }
+}
+
+fn cmd_umount(args: &[&str]) {
+    if args.len() < 2 {
+        term_print("umount: usage: umount <target>\n");
+        return;
+    }
+    if libr::umount(args[1]) < 0 {
+        term_print("umount: failed (busy or not mounted?)\n");
+    }
+}
+
 fn cmd_help() {
-    term_print("Commands: ls [path], cat <file>, touch <file>, mkdir <dir>, exit, help\n");
+    term_print("Commands: ls [path], cat <file>, touch <file>, mkdir <dir>, mount <src> <tgt>, umount <tgt>, exit, help\n");
 }
 
 // ── Entry point ─────────────────────────────────────────────────────
@@ -204,6 +224,8 @@ pub extern "C" fn _start() -> ! {
             "cat" => cmd_cat(&args),
             "touch" => cmd_touch(&args),
             "mkdir" => cmd_mkdir(&args),
+            "mount" => cmd_mount(&args),
+            "umount" => cmd_umount(&args),
             "exit" => libr::exit(0),
             "help" => cmd_help(),
             _ => {

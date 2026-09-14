@@ -60,6 +60,10 @@ const R_WRITE: u32 = 0x12;
 const R_CLOSE: u32 = 0x13;
 const R_READDIR: u32 = 0x14;
 const R_MKDIR: u32 = 0x15;
+/// Monta una sorgente su un target (Fase 16b): payload "source\0target\0".
+const R_MOUNT: u32 = 0x16;
+/// Smonta un target (Fase 16b): payload "target".
+const R_UMOUNT: u32 = 0x17;
 /// Un driver registra il proprio prefix di mount.
 const R_REGISTER: u32 = 0x30;
 
@@ -395,26 +399,25 @@ impl RamFs {
     }
 
     /// Trova un nodo per path (es. "hello.txt" o "dir/file.txt").
+    /// Ritorna il nodo finale (file o dir); i componenti intermedi devono
+    /// essere directory (altrimenti None, come ENOTDIR).
     fn find(&self, path: &str) -> Option<&FsNode> {
         if path.is_empty() || path == "/" {
             return None;
         }
         let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
         let mut current_dir = &self.root;
-        let mut final_node = None;
-        for &part in &parts {
-            match current_dir.get(part) {
-                Some(FsNode::Dir { entries: d, .. }) => {
-                    current_dir = d;
-                }
-                Some(node) => {
-                    final_node = Some(node);
-                    break;
-                }
-                None => return None,
+        for (i, &part) in parts.iter().enumerate() {
+            let node = current_dir.get(part)?;
+            if i == parts.len() - 1 {
+                return Some(node);
+            }
+            match node {
+                FsNode::Dir { entries: d, .. } => current_dir = d,
+                _ => return None,
             }
         }
-        final_node
+        None
     }
 
     /// Trova o crea un nodo per path (crea le directory intermedie).
@@ -552,6 +555,14 @@ impl FileTable {
             false
         });
         self.next_fd.remove(&chan);
+    }
+
+    /// true se qualche fd locale e' aperto su questo mount (EBUSY per umount).
+    fn has_mount_users(&self, mi: usize) -> bool {
+        self.files.values().any(|e| match e {
+            FileEntry::Local { mnt: Some(m), .. } => *m == mi,
+            _ => false,
+        })
     }
 
     fn get(&self, chan: u64, fd: u32) -> Option<(&str, FsKind, usize, Option<usize>)> {
@@ -944,19 +955,52 @@ fn handle_readdir(
     Some(entries.len() as u64)
 }
 
-fn handle_mkdir(fs: &mut RamFs, mounts_fat: &[FsMount], path: &str) -> Option<u64> {
+fn handle_mkdir(fs: &mut RamFs, mounts: &[FsMount], path: &str) -> Option<u64> {
     if path.is_empty() || path.len() > MAX_PATH {
         return None;
     }
-    // mkdir solo su ramfs (FAT32 e' read-only, e sotto un target FAT noto ma
-    // inattivo si rifiuta invece di creare shadow in ramfs).
-    match resolve_local(mounts_fat, path)? {
+    // mkdir solo su ramfs (i mount sono read-only o remoti).
+    match resolve_local(mounts, path)? {
         FsKind::Ram => {
             fs.mkdir(path)?;
             Some(0)
         }
-        _ => None, // FAT32 e' read-only, mount remoti non supportano mkdir
+        _ => None,
     }
+}
+
+/// Monta una sorgente sul target (Fase 16b, payload "source\0target\0").
+/// Ritorna Some(0) se il mount e' ATTIVO, None altrimenti (sorgente/target
+/// invalidi o disco assente: la spec resta comunque registrata e ritenta
+/// lazy, ma al client risponde errore subito).
+fn handle_mount(mounts: &mut Vec<FsMount>, payload: &str) -> Option<u64> {
+    let mut parts = payload.split('\0');
+    let source = parts.next()?;
+    let target = parts.next()?;
+    if source.is_empty() || target.is_empty() {
+        return None;
+    }
+    if apply_mount_spec(mounts, source, target, "") {
+        Some(0)
+    } else {
+        None
+    }
+}
+
+/// Smonta un target (Fase 16b). Rifiutato se ci sono fd aperti sotto il mount
+/// (EBUSY); la radice ramfs non e' smontabile (non e' in tabella).
+fn handle_umount(
+    mounts: &mut Vec<FsMount>,
+    ftable: &FileTable,
+    target: &str,
+) -> Option<u64> {
+    let norm = normalize_target(target)?;
+    let idx = mounts.iter().position(|m| m.target == norm)?;
+    if ftable.has_mount_users(idx) {
+        return None;
+    }
+    mounts.remove(idx);
+    Some(0)
 }
 
 // ── Main ───────────────────────────────────────────────────────────
@@ -1149,7 +1193,7 @@ pub extern "C" fn _start() -> ! {
         // client e stallo senza recovery). Si consuma ESATTAMENTE il dichiarato;
         // il resto resta per la propria notifica.
         let expect: usize = match op_tag {
-            R_OPEN | R_MKDIR | R_READDIR | R_REGISTER => w0 as usize,
+            R_OPEN | R_MKDIR | R_READDIR | R_REGISTER | R_MOUNT | R_UMOUNT => w0 as usize,
             R_WRITE => w1 as usize,
             R_READ | R_CLOSE => 0,
             _ => {
@@ -1219,6 +1263,20 @@ pub extern "C" fn _start() -> ! {
             R_MKDIR => {
                 match core::str::from_utf8(&payload) {
                     Ok(path) => handle_mkdir(&mut fs, &fat_mounts, path),
+                    Err(_) => None,
+                }
+            }
+
+            R_MOUNT => {
+                match core::str::from_utf8(&payload) {
+                    Ok(spec) => handle_mount(&mut fat_mounts, spec),
+                    Err(_) => None,
+                }
+            }
+
+            R_UMOUNT => {
+                match core::str::from_utf8(&payload) {
+                    Ok(target) => handle_umount(&mut fat_mounts, &ftable, target),
                     Err(_) => None,
                 }
             }
