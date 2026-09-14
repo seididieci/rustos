@@ -103,8 +103,8 @@ fn handle_child_death(supervised: &mut [Supervised], pid: i64, code: i64) {
 }
 
 /// Servizio supervisionato da init (Fase 14, init-restart): alla morte viene
-/// riavviato. Solo console/fs/devfs; gli altri figli (uptime/shell/test) sono
-/// loggati ma non riavviati.
+/// riavviato. Solo console/disk/fs/devfs/kbd/tty; gli altri figli
+/// (uptime/shell/test) sono loggati ma non riavviati.
 struct Supervised {
     bin: &'static [u8],
     svc: libr::Service,
@@ -195,13 +195,22 @@ pub extern "C" fn _start() -> ! {
     // 1. userconsole per PRIMO + attesa READY (registra Console: kbd_process
     //    risolve per nome; l'ack arriva subito dopo la registrazione, prima
     //    del mount /dev/input che richiede userfs).
-    // 2. userfs SUBITO DOPO + attesa READY (registra Fs): tutti i client FS lo
-    //    risolvono per nome; chi usa il FS parte solo dopo.
+    // 2. userdisk + attesa READY (Fase 16: registra Disk + rileva i dischi;
+    //    READY prima del mount nodi, che aspetta Fs) e userfs SUBITO DOPO +
+    //    attesa READY (registra Fs; monta /fat via userdisk): tutti i client
+    //    FS li risolvono per nome; chi usa il FS parte solo dopo.
     // 3. gli altri dopo: uptime, devfs + attesa READY (registra Devfs + mount
     //    /dev; Fs garantito dal passo 2), poi i test in sequenza (vedi
     //    run_test), usershell per ultimo (interattivo).
     if let Some(console_chan) = spawn_child(b"userconsole") {
         wait_msg(console_chan, SVC_READY);
+    }
+    // userdisk PRIMA di userfs (Fase 16): userfs monta /fat via IPC DISK a
+    // boot e il suo HELLO richiede Disk gia' registrato. userdisk fa READY
+    // subito dopo detection + service_register (prima del mount dei nodi,
+    // che aspetta Fs): nessun deadlock.
+    if let Some(disk_chan) = spawn_child(b"userdisk") {
+        wait_msg(disk_chan, SVC_READY);
     }
     if let Some(fs_chan) = spawn_child(b"userfs") {
         wait_msg(fs_chan, SVC_READY);
@@ -221,13 +230,14 @@ pub extern "C" fn _start() -> ! {
         wait_msg(tty_chan, SVC_READY);
     }
 
-    // Tabella supervisione (Fase 14, init-restart): console/fs/devfs/kbd/tty
-    // vengono riavviati alla morte; gli altri figli solo loggati. Costruita prima dei
+    // Tabella supervisione (Fase 14, init-restart): console/fs/devfs/kbd/tty/
+    // disk vengono riavviati alla morte; gli altri figli solo loggati. Costruita prima dei
     // test cosi' anche run_test supervisiona (t27 uccide devfs a suite in
     // corso). NOTA: un restart di userfs qui wiperebbe la ramfs (fixture dei
     // test) — in suite nessuno lo uccide; t28 futuro affrontera' il tema.
     let mut supervised = [
         Supervised { bin: b"userconsole", svc: libr::Service::Console, chan: -1, pid: -1, restarts: 0, window_start: 0, held: false },
+        Supervised { bin: b"userdisk", svc: libr::Service::Disk, chan: -1, pid: -1, restarts: 0, window_start: 0, held: false },
         Supervised { bin: b"userfs", svc: libr::Service::Fs, chan: -1, pid: -1, restarts: 0, window_start: 0, held: false },
         Supervised { bin: b"userdevfs", svc: libr::Service::Devfs, chan: -1, pid: -1, restarts: 0, window_start: 0, held: false },
         Supervised { bin: b"userkbd", svc: libr::Service::Kbd, chan: -1, pid: -1, restarts: 0, window_start: 0, held: false },

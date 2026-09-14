@@ -6,21 +6,26 @@
 //! nodo come `/dev/sdX` (`FS_REGISTER` per nodo, solo i presenti) + servizio
 //! `Disk` per il data-plane verso userfs.
 //!
-//! Due protocolli, entrambi con reply implicita (ADR-0008):
-//! - `DISK_*` (canale diretto userfs→userdisk, service_lookup(Disk)): HELLO
-//!   (handshake ring: il frame riporta i fisici dei ring DISK + i nomi nodi),
-//!   OPEN(indice), READ settoriale (w0=handle, w1=lba, 512 B nel frame),
-//!   CLOSE. Un settore per chiamata (1:1 con `BlockSource::read_sector`).
-//!   userfs emette una op alla volta: niente interleave nei ring DISK.
-//! - `DEV_*` (relay userfs per gli open raw `/dev/sdX`): OPEN(w0=indice nodo,
-//!   documentato: userfs-16.2 passa l'indice dalla mappa nomi di HELLO),
-//!   READ sequenziale con posizione per-fd (solo multipli di 512; resto
-//!   scartato), WRITE sempre ERR (read-only come prima), CLOSE, READDIR
-//!   (nomi partizioni figlie o vuoto).
+//! REGOLA ANTI-DEADLOCK (lezione Fase 15 + ciclo userfs↔userdisk osservato in
+//! Fase 16.2): userdisk non fa MAI `send` sincrona verso userfs — nemmeno
+//! l'handshake `fs_init` di libr (sincrono). E' client FS PURAMENTE async:
+//! ring propri allocati raw, `FS_BUF_REG` + `R_REGISTER` via `send_async` con
+//! collect per req_id nel loop (state machine come tty). userfs fa solo send
+//! sincrone verso userdisk, e userdisk drena sempre (mai bloccato su userfs):
+//! nessun ciclo possibile, in nessuna direzione, a boot come a restart.
 //!
-//! Boot: detection (solo HW) → `service_register(Disk)` → SVC_READY al parent
-//! SUBITO (userdisk parte PRIMA di userfs in 16.3: come console, l'ACK non
-//! aspetta il mount) → `ensure_mounted` in loop (attende Fs).
+//! Due protocolli serviti, entrambi con reply implicita (ADR-0008):
+//! - `DISK_*` (canale diretto userfs→userdisk, service_lookup(Disk)): HELLO
+//!   (fisici nelle reply: w0 = req_phys riservato, w1 = resp_phys), OPEN/READ
+//!   settoriali, CLOSE. Un settore per chiamata (1:1 con BlockSource).
+//! - `DEV_*` (relay userfs per gli open raw `/dev/sdX`): OPEN(w0=handle
+//!   codificato disco<<16|sub), READ sequenziale con posizione per-fd (solo
+//!   multipli di 512), WRITE sempre ERR (read-only), CLOSE, READDIR vuota.
+//!
+//! Boot: detection (solo HW) → ring FS+DISK → `service_register(Disk)` →
+//! SVC_READY al parent SUBITO (userdisk parte PRIMA di userfs: come console,
+//! l'ACK non aspetta nulla) → loop (la registrazione FS avanza da sola via SM
+//! appena userfs esiste).
 
 #![no_std]
 #![no_main]
@@ -45,12 +50,14 @@ const DEV_WRITE: u64 = 0x22;
 const DEV_CLOSE: u64 = 0x23;
 const DEV_READDIR: u64 = 0x24;
 
-/// Handshake data-plane: userfs chiede i fisici dei ring DISK + la lista nodi.
-/// Frame risposta: [0:8][n_nodi:8][req_phys:8][resp_phys:8][nomi NUL-joined].
+/// Handshake data-plane: userfs chiede i fisici dei ring DISK.
+/// Reply: w0 = req_phys (riservato, userfs non scrive mai il request ring),
+/// w1 = resp_phys (mappato da userfs per leggere i frame). Niente frame:
+/// i fisici stanno nei registri.
 const DISK_HELLO: u64 = 0x50;
-/// Apre un nodo (w0 = indice nella tabella nodi). Frame vuoto + reply OK.
+/// Valida un nodo (w0 = handle codificato). Reply OK/ERR, niente frame.
 const DISK_OPEN: u64 = 0x51;
-/// Legge UN settore (w0 = handle = indice nodo, w1 = lba nel nodo).
+/// Legge UN settore (w0 = handle, w1 = lba nel nodo).
 /// Frame: [512:8][0:8][settore]. Fuori range/errore → reply ERR, niente frame.
 const DISK_READ: u64 = 0x52;
 /// Chiude (stateless: sempre OK, frame vuoto).
@@ -59,12 +66,17 @@ const DISK_CLOSE: u64 = 0x53;
 // ── Ring I/O ────────────────────────────────────────────────────────
 // Due coppie SEPARATE (lezione CLI_* del fix kbd/tty: mai protocolli diversi
 // nello stesso ring):
-// - REQ/RESP_RING_VA (libr): traffico FS proprio (FS_REGISTER + relay DEV,
-//   con finestre CLI_* mappate da userfs a ogni relay).
+// - FS_REQ_VA/FS_RESP_VA (propri): traffico FS (FS_BUF_REG + FS_REGISTER).
+//   Mai iniettati da nessuno: niente remap, mai sovrascritti. Per i relay DEV
+//   in ingresso userfs mappa i ring del client nelle finestre CLI_* dedicate.
 // - DISK_REQ_VA/DISK_RESP_VA: data-plane DISK_* con userfs (fisso, noto a
 //   userfs via HELLO). Libere nella mappa user (CLI fino a +0x23..., heap da
 //   +0x400000).
 
+/// Request/response ring FS propri (stesse VA di libr: page table per-processo,
+/// nessun conflitto — e userdisk non usa il machinery FS di libr).
+const FS_REQ_VA: u64 = 0x0000_4000_0020_0000;
+const FS_RESP_VA: u64 = 0x0000_4000_0021_0000;
 const CLI_REQ: u64 = libr::CLI_REQ_VA;
 const CLI_RESP: u64 = libr::CLI_RESP_VA;
 const DISK_REQ_VA: u64 = 0x0000_4000_0024_0000;
@@ -132,64 +144,267 @@ unsafe fn req_ring_consume_client(count: usize) {
 
 // ── Nodi ────────────────────────────────────────────────────────────
 
-/// Nodo esposto: whole-disk o partizione MBR di un disco rilevato.
+/// Nodo esposto: whole-disk o partizione MBR (solo il nome serve qui: gli
+/// handle viaggiano gia' codificati dai client e si risolvono con `locate`).
 struct Node {
     /// Nome breve ("sda", "sda1"): prefix registrato = "/dev/" + nome.
     name: String,
-    /// Indice in `disks`.
-    disk: usize,
-    /// Offset in settori dall'inizio disco (0 = whole-disk).
-    base: u64,
-    /// Settori del nodo.
-    sectors: u64,
 }
 
-/// Legge il settore fisico `lba` del disco `di` (bound check sul nodo fuori).
+/// Partizione MBR (coordinate fisiche, dal parse del settore 0).
+struct PartLoc {
+    start: u32,
+    sectors: u32,
+}
+
+/// Risolve un handle codificato (disco<<16|sub, 0 = whole-disk) in
+/// (indice disco, base settori, settori nodo). userfs parsa i nomi Linux
+/// ("sda"→(0,0), "sda1"→(0,1)) senza lista nodi; la validita' (quante
+/// partizioni ha davvero il disco) e' qui. Ritorna None se inesistente.
+fn locate(handle: u32, disk_sectors: &[u64], parts: &[Vec<PartLoc>]) -> Option<(usize, u64, u64)> {
+    let disk = (handle >> 16) as usize;
+    let sub = (handle & 0xFFFF) as usize;
+    if disk >= disk_sectors.len() {
+        return None;
+    }
+    if sub == 0 {
+        return Some((disk, 0, disk_sectors[disk]));
+    }
+    let p = parts[disk].get(sub - 1)?;
+    Some((disk, p.start as u64, p.sectors as u64))
+}
+
+/// Legge il settore `lba` del nodo `handle` (bound check sul nodo).
 fn node_read(
     disks: &[block::AtaDisk],
-    nodes: &[Node],
-    idx: usize,
+    disk_sectors: &[u64],
+    parts: &[Vec<PartLoc>],
+    handle: u32,
     lba: u64,
     out: &mut [u8; 512],
 ) -> bool {
-    let node = match nodes.get(idx) {
-        Some(n) => n,
+    let (disk, base, sectors) = match locate(handle, disk_sectors, parts) {
+        Some(r) => r,
         None => return false,
     };
-    if lba >= node.sectors {
+    if lba >= sectors {
         return false;
     }
-    match disks.get(node.disk) {
-        Some(d) => d.read_sector(node.base + lba, out),
+    match disks.get(disk) {
+        Some(d) => d.read_sector(base + lba, out),
         None => false,
     }
 }
 
-// ── Mount ───────────────────────────────────────────────────────────
+// ── Mount (registrazione FS puramente async) ────────────────────────
+// Vedi doc in testa: MAI send sincrone verso userfs. Ring FS propri (allocati
+// raw, mappati qui, mai iniettati da nessuno) + FS_BUF_REG / R_REGISTER via
+// send_async + collect per req_id. Una sola op FS in volo (come libr).
 
-/// Registra ogni nodo come `/dev/<nome>` presso userfs (stesso pattern di
-/// devfs `ensure_mounted`): attende Fs via soli lookup, poi registra tutti i
-/// prefix (idempotenti per replace-on-register in userfs). Unbounded: senza Fs
-/// il driver e' comunque inutile. Stessa funzione a boot e su EXIT_NOTIFY.
-fn ensure_mounted(nodes: &[Node]) {
-    let _ = libr::fs_remap_self();
-    loop {
-        while libr::service_lookup(libr::Service::Fs).is_err() {
-            for _ in 0..1_000_000 {
-                core::hint::spin_loop();
-            }
+/// Tag IPC FS (devono combaciare con userfs).
+const FS_BUF_REG: u64 = 0x31;
+const FS_REGISTER: u64 = 0x30;
+/// Tag frame nel request ring (come libr).
+const R_REGISTER: u32 = 0x30;
+
+/// Scrive un request frame `[tag:4][w0:8][w1:8][payload]` nel ring FS proprio
+/// (a FS_REQ_VA). Ritorna false se non c'e' spazio (il chiamante riprova).
+fn fs_req_write(tag: u32, w0: u64, w1: u64, payload: &[u8]) -> bool {
+    let frame_len = 20 + payload.len();
+    unsafe {
+        let head = core::ptr::read_volatile((FS_REQ_VA + RING_HEAD as u64) as *const u32);
+        let tail = core::ptr::read_volatile((FS_REQ_VA + RING_TAIL as u64) as *const u32);
+        let used = (head.wrapping_sub(tail)) % RING_DATA_CAP as u32;
+        if (RING_DATA_CAP as u32) - used < frame_len as u32 + 1 {
+            return false;
         }
-        let mut ok = true;
-        for node in nodes {
-            let prefix = alloc::format!("/dev/{}", node.name);
-            if libr::fs_register(prefix.as_bytes()) != 0 {
-                ok = false;
-                break;
-            }
+        let dst = FS_REQ_VA as *mut u8;
+        let mut hdr = [0u8; 20];
+        hdr[0..4].copy_from_slice(&tag.to_le_bytes());
+        hdr[4..12].copy_from_slice(&w0.to_le_bytes());
+        hdr[12..20].copy_from_slice(&w1.to_le_bytes());
+        for (i, byte) in hdr.iter().enumerate() {
+            let p = ((head as usize) + i) % RING_DATA_CAP;
+            core::ptr::write_volatile(dst.add(p), *byte);
         }
-        if ok {
+        for (i, byte) in payload.iter().enumerate() {
+            let p = ((head as usize) + 20 + i) % RING_DATA_CAP;
+            core::ptr::write_volatile(dst.add(p), *byte);
+        }
+        let new_head = ((head as usize) + frame_len) % RING_DATA_CAP;
+        core::ptr::write_volatile((FS_REQ_VA + RING_HEAD as u64) as *mut u32, new_head as u32);
+        true
+    }
+}
+
+/// Toglie l'ultimo frame scritto (rollback su send_async fallita, come libr).
+fn fs_req_rollback(frame_len: usize) {
+    unsafe {
+        let head = core::ptr::read_volatile((FS_REQ_VA + RING_HEAD as u64) as *const u32);
+        let new_head = (head as usize + RING_DATA_CAP - frame_len % RING_DATA_CAP) % RING_DATA_CAP;
+        core::ptr::write_volatile((FS_REQ_VA + RING_HEAD as u64) as *mut u32, new_head as u32);
+    }
+}
+
+/// Legge il result di un response frame FS proprio (a FS_RESP_VA) e lo
+/// consuma. Ritorna None a ring vuoto.
+fn fs_resp_read() -> Option<u64> {
+    unsafe {
+        let head = core::ptr::read_volatile((FS_RESP_VA + RING_HEAD as u64) as *const u32);
+        let tail = core::ptr::read_volatile((FS_RESP_VA + RING_TAIL as u64) as *const u32);
+        if head == tail {
+            return None;
+        }
+        let src = FS_RESP_VA as *const u8;
+        let mut hdr = [0u8; 16];
+        for i in 0..16 {
+            hdr[i] = core::ptr::read_volatile(src.add(((head as usize) + i) % RING_DATA_CAP));
+        }
+        let result = u64::from_le_bytes(hdr[0..8].try_into().unwrap_or([0xFF; 8]));
+        let new_tail = ((head as usize) + 16) % RING_DATA_CAP;
+        core::ptr::write_volatile((FS_RESP_VA + RING_TAIL as u64) as *mut u32, new_tail as u32);
+        Some(result)
+    }
+}
+
+/// Azzera entrambi i ring FS propri (epoca morta dopo EXIT_NOTIFY di userfs).
+fn fs_rings_reset() {
+    unsafe {
+        core::ptr::write_volatile((FS_REQ_VA + RING_HEAD as u64) as *mut u32, 0);
+        core::ptr::write_volatile((FS_REQ_VA + RING_TAIL as u64) as *mut u32, 0);
+        core::ptr::write_volatile((FS_RESP_VA + RING_HEAD as u64) as *mut u32, 0);
+        core::ptr::write_volatile((FS_RESP_VA + RING_TAIL as u64) as *mut u32, 0);
+    }
+}
+
+/// Stato della registrazione FS: handshake poi un prefix alla volta.
+/// SENZA throttle: ogni tentativo fallito si riprova al prossimo wakeup (i
+/// tentativi sono solo lookup/send cheap e `recv` blocca sempre dopo — mai
+/// spin). Lo sleep in `recv` senza waker congelerebbe i retry (osservato:
+/// registrazione ferma per sempre dopo un lookup fallito a boot).
+struct FsReg {
+    /// Fisici dei ring FS propri (per FS_BUF_REG).
+    fs_req_phys: u64,
+    fs_resp_phys: u64,
+    /// Canale verso userfs (None = da risolvere).
+    chan: Option<u64>,
+    /// Handshake FS_BUF_REG completato sul canale corrente.
+    bufreg_done: bool,
+    /// req_id dell'op FS in volo (None = libero).
+    pending: Option<i64>,
+    /// Prossimo nodo da registrare.
+    idx: usize,
+}
+
+impl FsReg {
+    fn new(fs_req_phys: u64, fs_resp_phys: u64) -> Self {
+        Self {
+            fs_req_phys,
+            fs_resp_phys,
+            chan: None,
+            bufreg_done: false,
+            pending: None,
+            idx: 0,
+        }
+    }
+
+    /// Reset dopo morte di userfs (EXIT_NOTIFY): mounts purgati di la', i ring
+    /// resettati di qua', si ricomincia da handshake + primo nodo.
+    fn reset(&mut self) {
+        libr::println!("[userdisk] reset registrazione FS (userfs morto)");
+        self.chan = None;
+        self.bufreg_done = false;
+        self.pending = None;
+        self.idx = 0;
+        fs_rings_reset();
+    }
+
+    /// Completa se tutti i nodi registrati.
+    fn done(&self, total: usize) -> bool {
+        self.idx >= total
+    }
+
+    /// Avanza di UN passo (mai bloccante): risolve, handshake, registra.
+    /// INVARIANTE (lezione tty): l'invio avviene NELLA STESSA chiamata che
+    /// entra nella fase — un giro chiuso in recv senza aver inviato dorme.
+    /// Ritenta a OGNI wakeup senza throttle: i tentativi sono solo lookup e
+    /// send cheap, e `recv` blocca sempre dopo (mai spin). Uno sleep con
+    /// throttle e senza waker congelerebbe i retry per sempre.
+    fn step(&mut self, nodes: &[Node]) {
+        if self.done(nodes.len()) || self.pending.is_some() {
             return;
         }
+        // Canale (re-lookup se assente/stale: la send_async fallita lo azzera).
+        let chan = match self.chan {
+            Some(c) => c,
+            None => match libr::service_lookup(libr::Service::Fs) {
+                Ok(c) => {
+                    self.chan = Some(c as u64);
+                    self.bufreg_done = false;
+                    c as u64
+                }
+                Err(_) => {
+                    return;
+                }
+            },
+        };
+        if !self.bufreg_done {
+            match libr::send_async(chan, FS_BUF_REG, self.fs_req_phys, self.fs_resp_phys) {
+                Ok(req) => {
+                    self.pending = Some(req);
+                }
+                Err(_) => {
+                    self.chan = None;
+                }
+            }
+            return;
+        }
+        // Un prefix alla volta (frame + notify async).
+        let prefix = alloc::format!("/dev/{}", nodes[self.idx].name);
+        let bytes = prefix.as_bytes();
+        if !fs_req_write(R_REGISTER, bytes.len() as u64, 0, bytes) {
+            return;
+        }
+        match libr::send_async(chan, FS_REGISTER, 0, 0) {
+            Ok(req) => {
+                self.pending = Some(req);
+            }
+            Err(_) => {
+                fs_req_rollback(20 + bytes.len());
+                self.chan = None;
+            }
+        }
+    }
+
+    /// Raccoglie una reply async che matcha il pending. Ritorna true se era
+    /// nostra (consumata), con avanzamento di stato.
+    fn collect_if_mine(&mut self, req_id: i64, nodes: &[Node]) -> bool {
+        let pending = match self.pending {
+            Some(p) if req_id > 0 && req_id == p => p,
+            _ => return false,
+        };
+        let _ = pending;
+        // BUF_REG non ha frame (register-only): basta il match.
+        if !self.bufreg_done {
+            self.bufreg_done = true;
+            self.pending = None;
+            return true;
+        }
+        // REGISTER: result dal response frame (0 = registrato).
+        match fs_resp_read() {
+            Some(0) => {
+                self.pending = None;
+                libr::println!("[userdisk] registered /dev/{} with userfs", nodes[self.idx].name);
+                self.idx += 1;
+            }
+            _ => {
+                // userfs ha scartato il frame (resync) o ring vuoto: pending
+                // libero, si riprova al prossimo wakeup (mai throttle senza
+                // waker: vedi `step`).
+                self.pending = None;
+            }
+        }
+        true
     }
 }
 
@@ -223,21 +438,23 @@ pub extern "C" fn _start() -> ! {
     }
 
     // 2. Nodi: whole-disk + partizioni MBR primarie (graceful se assenti).
+    // Handle = disco<<16|sub: userfs li ricava dai nomi, qui serve solo la
+    // tabella coordinata (settori disco + partizioni per il locate).
     let mut nodes: Vec<Node> = Vec::new();
+    let mut disk_sectors: Vec<u64> = Vec::new();
+    let mut parts: Vec<Vec<PartLoc>> = Vec::new();
     for (i, disk) in disks.iter().enumerate() {
         let letter = (b'a' + i as u8) as char;
-        let sectors = infos[i].sectors;
+        disk_sectors.push(infos[i].sectors);
         nodes.push(Node {
             name: alloc::format!("sd{}", letter),
-            disk: i,
-            base: 0,
-            sectors,
         });
+        let mut disk_parts: Vec<PartLoc> = Vec::new();
         let mut sec0 = [0u8; 512];
         if disk.read_sector(0, &mut sec0) {
-            let mut parts = Vec::new();
-            part::parse_mbr(&sec0, &mut parts);
-            for (p, part) in parts.iter().enumerate() {
+            let mut parsed = Vec::new();
+            part::parse_mbr(&sec0, &mut parsed);
+            for (p, part) in parsed.iter().enumerate() {
                 println!(
                     "[userdisk] sd{}{}: tipo {:#04x}, start {}, settori {}",
                     letter,
@@ -248,17 +465,25 @@ pub extern "C" fn _start() -> ! {
                 );
                 nodes.push(Node {
                     name: alloc::format!("sd{}{}", letter, p + 1),
-                    disk: i,
-                    base: part.start as u64,
-                    sectors: part.sectors as u64,
                 });
+                disk_parts.push(PartLoc { start: part.start, sectors: part.sectors });
             }
         }
+        parts.push(disk_parts);
     }
 
-    // 3. Ring DISK dedicati (data-plane con userfs): allocazione raw, niente
-    // handshake libr (i fisici viaggiano nel frame DISK_HELLO). Retry
-    // throttled: senza, niente data-plane.
+    // 3. Ring FS + DISK dedicati (allocazione raw, MAI via libr::fs_init che e'
+    // sincrono): FS per BUF_REG/REGISTER async, DISK per il data-plane con
+    // userfs. Retry throttled: senza, niente registrazione ne' data-plane.
+    // Reset head=tail: le pagine devono partire allineate.
+    let (fs_req_phys, fs_resp_phys) = loop {
+        if let Some(pair) = libr::ring_alloc_raw() {
+            break pair;
+        }
+        for _ in 0..1_000_000 {
+            core::hint::spin_loop();
+        }
+    };
     let (disk_req_phys, disk_resp_phys) = loop {
         if let Some(pair) = libr::ring_alloc_raw() {
             break pair;
@@ -267,11 +492,20 @@ pub extern "C" fn _start() -> ! {
             core::hint::spin_loop();
         }
     };
-    if libr::map_physical(disk_req_phys, DISK_REQ_VA, 1).is_err()
+    if libr::map_physical(fs_req_phys, FS_REQ_VA, 1).is_err()
+        || libr::map_physical(fs_resp_phys, FS_RESP_VA, 1).is_err()
+        || libr::map_physical(disk_req_phys, DISK_REQ_VA, 1).is_err()
         || libr::map_physical(disk_resp_phys, DISK_RESP_VA, 1).is_err()
     {
-        println!("[userdisk] map ring DISK fallita, exit");
+        println!("[userdisk] map ring fallita, exit");
         libr::exit(1);
+    }
+    fs_rings_reset();
+    unsafe {
+        core::ptr::write_volatile((DISK_REQ_VA + RING_HEAD as u64) as *mut u32, 0);
+        core::ptr::write_volatile((DISK_REQ_VA + RING_TAIL as u64) as *mut u32, 0);
+        core::ptr::write_volatile((DISK_RESP_VA + RING_HEAD as u64) as *mut u32, 0);
+        core::ptr::write_volatile((DISK_RESP_VA + RING_TAIL as u64) as *mut u32, 0);
     }
 
     // 4. Servizio Disk per nome (ADR-0008): userfs lo risolve per il
@@ -292,47 +526,46 @@ pub extern "C" fn _start() -> ! {
         }
     }
 
-    // 6. Registra i nodi presso userfs (attende Fs: parte dopo di noi).
-    ensure_mounted(&nodes);
-    for node in &nodes {
-        println!("[userdisk] registered /dev/{} with userfs", node.name);
-    }
+    // 6. Registrazione FS via SM async (mai sync: vedi doc in testa). DISK e
+    // DEV funzionano anche a registrazione incompleta: userfs monta appena
+    // HELLO risponde, senza aspettare i prefix.
+    let mut fsreg = FsReg::new(fs_req_phys, fs_resp_phys);
 
-    // fd DEV_* (raw sequenziale) → (indice nodo, posizione in byte).
-    let mut fds: BTreeMap<u32, (usize, u64)> = BTreeMap::new();
+    // fd DEV_* (raw sequenziale) → (handle nodo, posizione in byte).
+    let mut fds: BTreeMap<u32, (u32, u64)> = BTreeMap::new();
     let mut next_fd: u32 = 1;
 
     loop {
+        // Invio nella stessa chiamata (lezione tty): prima di dormire in recv
+        // bisogna aver notificato, altrimenti nessuno ci sveglia.
+        fsreg.step(&nodes);
         let msg = match libr::recv() {
             Ok(m) => m,
             Err(_) => continue,
         };
 
-        // userfs morto e rinato: re-mount (come devfs/kbd, t28). I ring DISK
-        // persistono (pagine proprie): userfs rifa' HELLO in 16.2. Mai reply.
+        // Reply async FS (BUF_REG/REGISTER): consuma per primo, prima di ogni
+        // dispatch (req_id > 0 solo per le risposte, mai per le richieste).
+        if fsreg.collect_if_mine(msg.req_id, &nodes) {
+            continue;
+        }
+
+        // userfs morto e rinato: reset SM (re-handshake + re-register). I ring
+        // DISK persistono (pagine proprie): userfs rifa' HELLO da solo. Niente
+        // send sincrone qui: solo reset di stato. Mai reply (peer morto).
         if msg.tag == libr::EXIT_NOTIFY {
-            println!("[userdisk] peer morto, re-mount nodi");
-            ensure_mounted(&nodes);
+            fsreg.reset();
             continue;
         }
 
         // ── Data-plane DISK_* (canale diretto userfs) ──
         if msg.tag == DISK_HELLO {
-            // Frame: [0:8][n_nodi:8][req_phys:8][resp_phys:8][nomi NUL].
-            let mut payload = Vec::new();
-            payload.extend_from_slice(&disk_req_phys.to_le_bytes());
-            payload.extend_from_slice(&disk_resp_phys.to_le_bytes());
-            for node in &nodes {
-                payload.extend_from_slice(node.name.as_bytes());
-                payload.push(0);
-            }
-            unsafe { disk_resp_write(0, nodes.len() as u64, &payload) };
-            let _ = libr::reply(0, 0, 0);
+            // Fisici nei registri di reply (tag 0, mai !0 = ERR): niente frame.
+            let _ = libr::reply(0, disk_req_phys, disk_resp_phys);
             continue;
         }
         if msg.tag == DISK_OPEN {
-            if (msg.w0 as usize) < nodes.len() {
-                unsafe { disk_resp_write(0, 0, &[]) };
+            if locate(msg.w0 as u32, &disk_sectors, &parts).is_some() {
                 let _ = libr::reply(0, 0, 0);
             } else {
                 let _ = libr::reply(0, ERR, 0);
@@ -340,10 +573,10 @@ pub extern "C" fn _start() -> ! {
             continue;
         }
         if msg.tag == DISK_READ {
-            let idx = msg.w0 as usize;
+            let handle = msg.w0 as u32;
             let lba = msg.w1;
             let mut sec = [0u8; 512];
-            if node_read(&disks, &nodes, idx, lba, &mut sec) {
+            if node_read(&disks, &disk_sectors, &parts, handle, lba, &mut sec) {
                 unsafe { disk_resp_write(512, 0, &sec) };
                 let _ = libr::reply(0, 0, 0);
             } else {
@@ -352,35 +585,41 @@ pub extern "C" fn _start() -> ! {
             continue;
         }
         if msg.tag == DISK_CLOSE {
-            unsafe { disk_resp_write(0, 0, &[]) };
             let _ = libr::reply(0, 0, 0);
             continue;
         }
 
         // ── Relay DEV_* (open raw /dev/sdX dai client via userfs) ──
-        // w0 di DEV_OPEN = indice nodo (userfs-16.2 lo ricava dalla mappa
-        // nomi di HELLO); la posizione avanza a ogni READ (sequenziale).
+        // w0 di DEV_OPEN = handle codificato (disco<<16|sub, 0 = whole):
+        // userfs-16.2 lo ricava parsando il nome Linux ("sda"→0, "sda1"→1),
+        // senza bisogno della lista nodi. La posizione avanza a ogni READ.
         let result: Option<u64> = match msg.tag {
             DEV_OPEN => {
-                let idx = msg.w0 as usize;
-                if idx < nodes.len() {
+                let handle = msg.w0 as u32;
+                if locate(handle, &disk_sectors, &parts).is_some() {
                     let fd = next_fd;
                     next_fd += 1;
-                    fds.insert(fd, (idx, 0));
+                    fds.insert(fd, (handle, 0));
                     Some(fd as u64)
                 } else {
                     None
                 }
             }
             DEV_READ => {
-                let (idx, pos) = match fds.get(&(msg.w0 as u32)) {
+                let (handle, pos) = match fds.get(&(msg.w0 as u32)) {
                     Some(&p) => p,
                     None => {
                         let _ = libr::reply(0, ERR, 0);
                         continue;
                     }
                 };
-                let node_sectors = nodes[idx].sectors;
+                let node_sectors = match locate(handle, &disk_sectors, &parts) {
+                    Some((_, _, s)) => s,
+                    None => {
+                        let _ = libr::reply(0, ERR, 0);
+                        continue;
+                    }
+                };
                 let avail = node_sectors * 512 - pos.min(node_sectors * 512);
                 let want = (msg.w1 as u64).min(avail).min(4096);
                 let nsec = (want / 512) as usize;
@@ -395,7 +634,7 @@ pub extern "C" fn _start() -> ! {
                     for s in 0..nsec {
                         let lba = pos / 512 + s as u64;
                         let mut sec = [0u8; 512];
-                        if !node_read(&disks, &nodes, idx, lba, &mut sec) {
+                        if !node_read(&disks, &disk_sectors, &parts, handle, lba, &mut sec) {
                             break;
                         }
                         buf[s * 512..(s + 1) * 512].copy_from_slice(&sec);
@@ -406,7 +645,7 @@ pub extern "C" fn _start() -> ! {
                     } else {
                         let n = ok * 512;
                         unsafe { resp_ring_write_client(&buf[..n]) };
-                        fds.insert(msg.w0 as u32, (idx, pos + n as u64));
+                        fds.insert(msg.w0 as u32, (handle, pos + n as u64));
                         Some(n as u64)
                     }
                 }

@@ -1,6 +1,7 @@
 //! Parser FAT32 read-only (Fase 9.2).
 //!
-//! Legge BPB, FAT, catene di cluster, directory e file 8.3 da un `AtaDisk`.
+//! Legge BPB, FAT, catene di cluster, directory e file 8.3 da una sorgente
+//! settori `BlockSource` (Fase 16: disco ATA locale prima, client IPC poi).
 //! Generalizzato a qualunque dimensione di cluster (BytesPerSec x SPC).
 //! Limiti MVP: read-only, niente LFN (le entry 0x0F sono saltate), 8.3 names.
 
@@ -11,7 +12,12 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::block::AtaDisk;
+/// Sorgente di settori da 512 byte (LBA assoluti nel nodo montato).
+/// Implementata dal driver ATA locale (Fase 9.2) o dal client IPC verso
+/// userdisk (Fase 16, `ipc_disk.rs`): il parser non distingue.
+pub trait BlockSource {
+    fn read_sector(&self, lba: u64, buf: &mut [u8; 512]) -> bool;
+}
 
 const EOC: u32 = 0x0FFFFFF8;   // valori >= questo = fine catena
 const BAD_CLUSTER: u32 = 0x0FFFFFF7;
@@ -29,8 +35,8 @@ pub struct FileInfo {
     pub size: u32,
 }
 
-pub struct Fat32 {
-    disk: AtaDisk,
+pub struct Fat32<B: BlockSource> {
+    disk: B,
     bytes_per_sec: u16,
     spc: u8,
     fat_start: u32,   // LBA della prima FAT
@@ -41,11 +47,10 @@ pub struct Fat32 {
 const ATTR_DIR: u8 = 0x10;
 const ATTR_VOLUME: u8 = 0x08;
 
-impl Fat32 {
+impl<B: BlockSource> Fat32<B> {
     /// Monta il filesystem leggendo il BPB dal settore 0. Ritorna `None` se il
     /// disco non e' presente o i campi BPB non sono validi (fallback ramfs).
-    pub fn mount(disk: AtaDisk) -> Option<Fat32> {
-        let mut boot = [0u8; 512];
+    pub fn mount(disk: B) -> Option<Fat32<B>> {        let mut boot = [0u8; 512];
         if !disk.read_sector(0, &mut boot) {
             return None;
         }
@@ -85,11 +90,17 @@ impl Fat32 {
         self.bytes_per_sec as usize * self.spc as usize
     }
 
+    /// Accesso alla sorgente settori (es. per invalidarla alla morte del
+    /// server disco senza rimontare: la riconnessione e' lazy al prossimo read).
+    pub fn disk(&self) -> &B {
+        &self.disk
+    }
+
     /// Legge `n` settori contigui a partire da `lba`.
     fn read_sectors(&self, lba: u32, n: usize, out: &mut [u8]) -> bool {
         for i in 0..n {
             let mut sector = [0u8; 512];
-            if !self.disk.read_sector(lba + i as u32, &mut sector) {
+            if !self.disk.read_sector(lba as u64 + i as u64, &mut sector) {
                 return false;
             }
             out[i * 512..i * 512 + 512].copy_from_slice(&sector);

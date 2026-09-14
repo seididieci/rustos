@@ -1,9 +1,10 @@
-//! userfs — File system server (Fase 9.1 + 9.2 + 9.3 + 10.2).
+//! userfs — File system server (Fase 9.1 + 9.2 + 9.3 + 10.2 + 16.2).
 //!
 //! Riceve IPC dai processi client (open/read/write/close/readdir/mkdir) e
 //! gestisce:
 //!   - ramfs in memoria sul mount point `/` (scrivibile, Fase 9.1)
-//!   - FAT32 read-only dal disco ATA primario sul mount point `/fat` (Fase 9.2)
+//!   - FAT32 read-only dal disco via `userdisk` sul mount point `/fat`
+//!     (Fase 9.2 su ATA locale, Fase 16 via IPC `DISK_*`)
 //!   - devfs/console remoti via IPC per device `/dev/*` (Fase 9.3)
 //!
 //! Trasferimento dati (Fase 10.2): ogni client ha DUE pagine ring SPSC
@@ -24,12 +25,11 @@ use alloc::vec;
 use alloc::vec::Vec;
 use libr;
 
-mod block;
 mod fat32;
-mod io;
+mod ipc_disk;
 
-use block::AtaDisk;
 use fat32::Fat32;
+use ipc_disk::IpcDisk;
 use libr::println;
 
 /// Request ring virtuale (coincide con USER_FS_BUFFER del kernel).
@@ -158,6 +158,32 @@ fn dev_type(name: &str) -> Option<u64> {
         "kbd" => Some(DEV_KBD),
         _ => None,
     }
+}
+
+/// Parsa un nome nodo disco Linux ("sda".."sdp", "sda1"..) in handle codificato
+/// (disco<<16|sub, 0 = whole-disk). Usato per gli open raw `/dev/sdX`, dove il
+/// prefix matchato e' il nodo stesso (rel vuota): userdisk valida davvero
+/// (quante partizioni ha il disco) e rifiuta gli handle impossibili.
+/// Ritorna None se non e' un nome disco.
+fn disk_handle(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix("sd")?;
+    let mut chars = rest.chars();
+    let letter = chars.next()?;
+    if !('a'..='p').contains(&letter) {
+        return None;
+    }
+    let disk = (letter as u32) - ('a' as u32);
+    let tail: String = chars.collect();
+    let sub = if tail.is_empty() {
+        0
+    } else {
+        let n: u32 = tail.parse().ok()?;
+        if n == 0 || n > 64 {
+            return None;
+        }
+        n
+    };
+    Some((disk << 16) | sub)
 }
 
 /// Path relativo al mount FAT (`/fat/HELLO.TXT` -> `HELLO.TXT`, `/fat` -> ``).
@@ -502,7 +528,7 @@ fn map_client_resp_ring(rings: &BTreeMap<u64, (u64, u64)>, chan: u64) -> bool {
 fn handle_open(
     fs: &mut RamFs,
     ftable: &mut FileTable,
-    fat: Option<&Fat32>,
+    fat: Option<&Fat32<IpcDisk>>,
     mounts: &[Mount],
     chan: u64,
     path: &str,
@@ -511,8 +537,25 @@ fn handle_open(
         return None;
     }
 
-    // Cerca nei mount point registrati (devfs, console, futuri driver).
+    // Cerca nei mount point registrati (devfs, console, userdisk, futuri driver).
     if let Some((driver_chan, rel)) = resolve_mount(path, mounts) {
+        // Nodo disco raw (Fase 16): open("/dev/sda") matcha il prefix del nodo
+        // stesso (rel vuota) — l'handle si ricava dal nome Linux, prima di
+        // dev_type (che su "" fallirebbe comunque). Handle impossibili o
+        // userdisk irraggiungibile → None (client -1, mai wedge).
+        if rel.is_empty() {
+            let prefix = path.trim_start_matches('/');
+            if let Some(name) = prefix.strip_prefix("dev/") {
+                if let Some(handle) = disk_handle(name) {
+                    let reply = libr::send(driver_chan, DEV_OPEN, handle as u64, 0).ok()?;
+                    if reply.w0 == ERR {
+                        return None;
+                    }
+                    return Some(ftable.open_remote(chan, driver_chan, reply.w0 as u32));
+                }
+            }
+            return None;
+        }
         let device_type = dev_type(rel)?;
         let reply = libr::send(driver_chan, DEV_OPEN, device_type, 0).ok()?;
         let remote_fd = reply.w0 as u32;
@@ -536,7 +579,7 @@ fn handle_open(
 fn handle_read(
     fs: &RamFs,
     ftable: &mut FileTable,
-    fat: Option<&Fat32>,
+    fat: Option<&Fat32<IpcDisk>>,
     rings: &BTreeMap<u64, (u64, u64)>,
     chan: u64,
     fd: u32,
@@ -664,7 +707,7 @@ fn handle_close(ftable: &mut FileTable, chan: u64, fd: u32) -> Option<u64> {
 
 fn handle_readdir(
     fs: &RamFs,
-    fat: Option<&Fat32>,
+    fat: Option<&Fat32<IpcDisk>>,
     mounts: &[Mount],
     rings: &BTreeMap<u64, (u64, u64)>,
     chan: u64,
@@ -735,10 +778,13 @@ pub extern "C" fn _start() -> ! {
         println!("[userfs] FAILED to register service Fs");
     }
 
-    // Monta il disco FAT32 primario (read-only). Se assente, ramfs-only.
-    let fat = Fat32::mount(AtaDisk::primary_master());
+    // Monta il FAT32 via userdisk (Fase 16, nodo /dev/sda = handle 0):
+    // IpcDisk riconnette da solo a ogni restart di userdisk (lazy), quindi il
+    // mount sopravvive alla morte del driver (t32). Se userdisk/disco assenti
+    // a boot, ramfs-only (come prima quando mancava il disco).
+    let fat = Fat32::mount(IpcDisk::new(0));
     match &fat {
-        Some(_) => println!("[userfs] FAT32 montato a /fat"),
+        Some(_) => println!("[userfs] FAT32 montato a /fat (via userdisk)"),
         None => println!("[userfs] FAT32 assente: ramfs only"),
     }
 
@@ -852,6 +898,12 @@ pub extern "C" fn _start() -> ! {
             // lo stale, primo in lista, avvelenerebbe resolve_mount anche
             // dopo una re-registrazione dello stesso prefix.
             mounts.retain(|m| m.driver_chan != chan);
+            // Se il morto era userdisk, invalida il client IPC (il prossimo
+            // read FAT riconnette da solo: lookup + HELLO + remap, t32).
+            // Veloce: solo un compare dentro IpcDisk.
+            if let Some(f) = fat.as_ref() {
+                f.disk().note_peer_death(chan);
+            }
             continue;
         }
 
