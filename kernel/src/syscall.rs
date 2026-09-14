@@ -395,6 +395,7 @@ fn service_name(s: syscall_numbers::Service) -> &'static str {
         syscall_numbers::Service::Test => "test",
         syscall_numbers::Service::Kbd => "kbd",
         syscall_numbers::Service::Tty => "tty",
+        syscall_numbers::Service::Disk => "disk",
     }
 }
 

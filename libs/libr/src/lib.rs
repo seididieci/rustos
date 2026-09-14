@@ -921,6 +921,22 @@ pub fn fs_remap_self() -> bool {
     map_physical(resp_phys, RESP_RING_VA, 1).is_ok()
 }
 
+/// Alloca una coppia di pagine ring (request, response) SENZA handshake
+/// (Fase 16, data-plane `DISK_*` di userdisk): il server riporta i fisici al
+/// client nel frame di `DISK_HELLO`, il client li mappa nelle proprie finestre
+/// con `map_physical`. Separata dalle pagine FS proprie: niente interleaving
+/// di protocolli diversi nello stesso ring (lezione CLI_* del fix kbd/tty).
+/// Ritorna `(req_phys, resp_phys)` o `None`.
+pub fn ring_alloc_raw() -> Option<(u64, u64)> {
+    let (rax, rdi, _rsi, _rdx, _r10) = unsafe {
+        syscall4_out(SYS_RING_ALLOC, 0, 0, 0, 0)
+    };
+    if rax < 0 {
+        return None;
+    }
+    Some((rax as u64, rdi))
+}
+
 /// Azzera un ring SPSC (head=tail=0): tutto il contenuto pendente appartiene
 /// a un'epoca morta (server riavviato). Solo per `fs_rehandshake`.
 unsafe fn ring_reset(ring_va: u64) {

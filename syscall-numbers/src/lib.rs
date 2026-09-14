@@ -116,10 +116,14 @@ pub enum Service {
     /// fa echo e serve `/dev/input/keyboard`. Registrato per la supervisione
     /// init (restart); nessun altro lo risolve per nome (i client usano il FS).
     Tty = 6,
+    /// Disk driver ATA in userspace (Fase 16, `userdisk`): rileva i dischi,
+    /// espone `/dev/sdX` (+`/dev/sdXn` per le partizioni MBR). userfs lo
+    /// risolve per nome per il data-plane `DISK_*`; init lo supervisiona.
+    Disk = 7,
 }
 
 /// Massimo numero di servizi conosciuti = dimensione del registro kernel.
-pub const SERVICE_COUNT: usize = 7;
+pub const SERVICE_COUNT: usize = 8;
 
 /// Canale predefinito del processo: il canale di nascita verso il parent.
 /// Ogni processo nasce con canale 0 = parent (o `CHANNEL_NONE` per init/idle).
