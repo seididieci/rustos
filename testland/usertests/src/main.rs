@@ -1690,6 +1690,112 @@ fn disk_sector0_ok() -> bool {
     n == 512 && buf[510] == 0x55 && buf[511] == 0xAA
 }
 
+/// Legge tutto il file `fd` in `dst` (come testfat `read_all`).
+fn t33_read_all(fd: i64, dst: &mut [u8]) -> usize {
+    let mut got = 0usize;
+    while got < dst.len() {
+        let rest = dst.len() - got;
+        let n = libr::read_fs(fd, &mut dst[got..], rest);
+        if n <= 0 {
+            break;
+        }
+        got += n as usize;
+    }
+    got
+}
+
+/// t33 — mount/umount espliciti (Fase 16b).
+/// mkdir /mnt (ramfs) → mount /dev/sda /mnt → /mnt/HELLO.TXT col contenuto
+/// FAT → umount busy rifiutato con fd aperto → close → umount ok → /mnt
+/// torna ramfs (readdir senza entry FAT). Error paths: sorgente inesistente
+/// o senza disco, target invalido, doppio mount (idempotente: ok e ancora
+/// operativo), umount di non-montato e di `/`. Ultimo test: dopo solo shell.
+fn t_mount() -> bool {
+    drain_stray();
+    if libr::mkdir("/mnt") < 0 {
+        println!("[usertests] t33: mkdir /mnt FAILED");
+        return false;
+    }
+    if libr::mount("/dev/sda", "/mnt") < 0 {
+        println!("[usertests] t33: mount /dev/sda /mnt FAILED");
+        return false;
+    }
+    // Re-mount identico: idempotente (replace), resta operativo.
+    if libr::mount("/dev/sda", "/mnt") < 0 {
+        println!("[usertests] t33: re-mount FAILED");
+        return false;
+    }
+    // Contenuto via mount dinamico (stesso della statica /fat).
+    let fd = libr::open("/mnt/HELLO.TXT", 0);
+    if fd < 0 {
+        println!("[usertests] t33: open /mnt/HELLO.TXT FAILED");
+        return false;
+    }
+    let mut hb = [0u8; 32];
+    let n = t33_read_all(fd, &mut hb);
+    if n != FAT_HELLO.len() || hb[..FAT_HELLO.len()] != *FAT_HELLO {
+        println!("[usertests] t33: /mnt/HELLO.TXT corrotto");
+        let _ = libr::close(fd);
+        return false;
+    }
+    // Umount busy: fd aperto sul mount → rifiutato.
+    if libr::umount("/mnt") == 0 {
+        println!("[usertests] t33: umount busy accettato?!");
+        let _ = libr::close(fd);
+        return false;
+    }
+    let _ = libr::close(fd);
+    if libr::umount("/mnt") < 0 {
+        println!("[usertests] t33: umount /mnt FAILED");
+        return false;
+    }
+    // Dopo umount /mnt e' di nuovo ramfs: niente entry FAT.
+    let mut eb = [0u8; 256];
+    let c = libr::readdir("/mnt", &mut eb, 256);
+    if c < 0 {
+        println!("[usertests] t33: readdir /mnt post-umount FAILED");
+        return false;
+    }
+    let mut i = 0usize;
+    let mut fat_left = false;
+    while i < eb.len() && eb[i] != 0 {
+        let start = i;
+        while i < eb.len() && eb[i] != 0 {
+            i += 1;
+        }
+        if &eb[start..i] == b"HELLO.TXT" || &eb[start..i] == b"SUB" {
+            fat_left = true;
+        }
+        i += 1;
+    }
+    if fat_left {
+        println!("[usertests] t33: entry FAT dopo umount?!");
+        return false;
+    }
+    // Error paths.
+    if libr::mount("/dev/xxx", "/mnt") == 0 {
+        println!("[usertests] t33: mount sorgente invalida accettato?!");
+        return false;
+    }
+    if libr::mount("/dev/sdz", "/mnt") == 0 {
+        println!("[usertests] t33: mount disco assente accettato?!");
+        return false;
+    }
+    if libr::mount("/dev/sda", "/a/../b") == 0 {
+        println!("[usertests] t33: mount target invalido accettato?!");
+        return false;
+    }
+    if libr::umount("/mnt") == 0 {
+        println!("[usertests] t33: doppio umount accettato?!");
+        return false;
+    }
+    if libr::umount("/") == 0 {
+        println!("[usertests] t33: umount / accettato?!");
+        return false;
+    }
+    true
+}
+
 /// t32 — disk driver in userspace (Fase 16).
 /// (A) Baseline: /dev/sda leggibile raw con firma boot. (B) Kill userdisk
 /// (pid via `service_pid`, non figlio nostro) e attesa init-restart come
@@ -1697,7 +1803,6 @@ fn disk_sector0_ok() -> bool {
 /// operativo + smoke /fat/HELLO.TXT (riconnessione lazy di userfs al driver
 /// rinato, senza rimontare: il mount sopravvive). Bound generosi (1000 tick
 /// ~ 10 s contro restart atteso ~50), mai hang; poll throttled Livello 1.
-/// Ultimo test della suite: dopo di lui solo shell (nessuna interferenza).
 fn t_disk() -> bool {
     drain_stray();
     if !disk_sector0_ok() {
@@ -1796,6 +1901,7 @@ pub extern "C" fn _start() -> ! {
     report(&mut total, &mut ok, "t30 neighbor under flood", t_neighbor());
     report(&mut total, &mut ok, "t31 kbd/tty presence", t_kbd_presence());
     report(&mut total, &mut ok, "t32 disk kill + init restart", t_disk());
+    report(&mut total, &mut ok, "t33 mount/umount espliciti", t_mount());
 
     println!("[usertests] SUMMARY {}/{} PASS", ok, total);
     let _ = libr::send(libr::CHANNEL_PARENT, 0x7E, ok as u64, 0); // init: test finito
