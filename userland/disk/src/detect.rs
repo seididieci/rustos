@@ -37,6 +37,11 @@ pub struct DiskInfo {
     pub model: [u8; 40],
     /// Lunghezza significativa di `model`.
     pub model_len: usize,
+    /// Seriale IDENTIFY (word 10-19), senza padding. Stabile per disco
+    /// (Fase 16d): base per futuri by-id, oggi solo diagnostica.
+    pub serial: [u8; 20],
+    /// Lunghezza significativa di `serial`.
+    pub serial_len: usize,
 }
 
 /// Esito del probe di un singolo drive.
@@ -112,6 +117,23 @@ fn decode_model(words: &[u16; 256], out: &mut [u8; 40]) -> usize {
     n
 }
 
+/// Decodifica il seriale (word 10-19, byte scambiati per word, come model).
+fn decode_serial(words: &[u16; 256], out: &mut [u8; 20]) -> usize {
+    let mut n = 0;
+    for i in 0..10 {
+        let w = words[10 + i];
+        out[n] = (w >> 8) as u8;
+        n += 1;
+        out[n] = (w & 0xFF) as u8;
+        n += 1;
+    }
+    // Via il padding di spazi a destra.
+    while n > 0 && out[n - 1] == b' ' {
+        n -= 1;
+    }
+    n
+}
+
 /// Probe di un singolo drive (0 = master, 1 = slave) sul canale.
 fn probe_drive(ch: &AtaChannel, drive: u8) -> Probe {
     select(ch, drive);
@@ -162,6 +184,8 @@ fn probe_drive(ch: &AtaChannel, drive: u8) -> Probe {
     };
     let mut model = [0u8; 40];
     let model_len = decode_model(&words, &mut model);
+    let mut serial = [0u8; 20];
+    let serial_len = decode_serial(&words, &mut serial);
     Probe::Ata(DiskInfo {
         cmd: ch.cmd,
         drive,
@@ -169,6 +193,8 @@ fn probe_drive(ch: &AtaChannel, drive: u8) -> Probe {
         sectors,
         model,
         model_len,
+        serial,
+        serial_len,
     })
 }
 

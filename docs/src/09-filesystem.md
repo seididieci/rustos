@@ -128,6 +128,12 @@ alle porte 0x1F0-0x1F7 via **TSS per-processo** (ADR-0006).
 > > canale `Disk`); userfs risolve una volta a mount e per nome a ogni
 > > riattivazione lazy, con drop d'epoca alla morte del driver
 > > ([ADR-0013](../adr/0013-mount-syscall.md)). Raw `/dev/sdX` (`DEV_*`) intoccato.
+> >
+> > > Fase 16d: chiavi stabili `UUID=<hex8>`/`LABEL=<nome>` (seriale/label del
+> > > volume FAT) al posto delle lettere instabili; nodi `/dev/disk/by-uuid/*`
+> > > e `/dev/disk/by-label/*` registrati da userdisk; listing dei padri
+> > > sintetizzato dai prefix; registrazione multi-prefix atomica
+> > > (`fs_register_multi`). Vedi ADR-0012/0013, t36 + `test-uuid-reorder.py`.
 
 ### 9.3 -- devfs server separato + IPC routing
 
@@ -192,6 +198,7 @@ usertests 17/17, shell 3/3.
 16   Disk driver in userspace (userdisk + userfs senza ATA)        [x]
 16b  Mount/umount espliciti (tabella Vec<FsMount>, R_MOUNT/R_UMOUNT) [x]
 16c  Resolve nome→handle lato driver (DISK_RESOLVE, single source)   [x]
+16d  Identità stabile UUID/LABEL + listing + register multi-prefix     [x]
 17   Diritti per-canale lato server ([ADR-0014](../adr/0014-channel-rights-serverside.md): tabella chan→{ops,subtree}, DROP solo-shrink + GET, fd capability pure) [x]
 ```
 

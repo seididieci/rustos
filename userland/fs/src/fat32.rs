@@ -42,6 +42,12 @@ pub struct Fat32<B: BlockSource> {
     fat_start: u32,   // LBA della prima FAT
     data_start: u32,  // LBA dei dati (cluster 2)
     root_cluster: u32,
+    /// Seriale volume FAT32 (`vol_id`, BPB+67 LE32 nel layout standard firma
+    /// `0x29`@66; `fat_bpb_identity` accetta anche il legacy firma@67).
+    /// `None` = assente: niente identità stabile da questo nodo (Fase 16d).
+    vol_serial: Option<u32>,
+    /// Label volume BPB+71 (11 byte raw, padding spazi): identità `LABEL=`.
+    vol_label: [u8; 11],
 }
 
 const ATTR_DIR: u8 = 0x10;
@@ -76,6 +82,13 @@ impl<B: BlockSource> Fat32<B> {
         let fat_start = rsvd as u32;
         let data_start = rsvd as u32 + num_fats as u32 * fat_size;
 
+        // Identità stabile del volume (Fase 16d, helper condiviso in libr:
+        // stessi check di mount, usati anche dallo sniff per-nodo di userdisk).
+        let (vol_serial, vol_label) = match libr::fat_bpb_identity(&boot) {
+            Some((s, l)) => (s, l),
+            None => (None, [b' '; 11]),
+        };
+
         Some(Fat32 {
             disk,
             bytes_per_sec: bps,
@@ -83,7 +96,23 @@ impl<B: BlockSource> Fat32<B> {
             fat_start,
             data_start,
             root_cluster: root,
+            vol_serial,
+            vol_label,
         })
+    }
+
+    /// Seriale volume (`UUID=`, maiuscolo hex 8 char) o `None` se assente.
+    pub fn vol_serial(&self) -> Option<u32> {
+        self.vol_serial
+    }
+
+    /// Label volume normalizzata (trim spazi) per match `LABEL=`.
+    pub fn vol_label_trimmed(&self) -> &[u8] {
+        let mut n = self.vol_label.len();
+        while n > 0 && self.vol_label[n - 1] == b' ' {
+            n -= 1;
+        }
+        &self.vol_label[..n]
     }
 
     fn cluster_bytes(&self) -> usize {

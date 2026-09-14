@@ -322,6 +322,9 @@ in tre direzioni pianificate (vedi `AGENTS.md`):
   Fase 16c: mappa nome→handle di proprieta' del driver (`DISK_RESOLVE` 0x54,
   tag centralizzati in `syscall-numbers`) — userfs chiede, non indovina;
   userdisk unico owner di `Disk` (SATA futuro come backend interno).
+  Fase 16d: identità stabile `UUID=`/`LABEL=` (seriale/label FAT) + nodi
+  `/dev/disk/by-*` + listing dei padri sintetizzato dai prefix + registrazione
+  multi-prefix atomica (`fs_register_multi`, evita il deadlock register/forward).
 - **Fase 17 — Shell + utility utente** (slittata in coda).
 
 ## Riferimenti

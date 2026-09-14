@@ -17,8 +17,9 @@
 //! Due protocolli serviti, entrambi con reply implicita (ADR-0008):
 //! - `DISK_*` (canale diretto userfs→userdisk, service_lookup(Disk)): HELLO
 //!   (fisici nelle reply: w0 = req_phys del DISK_REQ ring, w1 = resp_phys),
-//!   OPEN/READ settoriali, CLOSE, RESOLVE nome→handle (Fase 16c: userdisk e'
-//!   l'unico proprietario della mappa nomi; userfs non indovina piu' nulla).
+//!   OPEN/READ settoriali, CLOSE, RESOLVE chiave→handle (Fase 16c: userdisk e'
+//!   l'unico proprietario della mappa; 16d: chiave = nome (`sda`), UUID hex
+//!   8 char (seriale volume FAT) o label (priorità in quest'ordine).
 //!   Un settore per chiamata (1:1 con BlockSource).
 //! - `DEV_*` (relay userfs per gli open raw `/dev/sdX`): OPEN(w0=handle
 //!   codificato disco<<16|sub), READ sequenziale con posizione per-fd (solo
@@ -197,6 +198,58 @@ struct Node {
     /// Handle codificato (disco<<16|sub, 0 = whole-disk): allocato qui,
     /// mai indovinato altrove.
     handle: u32,
+    /// Seriale volume FAT (BPB sniff, Fase 16d): `UUID=` = hex maiuscolo
+    /// 8 char. `None` = nodo senza identità stabile (non-FAT o senza firma).
+    vol_uuid: Option<u32>,
+    /// Label volume trimmata (BPB sniff, Fase 16d): `LABEL=`. `None` se
+    /// vuota/assente. Mai con '/' (skippata in registrazione, difensivo).
+    vol_label: Option<String>,
+}
+
+/// Sniffa l'identità FAT del settore 0 di un nodo (whole-disk: settore 0
+/// fisico; partizione: settore `base`). Stesso bar di mount (`fat_bpb_identity`
+/// in libr): il nodo annuncia UUID/label sse userfs lo monterebbe davvero.
+fn sniff_identity(disk: &block::AtaDisk, base: u64) -> (Option<u32>, Option<String>) {
+    let mut sec = [0u8; 512];
+    if !disk.read_sector(base, &mut sec) {
+        return (None, None);
+    }
+    match libr::fat_bpb_identity(&sec) {
+        Some((serial, raw_label)) => {
+            let mut n = raw_label.len();
+            while n > 0 && raw_label[n - 1] == b' ' {
+                n -= 1;
+            }
+            let label = if n == 0 {
+                None
+            } else {
+                match core::str::from_utf8(&raw_label[..n]) {
+                    Ok(s) if !s.contains('/') => Some(String::from(s)),
+                    _ => None,
+                }
+            };
+            (serial, label)
+        }
+        None => (None, None),
+    }
+}
+
+/// Risolve una chiave (`"sda"`, UUID hex 8 char, label) in nodo (Fase 16d).
+/// Priorità: nome esatto → UUID → label. Mai ambigua in pratica (nomi `sd*`
+/// non sono hex-8 ne' label convenzionali maiuscole senza spazi... e a pari
+/// merito vince il primo in tabella, deterministico per costruzione).
+fn resolve_node<'a>(nodes: &'a [Node], key: &str) -> Option<&'a Node> {
+    if let Some(n) = nodes.iter().find(|n| n.name == key) {
+        return Some(n);
+    }
+    if key.len() == 8 && key.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if let Ok(v) = u32::from_str_radix(key, 16) {
+            if let Some(n) = nodes.iter().find(|n| n.vol_uuid == Some(v)) {
+                return Some(n);
+            }
+        }
+    }
+    nodes.iter().find(|n| n.vol_label.as_deref() == Some(key))
 }
 
 /// Partizione MBR (coordinate fisiche, dal parse del settore 0).
@@ -206,8 +259,7 @@ struct PartLoc {
 }
 
 /// Risolve un handle codificato (disco<<16|sub, 0 = whole-disk) in
-/// (indice disco, base settori, settori nodo). userfs parsa i nomi Linux
-/// ("sda"→(0,0), "sda1"→(0,1)) senza lista nodi; la validita' (quante
+/// (indice disco, base settori, settori nodo). La validita' (quante
 /// partizioni ha davvero il disco) e' qui. Ritorna None se inesistente.
 fn locate(handle: u32, disk_sectors: &[u64], parts: &[Vec<PartLoc>]) -> Option<(usize, u64, u64)> {
     let disk = (handle >> 16) as usize;
@@ -367,7 +419,7 @@ impl FsReg {
         fs_rings_reset();
     }
 
-    /// Completa se tutti i nodi registrati.
+    /// Completa se tutti i prefix registrati.
     fn done(&self, total: usize) -> bool {
         self.idx >= total
     }
@@ -378,8 +430,8 @@ impl FsReg {
     /// Ritenta a OGNI wakeup senza throttle: i tentativi sono solo lookup e
     /// send cheap, e `recv` blocca sempre dopo (mai spin). Uno sleep con
     /// throttle e senza waker congelerebbe i retry per sempre.
-    fn step(&mut self, nodes: &[Node]) {
-        if self.done(nodes.len()) || self.pending.is_some() {
+    fn step(&mut self, prefixes: &[String]) {
+        if self.done(prefixes.len()) || self.pending.is_some() {
             return;
         }
         // Canale (re-lookup se assente/stale: la send_async fallita lo azzera).
@@ -407,8 +459,9 @@ impl FsReg {
             }
             return;
         }
-        // Un prefix alla volta (frame + notify async).
-        let prefix = alloc::format!("/dev/{}", nodes[self.idx].name);
+        // Un prefix alla volta (frame + notify async): nodi `/dev/sdX` e
+        // alias stabili `/dev/disk/by-uuid/*`, `/dev/disk/by-label/*`.
+        let prefix = &prefixes[self.idx];
         let bytes = prefix.as_bytes();
         if !fs_req_write(R_REGISTER, bytes.len() as u64, 0, bytes) {
             return;
@@ -426,7 +479,7 @@ impl FsReg {
 
     /// Raccoglie una reply async che matcha il pending. Ritorna true se era
     /// nostra (consumata), con avanzamento di stato.
-    fn collect_if_mine(&mut self, req_id: i64, nodes: &[Node]) -> bool {
+    fn collect_if_mine(&mut self, req_id: i64, prefixes: &[String]) -> bool {
         let pending = match self.pending {
             Some(p) if req_id > 0 && req_id == p => p,
             _ => return false,
@@ -442,7 +495,7 @@ impl FsReg {
         match fs_resp_read() {
             Some(0) => {
                 self.pending = None;
-                libr::println!("[userdisk] registered /dev/{} with userfs", nodes[self.idx].name);
+                libr::println!("[userdisk] registered {} with userfs", prefixes[self.idx]);
                 self.idx += 1;
             }
             _ => {
@@ -476,6 +529,8 @@ pub extern "C" fn _start() -> ! {
             if info.drive == 0 { "master" } else { "slave" }
         );
         println!("[userdisk] sd{}: modello '{}'", letter, model);
+        let serial = core::str::from_utf8(&info.serial[..info.serial_len]).unwrap_or("?");
+        println!("[userdisk] sd{}: seriale '{}'", letter, serial);
         disks.push(block::AtaDisk::open(info.cmd, info.drive, info.lba48));
     }
     if atapi > 0 {
@@ -494,9 +549,13 @@ pub extern "C" fn _start() -> ! {
     for (i, disk) in disks.iter().enumerate() {
         let letter = (b'a' + i as u8) as char;
         disk_sectors.push(infos[i].sectors);
+        // Identità del whole-disk dallo stesso settore 0 (Fase 16d).
+        let (wd_uuid, wd_label) = sniff_identity(disk, 0);
         nodes.push(Node {
             name: alloc::format!("sd{}", letter),
             handle: (i as u32) << 16,
+            vol_uuid: wd_uuid,
+            vol_label: wd_label,
         });
         let mut disk_parts: Vec<PartLoc> = Vec::new();
         let mut sec0 = [0u8; 512];
@@ -512,14 +571,44 @@ pub extern "C" fn _start() -> ! {
                     part.start,
                     part.sectors
                 );
+                // Identità della partizione dal suo boot sector (Fase 16d:
+                // un settore in più per partizione, solo a boot).
+                let (pu, pl) = sniff_identity(disk, part.start as u64);
                 nodes.push(Node {
                     name: alloc::format!("sd{}{}", letter, p + 1),
                     handle: ((i as u32) << 16) | (p as u32 + 1),
+                    vol_uuid: pu,
+                    vol_label: pl,
                 });
                 disk_parts.push(PartLoc { start: part.start, sectors: part.sectors });
             }
         }
         parts.push(disk_parts);
+    }
+
+    // Prefix da registrare presso userfs (Fase 16d): il nodo + gli alias
+    // stabili che ha (`/dev/disk/by-uuid/<HEX8>`, `/dev/disk/by-label/<NOME>`).
+    // La FsReg li consuma in ordine; userfs li tratta come prefix qualunque
+    // (open esatto + listing sintetizzato dalla Mount table, B4).
+    let mut reg_prefixes: Vec<String> = Vec::new();
+    for n in nodes.iter() {
+        reg_prefixes.push(alloc::format!("/dev/{}", n.name));
+        if let Some(u) = n.vol_uuid {
+            reg_prefixes.push(alloc::format!("/dev/disk/by-uuid/{:08X}", u));
+        }
+        if let Some(l) = &n.vol_label {
+            reg_prefixes.push(alloc::format!("/dev/disk/by-label/{}", l));
+        }
+        // Riga identità per-nodo (Fase 16d): umana + asserzione host-side
+        // del reorder (test-uuid-reorder.py cerca `uuid=<U2>` sulla lettera).
+        let mut idline = alloc::format!("[userdisk] {}: handle={:#x}", n.name, n.handle);
+        if let Some(u) = n.vol_uuid {
+            idline.push_str(&alloc::format!(" uuid={:08X}", u));
+        }
+        if let Some(l) = &n.vol_label {
+            idline.push_str(&alloc::format!(" label='{}'", l));
+        }
+        println!("{}", idline);
     }
 
     // 3. Ring FS + DISK dedicati (allocazione raw, MAI via libr::fs_init che e'
@@ -588,7 +677,7 @@ pub extern "C" fn _start() -> ! {
     loop {
         // Invio nella stessa chiamata (lezione tty): prima di dormire in recv
         // bisogna aver notificato, altrimenti nessuno ci sveglia.
-        fsreg.step(&nodes);
+        fsreg.step(&reg_prefixes);
         let msg = match libr::recv() {
             Ok(m) => m,
             Err(_) => continue,
@@ -596,7 +685,7 @@ pub extern "C" fn _start() -> ! {
 
         // Reply async FS (BUF_REG/REGISTER): consuma per primo, prima di ogni
         // dispatch (req_id > 0 solo per le risposte, mai per le richieste).
-        if fsreg.collect_if_mine(msg.req_id, &nodes) {
+        if fsreg.collect_if_mine(msg.req_id, &reg_prefixes) {
             continue;
         }
 
@@ -639,11 +728,11 @@ pub extern "C" fn _start() -> ! {
             continue;
         }
         if msg.tag == DISK_RESOLVE {
-            // Single source of truth nome→handle (Fase 16c): il nome corto
-            // ("sda", "sda1") arriva nel frame DISK_REQ, l'handle torna in w0.
-            // Sconosciuto/malformato → ERR, mai frame, mai wedge.
+            // Single source of truth nome→handle (Fase 16c, identità 16d):
+            // la chiave ("sda", UUID hex, label) arriva nel frame DISK_REQ,
+            // l'handle torna in w0. Sconosciuto/malformato → ERR, mai frame.
             let result = match disk_req_read_name() {
-                Some(name) => nodes.iter().find(|n| n.name == name).map(|n| n.handle as u64),
+                Some(key) => resolve_node(&nodes, &key).map(|n| n.handle as u64),
                 None => None,
             };
             let _ = libr::reply(0, result.unwrap_or(ERR), 0);

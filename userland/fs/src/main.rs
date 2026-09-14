@@ -132,6 +132,38 @@ fn resolve_mount<'a>(path: &'a str, mounts: &[Mount]) -> Option<(u64, &'a str)> 
     best
 }
 
+/// Figli immediati di `path` tra i prefix registrati (Fase 16d, discovery).
+/// I prefix (`/dev/null`, `/dev/disk/by-uuid/<H>`, …) implicano le directory
+/// che li contengono: `readdir("/dev")` → ["console", "disk", "input", …].
+/// Root esclusa (mai shadow di `ls /`). Ritorna None se nessun prefix sta
+/// sotto `path`. Nessun IPC: la Mount table basta (single source gia' qui).
+fn synth_children(mounts: &[Mount], path: &str) -> Option<Vec<String>> {
+    let t = path.trim_matches('/');
+    if t.is_empty() {
+        return None;
+    }
+    let mut out: Vec<String> = Vec::new();
+    for m in mounts {
+        let p = m.prefix.trim_start_matches('/');
+        if p.len() <= t.len() {
+            continue;
+        }
+        if p.starts_with(t) && p.as_bytes().get(t.len()) == Some(&b'/') {
+            let rest = &p[t.len() + 1..];
+            let child = rest.split('/').next().unwrap_or("");
+            if !child.is_empty() && !out.iter().any(|e| e == child) {
+                out.push(String::from(child));
+            }
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        out.sort();
+        Some(out)
+    }
+}
+
 /// Risolve un path in FsKind (ramfs di default).
 /// Per i path remoti (/dev/*), ritorna None (usa resolve_mount).
 /// Per i path sotto un mount noto, ritorna Fat (usa resolve_fsmount per indice+rel).
@@ -216,9 +248,11 @@ struct FsMount {
 
 /// Spec statiche applicate a OGNI boot (fresco o restart): sostituiscono il
 /// binding hardcodato con lo stesso codice dei mount dinamici (dogfood).
-/// Dinamici (R_MOUNT, 16b.2) si aggiungono alla tabella ma si perdono al
-/// restart (stato runtime, come fd e handshake: i client ristabiliscono).
-const STATIC_MOUNTS: &[(&str, &str)] = &[("/dev/sda", "fat")];
+/// Montate per UUID stabile (Fase 16d): il boot non dipende piu' dalle
+/// lettere `sdX`. Dinamici (R_MOUNT, 16b.2) si aggiungono alla tabella ma si
+/// perdono al restart (stato runtime, come fd e handshake: i client
+/// ristabiliscono).
+const STATIC_MOUNTS: &[(&str, &str)] = &[("UUID=4F4C4556", "fat")];
 
 /// Normalizza un target ("//mnt//" → "mnt"). Rifiuta root, vuoti, `.`/`..`.
 fn normalize_target(target: &str) -> Option<String> {
@@ -232,26 +266,74 @@ fn normalize_target(target: &str) -> Option<String> {
     Some(String::from(t))
 }
 
-/// Normalizza una source ("/dev/sda" → source). Solo controllo sintattico
-/// (Fase 16c): l'handle NON si ricava piu' dal nome qui — lo alloca userdisk
-/// via DISK_RESOLVE (`resolve_mount_source`). Nomi non-disco o fuori `/dev/`
-/// → None.
+/// Normalizza una source. Tre forme (Fase 16d): `/dev/<nodo>` (nomi brevi
+/// `sda`, by-path `disk/by-uuid/<HEX>` / `disk/by-label/<NOME>`), `UUID=<hex8>`
+/// (seriale volume FAT, maiuscolo), `LABEL=<nome>` (match esatto, case
+/// sensibile). Solo controllo sintattico: l'handle lo alloca userdisk via
+/// DISK_RESOLVE (`resolve_mount_source`). Ritorna None fuori grammatica.
 fn normalize_source(source: &str) -> Option<String> {
     let s = source.trim();
-    let name = s.strip_prefix("/dev/")?;
-    if name.is_empty() || name.contains('/') || name.len() > 16 {
-        return None;
+    if let Some(name) = s.strip_prefix("/dev/") {
+        if name.is_empty() || name.contains("//") || name.len() > 32 {
+            return None;
+        }
+        let name = name.trim_matches('/');
+        if name.is_empty() {
+            return None;
+        }
+        return Some(alloc::format!("/dev/{}", name));
     }
-    Some(String::from(s))
+    if let Some(hex) = s.strip_prefix("UUID=") {
+        if hex.len() != 8 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        return Some(String::from(s));
+    }
+    if let Some(label) = s.strip_prefix("LABEL=") {
+        if label.is_empty() || label.len() > 11 || label.contains('/') {
+            return None;
+        }
+        return Some(String::from(s));
+    }
+    None
 }
 
-/// Risolve una source ("/dev/sda") in handle presso userdisk (Fase 16c:
-/// single source of truth nel driver). Ritorna None a nome sconosciuto o
-/// driver irraggiungibile (bound, mai wedge): il chiamante registra la spec
-/// inattiva e ritenta lazy al prossimo accesso.
+/// Riduce una source normalizzata alla chiave di resolve (Fase 16d):
+/// `/dev/sda` → `sda`, `/dev/disk/by-uuid/<H>` → `<H>`,
+/// `/dev/disk/by-label/<N>` → `<N>`, `UUID=<H>` → `<H>`, `LABEL=<N>` → `<N>`.
+/// La semantica (`/dev` = namespace, driver = matching) resta una sola:
+/// userfs possiede il layout, userdisk il matching nome/UUID/label.
+fn resolve_key(source: &str) -> Option<String> {
+    if let Some(name) = source.strip_prefix("/dev/") {
+        if let Some(tail) = name.strip_prefix("disk/by-uuid/") {
+            return (!tail.is_empty() && !tail.contains('/')).then(|| String::from(tail));
+        }
+        if let Some(tail) = name.strip_prefix("disk/by-label/") {
+            return (!tail.is_empty() && !tail.contains('/')).then(|| String::from(tail));
+        }
+        if name.is_empty() || name.contains('/') {
+            return None;
+        }
+        return Some(String::from(name));
+    }
+    if let Some(hex) = source.strip_prefix("UUID=") {
+        return Some(String::from(hex));
+    }
+    if let Some(label) = source.strip_prefix("LABEL=") {
+        return Some(String::from(label));
+    }
+    None
+}
+
+/// Risolve una source in handle presso userdisk (Fase 16c/16d: single
+/// source of truth nel driver). Ritorna None a chiave sconosciuta o driver
+/// irraggiungibile (bound, mai wedge): il chiamante non cambia stato.
 fn resolve_mount_source(source: &str) -> Option<u32> {
-    let name = source.strip_prefix("/dev/")?;
-    IpcDisk::new(0).resolve(name)
+    let key = resolve_key(source)?;
+    if key.is_empty() || key.len() > 16 {
+        return None;
+    }
+    IpcDisk::new(0).resolve(&key)
 }
 
 /// Applica una spec (statica o dinamica): valida e registra/aggiorna sempre la
@@ -311,13 +393,10 @@ fn reactivate_mount(mounts: &mut Vec<FsMount>, mi: usize) -> bool {
         return true;
     }
     let name = match mounts.get(mi) {
-        Some(m) => match m.source.strip_prefix("/dev/") {
-            Some(n) => String::from(n),
-            None => return false,
-        },
+        Some(m) => m.source.clone(),
         None => return false,
     };
-    let handle = match IpcDisk::new(0).resolve(&name) {
+    let handle = match resolve_mount_source(&name) {
         Some(h) => h,
         None => return false,
     };
@@ -898,15 +977,42 @@ fn handle_open(
 
     // Cerca nei mount point registrati (devfs, console, userdisk, futuri driver).
     if let Some((driver_chan, rel)) = resolve_mount(path, mounts) {
-        // Nodo disco raw (Fase 16): open("/dev/sda") matcha il prefix del nodo
-        // stesso (rel vuota) — l'handle si ricava dal nome Linux, prima di
-        // dev_type (che su "" fallirebbe comunque). Handle impossibili o
-        // userdisk irraggiungibile → None (client -1, mai wedge).
+        // Nodo disco raw (Fase 16/16d): open("/dev/sda") o degli alias
+        // stabili ("/dev/disk/by-uuid/<H>", "/dev/disk/by-label/<N>") matcha
+        // il prefix del nodo stesso (rel vuota) — e cosi' i device registrati
+        // per-nome ("/dev/null": rel vuota sul prefix esatto, Fase 16d).
+        // L'handle/tipo si chiede al driver (nomi `sdX` via parse locale +
+        // validazione, by-path via DISK_RESOLVE, device via dev_type
+        // sull'ultimo componente). Impossibile o driver irraggiungibile →
+        // None (-1, mai wedge).
         if rel.is_empty() {
             let prefix = path.trim_start_matches('/');
             if let Some(name) = prefix.strip_prefix("dev/") {
-                if let Some(handle) = disk_handle(name) {
-                    let reply = libr::send(driver_chan, DEV_OPEN, handle as u64, 0).ok()?;
+                // Alias stabili (by-uuid/by-label): SOLO qui si interroga
+                // userdisk (DISK_RESOLVE). Un open di /dev/null NON deve fare
+                // un round-trip al disco a ogni chiamata (il flood di t30 lo
+                // amplificava a ~1000 HELLO).
+                if name.starts_with("disk/by-") {
+                    let h = resolve_mount_source(&alloc::format!("/dev/{}", name))?;
+                    let reply = libr::send(driver_chan, DEV_OPEN, h as u64, 0).ok()?;
+                    if reply.w0 == ERR {
+                        return None;
+                    }
+                    return Some(ftable.open_remote(chan, driver_chan, reply.w0 as u32));
+                }
+                // Nodo disco raw (/dev/sda, /dev/sdb...): parse locale
+                // validato dal driver con DEV_OPEN.
+                if let Some(h) = disk_handle(name) {
+                    let reply = libr::send(driver_chan, DEV_OPEN, h as u64, 0).ok()?;
+                    if reply.w0 == ERR {
+                        return None;
+                    }
+                    return Some(ftable.open_remote(chan, driver_chan, reply.w0 as u32));
+                }
+                // Device registrato per-nome (null/zero/...): tipo dall'ultimo
+                // componente del prefix esatto.
+                if let Some(dev) = name.rsplit('/').next().and_then(dev_type) {
+                    let reply = libr::send(driver_chan, DEV_OPEN, dev, 0).ok()?;
                     if reply.w0 == ERR {
                         return None;
                     }
@@ -1109,9 +1215,27 @@ fn handle_readdir(
         return Some(entries.len() as u64);
     }
 
-    let entries: Vec<String> = match resolve_local(mounts_fat, path)? {
-        FsKind::Fat => return None, // mount noto ma inattivo: errore, mai shadow
-        FsKind::Ram => fs.readdir(path)?,
+    // Listing sintetizzato dai prefix registrati (Fase 16d, discovery):
+    // se `path` e' directory padre di prefix noti (es. "/dev",
+    // "/dev/disk/by-uuid") elenca i figli immediati. Solo dove ramfs/fat non
+    // hanno la dir (mai shadow, mai cambi ai listing esistenti). Nota:
+    // `resolve_local` esclude i path /dev/* (None) prima ancora di guardare
+    // ramfs — la sintesi copre anche quelli.
+    let synth = synth_children(mounts, path);
+
+    let entries: Vec<String> = match resolve_local(mounts_fat, path) {
+        Some(FsKind::Ram) => match fs.readdir(path) {
+            Some(e) => e,
+            None => match synth {
+                Some(e) => e,
+                None => return None,
+            },
+        },
+        Some(FsKind::Fat) => return None, // mount noto ma inattivo: errore
+        None => match synth {
+            Some(e) => e,
+            None => return None,
+        },
     };
 
     let mut buf = Vec::new();
@@ -1285,10 +1409,21 @@ pub extern "C" fn _start() -> ! {
                 Some(f) => f,
                 None => { let _ = libr::reply(0, ERR, 0); continue; }
             };
-            if op_tag == R_REGISTER && payload_len > 0 && payload_len <= MAX_PATH {
-                let mut prefix_buf = [0u8; 256];
+            if op_tag == R_REGISTER && payload_len > 0 && payload_len <= 514 {
+                let mut prefix_buf = [0u8; 514];
                 req_ring_read_payload(&mut prefix_buf, payload_len);
-                if let Ok(prefix) = core::str::from_utf8(&prefix_buf[..payload_len]) {
+                // Payload = uno o piu' prefix NUL-separati (Fase 16d): devfs
+                // registra "/dev/null\0/dev/zero" con UNA sola IPC, cosi' non
+                // esiste una finestra in cui un mount e' forwardable mentre il
+                // driver e' ancora bloccato in un secondo register sincrono.
+                for raw in prefix_buf[..payload_len].split(|&b| b == 0) {
+                    if raw.is_empty() {
+                        continue;
+                    }
+                    let prefix = match core::str::from_utf8(raw) {
+                        Ok(p) => p,
+                        Err(_) => continue,
+                    };
                     // Idempotente sul prefix (init-restart): se il prefix era
                     // gia' registrato (driver morto non ancora purgato o double
                     // register), sostituisci invece di duplicare — lo stale

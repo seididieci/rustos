@@ -61,6 +61,39 @@ truth:
   trait, nessun cambio kernel ne' emendamento ADR-0008 (registro a slot
   singolo: due driver separati non potrebbero coesistere sullo slot 7).
 
+## Addendum Fase 16d (2026-09-14): identità stabile (UUID/LABEL) + listing
+
+Le lettere `sdX` sono instabili (ordine di probe; un reorder le scambia): per
+un mount persistente servono chiavi stabili. Si usano il seriale del volume FAT
+(`vol_id`, 4 byte) e la label.
+
+- `detect.rs` decodifica il seriale ATA (IDENTIFY word 10-19) in
+  `DiskInfo.serial`; `fat32.rs` espone `vol_serial()`/`vol_label_trimmed()`;
+  l'helper condiviso `libr::fat_bpb_identity` gestisce il layout standard
+  (firma `0x29`@66) e quello legacy `mkfat` (firma@67).
+- userdisk: `Node { name, handle, vol_uuid, vol_label }` + `sniff_identity()`
+  (legge il BPB col proprio driver) + registrazione dei prefix
+  `/dev/disk/by-uuid/<HEX8>` e `/dev/disk/by-label/<NOME>`. `DISK_RESOLVE`
+  risolve nome → UUID → label (`resolve_node`).
+- `scripts/mkfat.py` parametrizzato (`--serial`/`--label`/`--marker`) ed
+  emesso nel layout BPB standard: il vecchio layout firma@67 faceva
+  sovrapporre `label[0]` al 4° byte del seriale.
+- Test: t36 (mount per UUID/LABEL + open raw by-path + listing) e
+  `scripts/test-uuid-reorder.py` (due boot, ordine normale e `SWAP_DRIVES=1`:
+  le lettere cambiano, UUID=/LABEL= no).
+
+## Addendum Fase 16d (2026-09-14): register multi-prefix atomico (deadlock)
+
+`devfs` registrava `/dev/null` e `/dev/zero` con DUE `fs_register` sincroni
+consecutivi. Il primo crea un mount forwardable: se userfs, single-threaded,
+in quel momento sta inoltrando una richiesta al driver (`send` bloccante),
+il secondo register del driver si incrocia col forward di userfs → stallo
+(riprodotto da t30 sotto flood: tutti i Normal bloccati, solo idle+uptime
+runnable). Fix: `libr::fs_register_multi` (payload NUL-separato, UNA IPC) +
+handler userfs che splitta; nessuna finestra in cui un mount esiste mentre il
+driver e' ancora bloccato in un altro register. Regola: un driver che puo'
+ricevere forward deve completare la registrazione in un'unica chiamata.
+
 ## Regole emerse (vincolanti)
 
 1. **Mai sync incrociate tra server.** `userdisk` fa `FS_BUF_REG` + `R_REGISTER`

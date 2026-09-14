@@ -663,11 +663,49 @@ velordor/
   - Bug trovati: spec fantasma a resolve fallito (registrava inattiva e
         avvelenava `umount`: t33 "doppio umount accettato") → resolve fallito
         non tocca la tabella; header di t32 mangiato da un edit (ripristinato).
-  - Limiti noti (16c.3 futura, mount persistente): lettere ancora instabili
+  - Limiti noti (fase futura, mount persistente): lettere ancora instabili
         (ordine di probe), niente UUID/label/serial, mount attivo + reorder
         dopo restart coperto solo via drop+re-resolve per nome (stesso nome).
+        → RISOLTI dalla Fase 16d (UUID/LABEL stabili).
   - Verifica: testfs 5/5, testfat 6/6, usertests 34/34 (x2), shell 3/3,
         zero FAIL/PANIC/FAULT.
+- [x] Fase 16d: identità stabile disco (UUID/LABEL) + listing sintetizzato
+  - Motivazione: dopo 16c il resolve era per nome/lettera `sdX`, ma le lettere
+    sono instabili (ordine di probe; un reorder le scambia). Le chiavi stabili
+    sono il seriale del volume FAT (vol_id, 4 byte) e la sua label.
+  - [x] 16d.1 Decodifica identità: `detect.rs` legge il seriale ATA (IDENTIFY
+        word 10-19) in `DiskInfo.serial`; `fat32.rs` espone
+        `vol_serial()`/`vol_label_trimmed()`; helper condiviso
+        `libr::fat_bpb_identity` (accetta il layout standard firma@66 e quello
+        legacy mkfat firma@67).
+  - [x] 16d.2 userdisk: tabella `Node { name, handle, vol_uuid, vol_label }`,
+        `sniff_identity()` (legge il BPB col proprio driver), registrazione dei
+        prefix `/dev/disk/by-uuid/<HEX8>` + `/dev/disk/by-label/<NOME>`;
+        `DISK_RESOLVE` esteso a `resolve_node` (nome → UUID → label).
+  - [x] 16d.3 userfs: `normalize_source` accetta `/dev/...`, `UUID=<hex8>`,
+        `LABEL=<nome>`; `resolve_key`/`resolve_mount_source`; mount statico per
+        `UUID=4F4C4556` (mai piu' `/dev/sda`); open raw by-path risolto dal
+        driver (solo per i by-path, non a ogni open di device).
+  - [x] 16d.4 Listing sintetizzato: `synth_children` in userfs deriva le voci
+        dei padri (es. `/dev`, `/dev/disk/by-uuid`) dai prefix della Mount
+        table, senza cambiare il protocollo `DEV_READDIR`.
+  - [x] 16d.5 Registrazione multi-prefix ATOMICA: `libr::fs_register_multi`
+        (payload NUL-separato) + handler userfs che splitta; devfs registra
+        `/dev/null`+`/dev/zero` in UNA sola IPC. FIX deadlock: due register
+        sincroni consecutivi creavano un mount forwardable dopo il primo, e se
+        userfs stava gia' inoltrando una richiesta al driver (single-threaded,
+        `send` bloccante) si incrociava col secondo register → stallo (t30
+        sotto flood; tutti i Normal bloccati, solo idle+uptime runnable).
+  - [x] 16d.6 `scripts/mkfat.py` parametrizzato (`--serial`/`--label`/
+        `--marker`) + layout BPB STANDARD (firma@66): il vecchio layout
+        firma@67 faceva sovrapporre `label[0]` al 4° byte del seriale.
+  - [x] 16d.7 Test t36 (mount per UUID e per LABEL + contenuto MARKER, open
+        raw by-path con firma+seriale, listing `/dev`/by-uuid/by-label) +
+        `scripts/test-uuid-reorder.py` (due boot, ordine normale e
+        `SWAP_DRIVES=1`: le lettere cambiano, UUID=/LABEL= no). `run.sh` genera
+        `fat2.img` (UUID C0FFEE01, label SECOND, MARKER.TXT) e monta due drive.
+  - Verifica: testfs 5/5, testfat 6/6, usertests 36/36, shell 3/3, reorder
+        PASS, zero FAIL/PANIC/FAULT.
 - [x] Fase 17: diritti per-canale lato server (capability su IPC)
   - Motivazione: oggi un `Channel` e' tutto-o-niente (chi ha l'id manda
     qualunque cosa). Il passo verso IPC a capability: diritti attaccati al
@@ -879,9 +917,9 @@ timeout 60 ./run.sh > /tmp/boot.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 6/6
-#   [usertests] PASS 35/35
+#   [usertests] PASS 36/36
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 6/6|\[usertests\] PASS 35/35' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 6/6|\[usertests\] PASS 36/36' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 
