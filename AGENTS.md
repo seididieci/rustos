@@ -751,9 +751,38 @@ velordor/
         niente GRANT (canali non trasferibili).
   - Verifica: testfs 5/5, testfat 6/6, usertests 36/36, shell 3/3,
         zero FAIL/PANIC/FAULT.
-- [ ] Fase 18: Shell + utility utente — in backlog (era 17, slittata per la
-      nuova 17; shell interattiva esiste; restano utility "utente"
-      aggiuntive). Da rivedere/ridimensionare quando ripresa.
+- [ ] Fase 18: Shell + utility utente (era 17, slittata per la nuova 17).
+      Decisioni di scoping (prese in pianificazione): builtin nella shell
+      (ibrido: split in binari separati solo DOPO l'avvio servizi da disco —
+      ogni `.bin` embedded ingrossa il kernel, lezione Fase 17); `rm` con
+      nuova op `R_DELETE` (ramfs si, `/fat` rifiutato read-only); cwd lato
+      shell si, `ps` no (richiederebbe nuova syscall kernel: rimandato).
+  - [x] 18.0 Bugfix backspace mangia-prompt: `usertty::emit` (unico punto che
+        genera sia il byte cotto 0x08 in input sia l'eco su console) conta i
+        byte digitati sulla riga (`line_len`, reset a `\n` e in
+        `reset_to_lookup`); backspace a riga vuota ingoiato (niente in input,
+        niente eco). La shell fa gia' pop no-op su String vuota; la console
+        resta incondizionata (nessun altro writer emette 0x08). Verifica:
+        `test-shell.py` 4/4 (ls, cat, mkdir + backspace via screendump:
+        eco `q` visibile, cancel ripristina, 3x backspace a riga vuota = 0
+        byte diversi) + gate suite 36/36 invariato. Fix collaterale: KEYMAP
+        `"."`: `period` non esiste su QEMU 10.2.2 (`invalid parameter`, tasto
+        perso in silenzio) → `dot`; senza, `cat hello.txt` diventava
+        `cat hellotxt` (open con O_CREAT crea il file vuoto: silent).
+  - [ ] 18.1 Builtin senza cambi di protocollo: `echo`, `clear` (nuovo `\x0c`
+        in `vga_write_char` console: clear+home), `wc`, `hexdump`, `kill <pid>`
+        (via `libr::kill` + `service_pid` per i nomi), cwd lato shell (`String`
+        + `resolve()` con `.`/`..`) → path relativi per tutti i comandi. Solo
+        `usershell` (+ 5 righe console).
+  - [ ] 18.2 `R_DELETE`: nuovo tag in `syscall-numbers`, handler userfs
+        (ramfs `BTreeMap::remove`, FAT → ERR read-only) con check ops+subtree
+        nel choke point Fase 17, `libr::remove`, nuovo bit `RIGHTS_DELETE`
+        (incluso in `ALL` per retrocompatibilita'), builtin `rm`/`mv` (= cp+rm
+        client-side, zero nuove op)/`rmdir`. Test: ciclo touch/write/rm/
+        read-fail su ramfs + rm su `/fat` rifiutato.
+  - [ ] 18.3 Docs + regressione: capitolo `12-utilities.md` (tabella comandi,
+        limiti onesti: no write `/fat`, no argv), estensione `test-shell.py`,
+        gate invariato 36/36 + shell verde.
 
 ## Important Notes
 

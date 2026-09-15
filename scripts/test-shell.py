@@ -6,7 +6,10 @@ sendkey e verifica che la shell li esegua. La shell specchia l'output su
 seriale (term_write_bytes -> print_string), quindi i risultati sono leggibili
 dal log seriale senza bisogno della VGA.
 
-Comandi testati: ls, cat, mkdir (cat usa hello.txt; '.' si invia come 'period').
+Comandi testati: ls, cat, mkdir (cat usa hello.txt; '.' si invia come 'dot').
+Fase 18.0: backspace a riga vuota non mangia il prompt (verifica via
+screendump QEMU: eco visibile, cancel ripristina, backspace a vuoto = 0
+byte diversi sull'ultima riga a meno del cursore).
 
 Da eseguire dopo build-userland + build kernel (run.sh fa entrambe).
 """
@@ -17,7 +20,67 @@ SERIAL = "/tmp/velordor-serial.log"
 MON = "/tmp/velordor-mon.sock"
 FAT = "userland/fs/fat.img"
 
-KEYMAP = {" ": "spc", ".": "period", "-": "minus", "/": "slash"}
+# Nomi sendkey VERIFICATI su QEMU 10.2.2 (il monitor risponde
+# "invalid parameter" ai nomi ignoti — e lo script lo ignorerebbe in
+# silenzio: 'period' NON esiste, il punto e' 'dot').
+KEYMAP = {" ": "spc", ".": "dot", "-": "minus", "/": "slash"}
+
+SHOT0 = "/tmp/velordor-shot0.ppm"
+SHOT1 = "/tmp/velordor-shot1.ppm"
+SHOT2 = "/tmp/velordor-shot2.ppm"
+SHOT3 = "/tmp/velordor-shot3.ppm"
+
+def screendump(path: str):
+    try: os.unlink(path)
+    except FileNotFoundError: pass
+    send_mon("screendump %s" % path, sleep=0.6)
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if os.path.exists(path) and os.path.getsize(path) > 1000:
+            time.sleep(0.3)
+            return True
+        time.sleep(0.2)
+    return False
+
+def load_ppm(path: str):
+    with open(path, "rb") as f:
+        data = f.read()
+    assert data[:2] == b"P6", "screendump non PPM"
+    # Header: P6 + commenti + "W H" + maxval, poi byte raw RGB.
+    parts = []
+    i = 2
+    while len(parts) < 3:
+        while data[i:i+1].isspace():
+            i += 1
+        if data[i:i+1] == b"#":
+            while data[i:i+1] != b"\n":
+                i += 1
+            continue
+        j = i
+        while not data[j:j+1].isspace():
+            j += 1
+        parts.append(data[i:j])
+        i = j
+    while data[i:i+1].isspace():
+        i += 1
+    w, h = int(parts[0]), int(parts[1])
+    return w, h, data[i:i + w * h * 3]
+
+def diff_masked(a: str, b: str):
+    """Byte diversi tra due screendump, mascherando le ultime 3 scanline
+    (cursore hardware lampeggiante: non e' contenuto)."""
+    wa, ha, pa = load_ppm(a)
+    wb, hb, pb = load_ppm(b)
+    if (wa, ha, len(pa)) != (wb, hb, len(pb)):
+        return -1
+    row = wa * 3
+    diff = 0
+    for y in range(ha - 3):
+        off = y * row
+        for k in range(row):
+            if pa[off + k] != pb[off + k]:
+                diff += 1
+    return diff
 
 def send_mon(cmd: str, sleep=0.12):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -126,6 +189,45 @@ def main():
         found = b"prova" in data
         print(("PASS " if found else "FAIL ") + "mkdir prova visibile in ls")
         ok = ok and found
+
+        # Fase 18.0: backspace a riga vuota non mangia il prompt. La VGA e'
+        # statica al prompt: shot0 riferimento; "q" deve cambiare lo schermo
+        # (controllo positivo: screendump sensibile); backspace torna a shot0;
+        # altri 3 backspace a riga vuota devono lasciare tutto identico
+        # (pre-fix mangiavano "$ ").
+        base = count_prompts(read_log())
+        deadline = time.time() + 15
+        while count_prompts(read_log()) <= base and time.time() < deadline:
+            time.sleep(0.2)
+        time.sleep(0.5)
+        for p in (SHOT0, SHOT1, SHOT2, SHOT3):
+            try: os.unlink(p)
+            except FileNotFoundError: pass
+        got0 = screendump(SHOT0)
+        type_text("q")
+        time.sleep(0.8)
+        got1 = screendump(SHOT1)
+        send_mon("sendkey backspace")
+        time.sleep(0.8)
+        got2 = screendump(SHOT2)
+        for _ in range(3):
+            send_mon("sendkey backspace")
+        time.sleep(0.8)
+        got3 = screendump(SHOT3)
+        if not (got0 and got1 and got2 and got3):
+            print("FAIL backspace: screendump mancati")
+            ok = False
+        else:
+            d1 = diff_masked(SHOT0, SHOT1)
+            d2 = diff_masked(SHOT0, SHOT2)
+            d3 = diff_masked(SHOT0, SHOT3)
+            print("info backspace: diff q=%d erase=%d empty=%d" % (d1, d2, d3))
+            # La 'q' accende solo i pixel del glifo (~96 byte): soglia bassa
+            # ma > 0 (controllo positivo che lo screendump sia sensibile).
+            found = d1 > 50 and d2 <= 64 and d3 <= 64
+            print(("PASS " if found else "FAIL ")
+                  + "backspace: eco ok, cancel ok, prompt intatto a riga vuota")
+            ok = ok and found
 
         if not ok:
             print("---- output seriale (tail) ----")
