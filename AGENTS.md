@@ -844,7 +844,7 @@ velordor/
         `ps` (`PID NAME PRIO STATE TIME PARENT`, `run` = se stesso) + t37
         (idle/init presenti parent-None, self Ready, count>=8, TIME init>0 e
         TIME proprio crescente dopo spin puro). Verifica: gate 38/38 +
-        `test-shell.py` 29/29, zero FAIL/PANIC/FAULT.
+        `test-shell.py` 30/30, zero FAIL/PANIC/FAULT.
   - [x] 19.2 `stat` lato userfs (zero kernel): frame `R_STAT` (0x1B) con risposta
         self-written `[size:8][kind:8]` (kind=file/dir/device + flag readonly;
         ramfs=len reale, FAT=size da dir entry sempre readonly, device=size 0
@@ -853,7 +853,38 @@ velordor/
         t38 (ramfs/FAT/device/padri sintetizzati/error paths) + stretch
         `ls -l` minimale (Fase 18 chiusa: `ls [-l]`, riga `tipo size nome[ (ro)]`
         via 1 stat per entry, `? nome` se la entry sparisce in corsa). Verifica:
-        gate 38/38 + `test-shell.py` 29/29, zero FAIL/PANIC/FAULT.
+        gate 38/38 + `test-shell.py` 30/30, zero FAIL/PANIC/FAULT.
+- [x] Fase 20: FAT32 scrivibile (persistenza, ADR-0016).
+  - [x] 20.0 Protocollo `DISK_WRITE` (0x55): frame `[512:8][settore]` nel
+        DISK_REQ ring (handle w0, lba w1), handler userdisk + `node_write`
+        (bound check come read), reply senza frame; `IpcDisk::try_write`
+        (mirror di `try_read`, un retry solo a canale caduto).
+  - [x] 20.1 `write_sector` PIO in `block.rs` (`WRITE SECTORS (EXT)` 0x30/0x34
+        + `FLUSH CACHE` 0xE7/0xEA, stesso polling bound dei read) + `outw` in
+        `io.rs` + `BlockSource::write_sector` (write-through, niente cache).
+  - [x] 20.2 Overwrite entro `size` (`write_file`: read-modify-write a settori
+        sul walk catena) in `handle_write_local` (via `fat_mounts`, con
+        `reactivate_mount` come il read).
+  - [x] 20.3 Crescita + allocazione: `DirEntry`/`FileInfo` con `entry_off` +
+        `dir_cluster`, `set_fat_entry` (entrambe le copie, nibble alto
+        preservato), `alloc_one` (scan bound `fat_size*128`), `zero_cluster`/
+        `zero_range` (mai stale leggibile), `patch_entry` (straddle-safe),
+        `fsinfo_bump` (skip se senza firme), `write_grow` (link → zero → dati
+        → size per ultima; fallimento alloc = degrado a overwrite; size solo
+        di quanto atterrato). Bug veri trovati: (1) restore del test a offset
+        EOF appendeva (grow!) avvelenando HELLO per t32-t35 → close+reopen
+        prima del restore; (2) size HELLO e' 27 non 28 (contati, niente
+        off-by-one di mkfat).
+  - [x] 20.4 `O_CREAT` su /fat (`create_file`: 8.3 maiusc, no LFN, attr
+        archivio, slot 0x00/0xE5 con crescita dir se piena) + ramo Fat in
+        `handle_open`. `mkdir`/`rm` su FAT fuori scope (niente unlink).
+  - [x] 20.5 Test + ribaltamenti: `testfat` 7/7 (Test 4 overwrite+restore
+        pristino, Test 7 create+grow 9000 B multicluster con pattern e stat;
+        handler panic con location); `STAT_READONLY` rimosso per FAT (+ t38,
+        `ls -l`, docs); `test-shell.py` ribaltato (cp verso /fat + read-back,
+        rm ancora rifiutato, HELLO intatto). Verifica: gate 5/5 + 7/7 + 38/38,
+        shell 30/30 in ~3:30 con KVM, `fsck.fat -n` pulito post-sessione
+        (6 file, 9 cluster), `mdir`/`mcopy` coerenti.
 
 ## Important Notes
 
@@ -1017,10 +1048,10 @@ timeout 60 ./run.sh > /tmp/boot.log
 
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
-#   [testfat] PASS 6/6
+#   [testfat] PASS 7/7
 #   [usertests] PASS 38/38
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 6/6|\[usertests\] PASS 38/38' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 38/38' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 

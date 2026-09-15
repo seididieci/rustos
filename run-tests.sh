@@ -6,7 +6,7 @@
 # ed esegue usertestfs/usertestfat/usertests in sequenza prima della shell)
 # e rimanda a run.sh. Righe attese + zero FAIL/PANIC/FAULT:
 #   [testfs] PASS 5/5
-#   [testfat] PASS 6/6
+#   [testfat] PASS 7/7
 #   [usertests] PASS 38/38
 set -euo pipefail
 cd "$(dirname "$0")"

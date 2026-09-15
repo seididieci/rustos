@@ -390,8 +390,8 @@ def main():
         ok = ok and found
         run("rmdir lldir")
         out = run_out("ls -l /fat")
-        found = b"HELLO.TXT" in out and b"(ro)" in out
-        print(("PASS " if found else "FAIL ") + "ls -l /fat (readonly)")
+        found = b"- 25 HELLO.TXT" in out and b"(ro)" not in out
+        print(("PASS " if found else "FAIL ") + "ls -l /fat (scrivibile)")
         ok = ok and found
 
         # kill: nome ignoto, pid inesistente, init non killabile (rifiuto)
@@ -455,7 +455,7 @@ def main():
         ok = ok and found
         run("rm moved.txt")
 
-        # cp da /fat (read-only ok come sorgente) verso ramfs.
+        # cp da /fat verso ramfs (sorgente sempre leggibile).
         run("cp /fat/HELLO.TXT fatcopy.txt")
         out = run_out("cat fatcopy.txt")
         found = b"Hello from Velordor FAT32!" in out
@@ -463,18 +463,24 @@ def main():
         ok = ok and found
         run("rm fatcopy.txt")
 
-        # rm e cp VERSO /fat rifiutati, disco invariato.
+        # Fase 20 (/fat scrivibile): cp verso /fat CREA + read-back; rm resta
+        # rifiutato (niente unlink su FAT, fuori scope); HELLO.TXT intatta.
+        run("cp hello.txt /fat/shellw.txt")
+        out = run_out("cat /fat/shellw.txt")
+        found = b"Hello from Velordor ramfs!" in out
+        print(("PASS " if found else "FAIL ") + "cp verso /fat + read-back")
+        ok = ok and found
+        out = run_out("rm /fat/shellw.txt")
+        found = b"cannot remove" in out
+        print(("PASS " if found else "FAIL ") + "rm su /fat ancora rifiutato")
+        ok = ok and found
         out = run_out("rm /fat/HELLO.TXT")
         found = b"cannot remove" in out
         print(("PASS " if found else "FAIL ") + "rm su /fat rifiutato")
         ok = ok and found
-        out = run_out("cp hello.txt /fat/nope.txt")
-        found = b"I/O error" in out or b"cannot create" in out
-        print(("PASS " if found else "FAIL ") + "cp verso /fat rifiutato")
-        ok = ok and found
         out = run_out("cat /fat/HELLO.TXT")
         found = b"Hello from Velordor FAT32!" in out
-        print(("PASS " if found else "FAIL ") + "/fat invariato")
+        print(("PASS " if found else "FAIL ") + "/fat/HELLO.TXT intatto")
         ok = ok and found
 
         # clear: scherma testo, pulisce, shell resta viva        run("echo marker123")

@@ -2082,16 +2082,16 @@ fn t_stat() -> bool {
         println!("[usertests] t38: stat dopo rm accettata?!");
         return false;
     }
-    // FAT (read-only): file + dir marcati readonly.
+    // FAT (scrivibile dalla Fase 20): file + dir NON readonly.
     if libr::stat("/fat/HELLO.TXT", &mut st) != 0
         || !st.is_file()
         || st.size == 0
-        || !st.readonly
+        || st.readonly
     {
         println!("[usertests] t38: stat /fat/HELLO.TXT FAILED");
         return false;
     }
-    if libr::stat("/fat", &mut st) != 0 || !st.is_dir() || !st.readonly {
+    if libr::stat("/fat", &mut st) != 0 || !st.is_dir() || st.readonly {
         println!("[usertests] t38: stat /fat FAILED");
         return false;
     }

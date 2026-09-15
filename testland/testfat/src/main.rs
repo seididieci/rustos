@@ -1,7 +1,8 @@
-//! usertestfat — Test program for Phase 9.2 (FAT32 read-only via IPC).
+//! usertestfat — Test program for Phase 9.2 (FAT32 via IPC) + Fase 20 (scrivibile).
 //!
 //! Tests: readdir "/fat", read "/fat/HELLO.TXT", read "/fat/SUB/NOTES.TXT",
-//! write su /fat deve fallire (read-only).
+//! overwrite + restore (pristino per i test dopo), create+grow multicluster,
+//! /dev/null, /dev/zero.
 
 #![no_std]
 #![no_main]
@@ -100,13 +101,40 @@ pub extern "C" fn _start() -> ! {
         all_ok = false;
     }
 
-    // Test 4: write su /fat deve fallire (read-only)
-    println!("[testfat] Test 4: write /fat read-only");
+    // Test 4: overwrite su /fat (Fase 20, scrivibile) + restore pristino.
+    // HELLO.TXT resta identica dopo il test (contenuto E size): i test dopo
+    // (usertests, shell) la leggono come fixture.
+    println!("[testfat] Test 4: overwrite + restore /fat/HELLO.TXT");
+    let orig = b"Hello from Velordor FAT32!\n";
     let fd = libr::open("/fat/HELLO.TXT", 0);
     if fd >= 0 {
         let n = libr::write_fs(fd, b"modified", 8);
-        let ok = n < 0;
-        all_ok &= expect("write su /fat rifiutata", &[ok as u8], &[1]);
+        let wok = n == 8;
+        all_ok &= expect("overwrite 8B", &[wok as u8], &[1]);
+        let _ = libr::close(fd);
+        // Read-back: i primi 8 byte nuovi, il resto originale.
+        let fd = libr::open("/fat/HELLO.TXT", 0);
+        println!("[testfat] reopen fd={}", fd);
+        let mut buf = [0u8; 32];
+        let n = read_all(fd, &mut buf);
+        println!("[testfat] reread n={}", n);
+        let mut want = [0u8; 27]; // orig = 27 B (contati)
+        want[..8].copy_from_slice(b"modified");
+        want[8..].copy_from_slice(&orig[8..]);
+        let rok = n == 27 && buf[..27] == want;
+        all_ok &= expect("read-back overwrite", &[rok as u8], &[1]);
+        let _ = libr::close(fd);
+        // Restore pristino (stessa size: solo overwrite, mai grow qui).
+        // Riapre: l'offset del fd letto e' a EOF, la write appenderebbe.
+        let fd = libr::open("/fat/HELLO.TXT", 0);
+        let n = libr::write_fs(fd, orig, orig.len());
+        let bok = n == orig.len() as i64;
+        all_ok &= expect("restore write", &[bok as u8], &[1]);
+        let _ = libr::close(fd);
+        let fd = libr::open("/fat/HELLO.TXT", 0);
+        let mut buf = [0u8; 32];
+        let n = read_all(fd, &mut buf);
+        all_ok &= expect("HELLO.TXT pristino", &buf[..n as usize], orig);
         let _ = libr::close(fd);
     } else {
         all_ok = false;
@@ -145,8 +173,62 @@ pub extern "C" fn _start() -> ! {
         println!("[testfat] /dev/zero: FAIL (open fd={})", fd);
     }
 
+    // Test 7: create + grow multicluster (Fase 20.3/20.4): file nuovo da
+    // vuoto a 9000 B (> 1 cluster da 4 KiB: allocazione + size update),
+    // read-back con pattern. Il file resta (niente unlink su FAT, fuori
+    // scope): gli assert dopo usano solo presenza/contenuto, mai conteggi.
+    println!("[testfat] Test 7: create + grow 9000B /fat/TFATW.TXT");
+    let fd = libr::open("/fat/TFATW.TXT", libr::O_CREAT);
+    println!("[testfat] create fd={}", fd);
+    if fd >= 0 {
+        let mut chunk = [0u8; 1000];
+        let mut wok = true;
+        for k in 0..9 {
+            for i in 0..1000 {
+                chunk[i] = ((k * 1000 + i) % 251) as u8;
+            }
+            let n = libr::write_fs(fd, &chunk, 1000);
+            if n != 1000 {
+                wok = false;
+                break;
+            }
+        }
+        all_ok &= expect("write 9x1000B", &[wok as u8], &[1]);
+        let _ = libr::close(fd);
+        // Size via stat + read-back integrale.
+        let mut st = libr::Stat { size: 0, kind: 0, readonly: false };
+        let sok = libr::stat("/fat/TFATW.TXT", &mut st) == 0
+            && st.is_file()
+            && st.size == 9000;
+        all_ok &= expect("stat size=9000", &[sok as u8], &[1]);
+        let fd = libr::open("/fat/TFATW.TXT", 0);
+        let mut back = [0u8; 9000];
+        let mut got = 0usize;
+        while got < 9000 {
+            let n = libr::read_fs(fd, &mut back[got..], 9000 - got);
+            if n <= 0 {
+                break;
+            }
+            got += n as usize;
+        }
+        let mut rok = got == 9000;
+        if rok {
+            for i in 0..9000 {
+                if back[i] != (i % 251) as u8 {
+                    rok = false;
+                    break;
+                }
+            }
+        }
+        all_ok &= expect("read-back 9000B pattern", &[rok as u8], &[1]);
+        let _ = libr::close(fd);
+    } else {
+        all_ok = false;
+        println!("[testfat] create /fat/TFATW.TXT: FAIL (open fd={})", fd);
+    }
+
     if all_ok {
-        println!("[testfat] PASS 6/6");
+        println!("[testfat] PASS 7/7");
     } else {
         println!("[testfat] FAIL");
     }
@@ -156,7 +238,11 @@ pub extern "C" fn _start() -> ! {
 }
 
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    println!("[testfat] panic");
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    if let Some(loc) = info.location() {
+        println!("[testfat] panic @ {}:{}", loc.file(), loc.line());
+    } else {
+        println!("[testfat] panic");
+    }
     libr::exit(1)
 }

@@ -31,3 +31,10 @@ pub unsafe fn inw(port: u16) -> u16 {
     }
     val
 }
+
+#[inline(always)]
+pub unsafe fn outw(port: u16, val: u16) {
+    unsafe {
+        core::arch::asm!("out dx, ax", in("dx") port, in("ax") val, options(nostack, nomem));
+    }
+}
