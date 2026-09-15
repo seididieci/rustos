@@ -822,7 +822,7 @@ velordor/
         il valore della sonda + file vuoti funzionanti. Zero cambi client/
         protocollo (async gia' compatibile). Test di contratto in t6 (read
         oltre EOF ⇒ 0). Verifica: gate 36/36 + `test-shell.py` 24/24.
-  - [ ] 18.3 Docs + regressione: capitolo `12-utilities.md` (tabella comandi,
+  - [x] 18.3 Docs + regressione: capitolo `12-utilities.md` (tabella comandi,
         limiti onesti: no write `/fat`, no argv), estensione `test-shell.py`,
         gate invariato 36/36 + shell verde.
 
