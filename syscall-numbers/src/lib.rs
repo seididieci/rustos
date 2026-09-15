@@ -68,6 +68,16 @@ pub const SYS_KILL: u64 = 35;
 /// Ritorna il pid dell'owner attuale del servizio, o -1 se non registrato
 /// (Fase 14, init-restart: supervisione e diagnostica).
 pub const SYS_SERVICE_PID: u64 = 36;
+/// Snapshot `ps` del processo `pid` (Fase 19.1): 0 se lo slot e' vivo, -1 se
+/// vuoto/terminato. Campi multi-registro (pattern `CBS_GET_INFO`): nome (16 B,
+/// il piu' lungo oggi e' "userdevreader"=13) in rdi+rsi (LE), `rdx` packed,
+/// `r10` = tick consumati. Layout `rdx`: bit 0-7 stato (0=Ready, 1=Blocked),
+/// 8-15 prio (0-31), 16-23 parent+1 (0=nessuno), 24-31 ipc (0=None, 1=OnRecv,
+/// 2=OnReply). Il chiamante marca "run" il proprio pid (da `getpid`).
+pub const SYS_PS_INFO: u64 = 37;
+/// Bound di scansione per `ps` (Fase 19.1): i PID vivono in 0..PS_SCAN_MAX.
+/// Deve restare uguale al `MAX_PIDS` del kernel (32, Fase 14).
+pub const PS_SCAN_MAX: u32 = 32;
 /// IPC tag: il client ha scritto nel request ring e notifica il server.
 pub const FS_NOTIFY: u64 = 0x32;
 /// Tag kernel→parent: un figlio e' terminato (exit o kill). Il kernel lo invia

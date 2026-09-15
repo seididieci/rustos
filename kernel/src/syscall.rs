@@ -252,6 +252,8 @@ extern "C" fn syscall_handler() -> i64 {
             syscall_numbers::SYS_KILL => sys_kill((*p).arg1, (*p).arg2 as i64),
             // Fase 14 (init-restart): pid dell'owner di un servizio.
             syscall_numbers::SYS_SERVICE_PID => sys_service_pid((*p).arg1),
+            // Fase 19.1: snapshot `ps` di un processo.
+            syscall_numbers::SYS_PS_INFO => sys_ps_info((*p).arg1 as usize),
             _ => -1,
         }
     }
@@ -659,4 +661,46 @@ fn sys_cbs_get_info(server_id: u64) -> i64 {
         }
         None => -1,
     }
+}
+
+/// Fase 19.1 — `ps_info(pid)`: snapshot del processo per `ps`. 0 se lo slot e'
+/// vivo (campi nei registri, layout in `syscall-numbers`), -1 se vuoto o
+/// terminato (lo slot si salta, come `ps` salta i PID morti).
+fn sys_ps_info(pid: usize) -> i64 {
+    let snap = match crate::sched::process_ps(pid) {
+        Some(s) => s,
+        None => return -1,
+    };
+    // Nome (max 16 B) in rdi+rsi, little-endian; oltre si tronca (oggi max 13).
+    let bytes = snap.name.as_bytes();
+    let mut buf = [0u8; 16];
+    let n = bytes.len().min(16);
+    buf[..n].copy_from_slice(&bytes[..n]);
+    let mut lo_b = [0u8; 8];
+    let mut hi_b = [0u8; 8];
+    lo_b.copy_from_slice(&buf[0..8]);
+    hi_b.copy_from_slice(&buf[8..16]);
+    let lo = u64::from_le_bytes(lo_b);
+    let hi = u64::from_le_bytes(hi_b);
+    let state = match snap.state {
+        crate::process::State::Ready => 0u64,
+        crate::process::State::Blocked => 1u64,
+        crate::process::State::Terminated => return -1, // non dovrebbe accadere
+    };
+    let ipc = match snap.ipc {
+        crate::process::IpcState::None => 0u64,
+        crate::process::IpcState::BlockedOnRecv => 1u64,
+        crate::process::IpcState::BlockedOnReply => 2u64,
+    };
+    let parent = snap.parent.map(|p| p as u64 + 1).unwrap_or(0);
+    let packed = state | (snap.prio as u64) << 8 | parent << 16 | ipc << 24;
+    unsafe {
+        let p = addr_of_mut!(PERCPU);
+        (*p).ipc_override = 1;
+        (*p).ret_rdi = lo;
+        (*p).ret_rsi = hi;
+        (*p).ret_rdx = packed;
+        (*p).ret_r10 = snap.ticks_used;
+    }
+    0
 }
