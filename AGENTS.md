@@ -769,11 +769,29 @@ rustos/
         `"."`: `period` non esiste su QEMU 10.2.2 (`invalid parameter`, tasto
         perso in silenzio) → `dot`; senza, `cat hello.txt` diventava
         `cat hellotxt` (open con O_CREAT crea il file vuoto: silent).
-  - [ ] 18.1 Builtin senza cambi di protocollo: `echo`, `clear` (nuovo `\x0c`
+  - [x] 18.1 Builtin senza cambi di protocollo: `echo`, `clear` (nuovo `\x0c`
         in `vga_write_char` console: clear+home), `wc`, `hexdump`, `kill <pid>`
-        (via `libr::kill` + `service_pid` per i nomi), cwd lato shell (`String`
+        (via `libr::kill` + `service_pid` per i nomi, `init`→pid 1 diretto:
+        non registra il servizio), cwd lato shell (`String`
         + `resolve()` con `.`/`..`) → path relativi per tutti i comandi. Solo
-        `usershell` (+ 5 righe console).
+        `usershell` (+ 5 righe console). Dettagli: output a una write per riga
+        (ogni write e' un timestamp su seriale: i pezzi non sarebbero contigui
+        nel log); `ls` senza args = cwd (non `/`); `cd` sonda con `readdir`
+        (mai `open`: creerebbe il file); sorgente `mount` mai risolta
+        (`UUID=`/`LABEL=` passano intatti). Verifica: `test-shell.py` 13/13
+        (echo, wc `1 4 25 hello.txt`, hexdump `48 65 6c 6c 6f`, cd/pwd/relativi,
+        kill errori+init rifiutato, clear via screendump 30060→123 byte accesi
+        + shell viva) + gate suite 36/36 invariato, zero FAIL/PANIC/FAULT.
+  - [x] 18.1-bis Prompt con cwd: la REPL costruisce `<cwd>$ ` (`$ ` a root);
+        nessun impatto sul floor backspace (il prompt non passa da tty::emit).
+  - [x] 18.1-ter `ls` mostra i mount: `handle_readdir` fa union di entry
+        locali + figli target `FsMount` (nuovo helper, anche inattivi) +
+        `synth_children` (rimossa l'esclusione root 16d); dedupe+sort, mai
+        shadow (a parita' di nome una sola entry, come `open` driver→FAT→
+        ramfs); check subtree Fase 17 invariato (solo nomi, mai contenuti).
+        Bug trovato: `is_empty → None` rompeva le dir VUOTE (`cd prova`
+        falliva) → flag `exists` separato. Verifica: `ls /` con fat+dev in
+        `test-shell.py` (14/14) + gate 36/36 invariato.
   - [ ] 18.2 `R_DELETE`: nuovo tag in `syscall-numbers`, handler userfs
         (ramfs `BTreeMap::remove`, FAT → ERR read-only) con check ops+subtree
         nel choke point Fase 17, `libr::remove`, nuovo bit `RIGHTS_DELETE`

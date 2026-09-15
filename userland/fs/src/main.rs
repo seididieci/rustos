@@ -135,16 +135,22 @@ fn resolve_mount<'a>(path: &'a str, mounts: &[Mount]) -> Option<(u64, &'a str)> 
 /// Figli immediati di `path` tra i prefix registrati (Fase 16d, discovery).
 /// I prefix (`/dev/null`, `/dev/disk/by-uuid/<H>`, …) implicano le directory
 /// che li contengono: `readdir("/dev")` → ["console", "disk", "input", …].
-/// Root esclusa (mai shadow di `ls /`). Ritorna None se nessun prefix sta
+/// Root INCLUSA (Fase 18.1-ter: union con dedupe nel chiamante, mai shadow
+/// del ramfs): `readdir("/")` → ["dev", …]. Ritorna None se nessun prefix sta
 /// sotto `path`. Nessun IPC: la Mount table basta (single source gia' qui).
 fn synth_children(mounts: &[Mount], path: &str) -> Option<Vec<String>> {
     let t = path.trim_matches('/');
-    if t.is_empty() {
-        return None;
-    }
     let mut out: Vec<String> = Vec::new();
     for m in mounts {
         let p = m.prefix.trim_start_matches('/');
+        if t.is_empty() {
+            // Root: primo componente di ogni prefix ("dev" da "/dev/null").
+            let child = p.split('/').next().unwrap_or("");
+            if !child.is_empty() && !out.iter().any(|e| e == child) {
+                out.push(String::from(child));
+            }
+            continue;
+        }
         if p.len() <= t.len() {
             continue;
         }
@@ -162,6 +168,64 @@ fn synth_children(mounts: &[Mount], path: &str) -> Option<Vec<String>> {
         out.sort();
         Some(out)
     }
+}
+
+/// Figli immediati di `path` tra i target dei mount locali (Fase 18.1-ter,
+/// speculare a `synth_children`): i target (`fat`, `mnt`, …) sono mount point
+/// e compaiono nei listing (`ls /` → ["fat", …]). Include gli inattivi: il
+/// mount point esiste, l'accesso fallisce lazy come oggi. None se nessun
+/// target sta sotto `path`.
+fn fsmount_children(mounts: &[FsMount], path: &str) -> Option<Vec<String>> {
+    let t = path.trim_matches('/');
+    let mut out: Vec<String> = Vec::new();
+    for m in mounts {
+        let p = m.target.as_str();
+        let rest = if t.is_empty() {
+            Some(p)
+        } else if p.len() > t.len()
+            && p.starts_with(t)
+            && p.as_bytes().get(t.len()) == Some(&b'/')
+        {
+            Some(&p[t.len() + 1..])
+        } else {
+            None
+        };
+        if let Some(rest) = rest {
+            let child = rest.split('/').next().unwrap_or("");
+            if !child.is_empty() && !out.iter().any(|e| e == child) {
+                out.push(String::from(child));
+            }
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        out.sort();
+        Some(out)
+    }
+}
+
+/// Union di entry locali con i figli dei mount (Fase 18.1-ter): i mount point
+/// (`fat`, `dev`, …) compaiono nei listing senza mai coprire le entry locali
+/// (dedupe a parita' di nome + sort). Rispecchia `handle_open` (driver → FAT
+/// → ramfs): a parita' di nome l'entry e' una sola, mai ambigua.
+fn union_mount_children(
+    mut entries: Vec<String>,
+    mounts: &[Mount],
+    mounts_fat: &[FsMount],
+    path: &str,
+) -> Vec<String> {
+    for extra in synth_children(mounts, path)
+        .into_iter()
+        .flatten()
+        .chain(fsmount_children(mounts_fat, path).into_iter().flatten())
+    {
+        if !entries.iter().any(|e| e == &extra) {
+            entries.push(extra);
+        }
+    }
+    entries.sort();
+    entries
 }
 
 /// Risolve un path in FsKind (ramfs di default).
@@ -1202,6 +1266,8 @@ fn handle_readdir(
         let fat = mounts_fat[mi].fat()?;
         let entries: Vec<String> =
             fat.list_dir(rel).into_iter().map(|d| d.name).collect();
+        // Mount annidati sotto dir FAT (edge raro, gratis col design union).
+        let entries = union_mount_children(entries, mounts, mounts_fat, path);
         let mut buf = Vec::new();
         for entry in &entries {
             buf.extend_from_slice(entry.as_bytes());
@@ -1221,22 +1287,24 @@ fn handle_readdir(
     // hanno la dir (mai shadow, mai cambi ai listing esistenti). Nota:
     // `resolve_local` esclude i path /dev/* (None) prima ancora di guardare
     // ramfs — la sintesi copre anche quelli.
-    let synth = synth_children(mounts, path);
-
-    let entries: Vec<String> = match resolve_local(mounts_fat, path) {
+    //
+    // Fase 18.1-ter: i mount point si mergiano SEMPRE (union con dedupe, mai
+    // shadow): `ls /` mostra ramfs + `fat` + `dev`. Solo nomi, mai contenuti:
+    // il check subtree Fase 17 sul path richiesto resta prima del dispatch.
+    // Directory esistente ma vuota resta OK (exists): solo "sconosciuto E
+    // senza mount" e' errore.
+    let (exists, base): (bool, Vec<String>) = match resolve_local(mounts_fat, path) {
         Some(FsKind::Ram) => match fs.readdir(path) {
-            Some(e) => e,
-            None => match synth {
-                Some(e) => e,
-                None => return None,
-            },
+            Some(e) => (true, e),
+            None => (false, Vec::new()),
         },
         Some(FsKind::Fat) => return None, // mount noto ma inattivo: errore
-        None => match synth {
-            Some(e) => e,
-            None => return None,
-        },
+        None => (false, Vec::new()),
     };
+    let entries = union_mount_children(base, mounts, mounts_fat, path);
+    if !exists && entries.is_empty() {
+        return None;
+    }
 
     let mut buf = Vec::new();
     for entry in &entries {

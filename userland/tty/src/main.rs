@@ -417,7 +417,9 @@ impl Tty {
     fn emit(&mut self, bytes: &[u8]) {
         for &b in bytes {
             match b {
-                b'\n' => self.line_len = 0,
+                // \n e \x0c (clear, Fase 18.1) riavviano la riga visiva:
+                // il contatore riparte da zero in entrambi i casi.
+                b'\n' | b'\x0c' => self.line_len = 0,
                 0x08 => {
                     if self.line_len == 0 {
                         continue;

@@ -109,6 +109,13 @@ unsafe fn vga_scroll(vga: *mut Buffer) {
 /// Aggiorna il cursore software e sposta il cursore hardware a seguire.
 unsafe fn vga_write_char(vga: *mut Buffer, byte: u8, cursor: &mut usize) {
     match byte {
+        b'\x0c' => {
+            // Form feed (Fase 18.1, builtin `clear`): pulisci tutto e home.
+            for row in 0..VGA_ROWS {
+                unsafe { vga_clear_row(vga, row) };
+            }
+            *cursor = 0;
+        }
         b'\n' => {
             unsafe { vga_scroll(vga) };
             *cursor = 0;
