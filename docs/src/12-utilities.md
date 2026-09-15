@@ -23,7 +23,7 @@ la mostra (`/prova$ `, `$ ` a root).
 
 | Comando | Descrizione |
 |---------|-------------|
-| `ls [path]` | Elenco directory (default: cwd; mostra anche i mount: `fat`, `dev`) |
+| `ls [-l] [path]` | Elenco directory (default: cwd; mostra anche i mount: `fat`, `dev`). Con `-l` una riga per entry `tipo size nome[ (ro)]` (tipo `d`/`-`/`v`, via `R_STAT`, Fase 19.2) |
 | `cat <file>` | Stampa contenuto file |
 | `touch <file>` | Crea file vuoto (`O_CREAT`) |
 | `mkdir <dir>` | Crea directory |
@@ -56,7 +56,9 @@ linea in `usertty`: conta i digitati, ingoia il resto — Fase 18.0).
   passa solo il nome (gli helper di test usano il canale di nascita come
   argv). Lo split in binari separati arrivera' con l'avvio servizi da disco
   (ogni `.bin` embedded ingrossa oggi il kernel).
-- **Niente `ps`**: manca una syscall di introspezione processi (rimandata).
+- **`ls -l` minimale**: 1 round trip `R_STAT` per entry (ok per dir piccole);
+  niente owner/mtime (`Stat` non li ha); entry sparita tra `readdir` e `stat`
+  → riga `? nome`, mai abortito.
 - **Read oltre EOF torna `0`** (contratto 18.2-bis); `open` senza `O_CREAT`
   non crea (POSIX, 18.2).
 

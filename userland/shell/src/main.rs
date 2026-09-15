@@ -156,7 +156,15 @@ fn read_line(prompt: &str) -> String {
 // ── Commands ────────────────────────────────────────────────────────
 
 fn cmd_ls(args: &[&str]) {
-    let raw = if args.len() > 1 { args[1] } else { "." };
+    // `ls [-l] [path]`: senza flag elenca i nomi; con -l una riga per entry
+    // "tipo size nome[ (ro)]" (stretch Fase 19.2: metadati via libr::stat,
+    // 1 round trip per entry — ok per directory piccole; niente owner/mtime,
+    // `Stat` non li ha). Una write per riga (convenzione shell: i pezzi
+    // restano contigui nel log seriale).
+    let (long, raw) = match args.get(1) {
+        Some(&"-l") => (true, args.get(2).copied().unwrap_or(".")),
+        _ => (false, args.get(1).copied().unwrap_or(".")),
+    };
     let path = resolve(raw);
     let mut buf = vec![0u8; 4096];
     let n = libr::readdir(&path, &mut buf, 4096);
@@ -172,13 +180,46 @@ fn cmd_ls(args: &[&str]) {
         let start = i;
         while i < buf.len() && buf[i] != 0 { i += 1; }
         if let Ok(name) = core::str::from_utf8(&buf[start..i]) {
-            term_print(name);
-            term_print("  ");
+            if long {
+                // Path assoluto dell'entry per stat (attento a "/" root).
+                let mut full = path.clone();
+                if !full.ends_with('/') {
+                    full.push('/');
+                }
+                full.push_str(name);
+                let mut line = String::new();
+                let mut st = libr::Stat { size: 0, kind: 0, readonly: false };
+                if libr::stat(&full, &mut st) == 0 {
+                    line.push(if st.is_dir() {
+                        'd'
+                    } else if st.is_device() {
+                        'v'
+                    } else {
+                        '-'
+                    });
+                    line.push(' ');
+                    push_u64(&mut line, st.size);
+                    line.push(' ');
+                    line.push_str(name);
+                    if st.readonly {
+                        line.push_str(" (ro)");
+                    }
+                } else {
+                    // Race (entry rimossa tra readdir e stat): mai abortire.
+                    line.push_str("? ");
+                    line.push_str(name);
+                }
+                term_print(&line);
+                term_print("\n");
+            } else {
+                term_print(name);
+                term_print("  ");
+            }
             wrote = true;
         }
         i += 1; // skip null
     }
-    if wrote {
+    if wrote && !long {
         term_print("\n");
     }
 }
@@ -258,7 +299,7 @@ fn cmd_umount(args: &[&str]) {
 }
 
 fn cmd_help() {
-    term_print("Commands: ls [path], cat <file>, touch <file>, mkdir <dir>, mount <src> <tgt>, umount <tgt>, echo [args], clear, wc <file>, hexdump <file>, kill <pid|service>, cd [dir], pwd, cp <src> <dst>, mv <src> <dst>, rm <file>, rmdir <dir>, ps, exit, help\n");
+    term_print("Commands: ls [-l] [path], cat <file>, touch <file>, mkdir <dir>, mount <src> <tgt>, umount <tgt>, echo [args], clear, wc <file>, hexdump <file>, kill <pid|service>, cd [dir], pwd, cp <src> <dst>, mv <src> <dst>, rm <file>, rmdir <dir>, ps, exit, help\n");
 }
 
 /// Accoda `s` paddata a `width` con spazi (colonne `ps`, niente format!).
