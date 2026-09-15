@@ -40,3 +40,4 @@
 - [ADR-0012: Disk driver ATA in userspace](./adr/0012-userspace-disk-driver.md)
 - [ADR-0013: Mount espliciti in userspace](./adr/0013-mount-syscall.md)
 - [ADR-0014: Diritti per-canale lato server](./adr/0014-channel-rights-serverside.md)
+- [ADR-0015: POSIX come API di libr](./adr/0015-posix-api-libr-protocollo-interno.md)

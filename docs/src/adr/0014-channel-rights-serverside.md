@@ -66,6 +66,6 @@ Zircon-model senza kernel: riduzione-only lato server.
 - Test t34 diretto sul canale di usertests (nessun helper), PER ULTIMO in
   suite (drop irrevocabili): GET default, drop WRITE, drop MOUNT+subtree /fat,
   widen rifiutato; ogni rifiuto seguito da op valida (anti-wedge ring).
-  Suite 34/34 → 35/35.
+   Suite 34/34 → 35/35 (36/36 con t36 della Fase 16d, atterrata dopo).
 - Bug trovato (grosso, boot): vedi Fase 17 in AGENTS.md — boot map 2 MiB
   superata dal `.bss`, fix 8 MiB + guard fail-loud in `rust_main`.
