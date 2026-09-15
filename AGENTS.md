@@ -735,7 +735,8 @@ velordor/
         ok), drop MOUNT+subtree /fat (mount -1, open fuori -1, open dentro +
         read + readdir dentro ok, readdir fuori -1, ogni rifiuto seguito da
         op valida = nessun disallineamento ring), widen a root rifiutato +
-        GET conferma. Suite → 35/35.
+        GET conferma. Suite → 35/35 (36/36 con t36 della Fase 16d,
+        atterrata dopo questa fase).
   - [x] 17.4 Docs: AGENTS (questa voce), ADR-0014, libro (09/11).
   - Bug trovati (grosso, boot): il kernel ingrossato dai binari embedded ha
         spinto il `.bss` (`pit::TICKS` a 0x200320, `_kernel_end` a 0x201000)
@@ -748,7 +749,7 @@ velordor/
         re-handshake full); niente policy per-identita' (serve il kernel:
         fase channel-rights); niente revoca selettiva (solo per-morte);
         niente GRANT (canali non trasferibili).
-  - Verifica: testfs 5/5, testfat 6/6, usertests 35/35 (x2), shell 3/3,
+  - Verifica: testfs 5/5, testfat 6/6, usertests 36/36, shell 3/3,
         zero FAIL/PANIC/FAULT.
 - [ ] Fase 18: Shell + utility utente — in backlog (era 17, slittata per la
       nuova 17; shell interattiva esiste; restano utility "utente"
