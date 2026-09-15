@@ -56,8 +56,8 @@ const ERR_NOHANDSHAKE: u64 = !0u64 - 1;
 // ── Tag delle operazioni (nei frame del ring) ─────────────────────
 // Single source in `syscall-numbers` (Fase 17): include R_RIGHTS_DROP/GET.
 use libr::{
-    R_CLOSE, R_MKDIR, R_MOUNT, R_OPEN, R_READ, R_READDIR, R_REGISTER, R_UMOUNT, R_WRITE,
-    R_RIGHTS_DROP, R_RIGHTS_GET,
+    R_CLOSE, R_DELETE, R_MKDIR, R_MOUNT, R_OPEN, R_READ, R_READDIR, R_REGISTER, R_UMOUNT,
+    R_WRITE, R_RIGHTS_DROP, R_RIGHTS_GET,
 };
 
 /// IPC tag: il client ha scritto nel request ring e notifica il server.
@@ -672,6 +672,37 @@ impl RamFs {
         }
         None
     }
+
+    /// Cancella un file o una directory VUOTA (Fase 18.2, `R_DELETE`).
+    /// Directory non vuote, root e path inesistenti → None. Non crea nulla.
+    fn remove(&mut self, path: &str) -> Option<()> {
+        let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+        if parts.is_empty() || parts[0].is_empty() {
+            return None;
+        }
+        let mut current = &mut self.root;
+        for (i, &part) in parts.iter().enumerate() {
+            if i == parts.len() - 1 {
+                // File, o dir vuota: rimuovibile. Dir non vuota, root o
+                // assente: rifiuto (niente `remove` sotto borrow attivo).
+                let ok = match current.get(part) {
+                    Some(FsNode::File { .. }) => true,
+                    Some(FsNode::Dir { entries, .. }) => entries.is_empty(),
+                    _ => false,
+                };
+                if !ok {
+                    return None;
+                }
+                current.remove(part);
+                return Some(());
+            }
+            match current.get_mut(part) {
+                Some(FsNode::Dir { entries: dir, .. }) => current = dir,
+                _ => return None,
+            }
+        }
+        None
+    }
 }
 
 // ── Open file table ────────────────────────────────────────────────
@@ -835,6 +866,7 @@ fn op_bit(op_tag: u32) -> Option<u32> {
         R_MKDIR => Some(libr::RIGHTS_MKDIR),
         R_MOUNT => Some(libr::RIGHTS_MOUNT),
         R_UMOUNT => Some(libr::RIGHTS_UMOUNT),
+        R_DELETE => Some(libr::RIGHTS_DELETE),
         _ => None,
     }
 }
@@ -1033,6 +1065,7 @@ fn handle_open(
     mounts_fat: &mut Vec<FsMount>,
     mounts: &[Mount],
     chan: u64,
+    flags: u64,
     path: &str,
 ) -> Option<u64> {
     if path.is_empty() || path.len() > MAX_PATH {
@@ -1102,7 +1135,14 @@ fn handle_open(
     match resolve_local(mounts_fat, path)? {
         FsKind::Fat => None, // mount inattivo: errore, mai shadow ramfs
         FsKind::Ram => {
-            fs.create_file(path);
+            // POSIX (Fase 18.2, ADR-0015): senza O_CREAT il file deve
+            // esistere — mai creare. Con O_CREAT, crea se manca (su dir
+            // esistente resta apribile come prima: create_file → None
+            // ignorato, poi find).
+            if flags as u32 & libr::O_CREAT != 0 {
+                let _ = fs.create_file(path);
+            }
+            fs.find(path)?;
             Some(ftable.open(chan, path, FsKind::Ram, None))
         }
     }
@@ -1171,12 +1211,12 @@ fn handle_read(
     };
 
     let bytes_read = data.len();
-    // Scrivi i dati nella response ring del client.
-    if bytes_read > 0 {
-        if let Some(&(_, _)) = rings.get(&chan) {
-            map_client_resp_ring(rings, chan);
-            resp_ring_write(bytes_read as u64, 0, &data);
-        }
+    // Frame SEMPRE, anche vuoto a EOF (Fase 18.2-bis): senza, il client non
+    // trova risposta e riporta -1 invece di 0. Stesso contratto dei driver
+    // (console scrive sempre il frame). Short (< count) o vuoto (0) = EOF.
+    if let Some(&(_, _)) = rings.get(&chan) {
+        map_client_resp_ring(rings, chan);
+        resp_ring_write(bytes_read as u64, 0, &data);
     }
     ftable.set_offset(chan, fd, offset + bytes_read);
     Some(bytes_read as u64)
@@ -1328,6 +1368,32 @@ fn handle_mkdir(fs: &mut RamFs, mounts: &[FsMount], path: &str) -> Option<u64> {
     match resolve_local(mounts, path)? {
         FsKind::Ram => {
             fs.mkdir(path)?;
+            Some(0)
+        }
+        _ => None,
+    }
+}
+
+/// Cancella un file o una directory VUOTA (Fase 18.2, `R_DELETE`).
+/// Solo ramfs: FAT e' read-only, i device remoti non sono file cancellabili
+/// (e un mount point non si rimuove: si smonta). Ritorna Some(0) o None.
+fn handle_delete(
+    fs: &mut RamFs,
+    mounts_fat: &[FsMount],
+    mounts: &[Mount],
+    path: &str,
+) -> Option<u64> {
+    if path.is_empty() || path.len() > MAX_PATH {
+        return None;
+    }
+    // Mai dentro driver remoti…
+    if resolve_mount(path, mounts).is_some() {
+        return None;
+    }
+    // …e mai su mount FAT (read-only): solo ramfs.
+    match resolve_local(mounts_fat, path)? {
+        FsKind::Ram => {
+            fs.remove(path)?;
             Some(0)
         }
         _ => None,
@@ -1576,7 +1642,9 @@ pub extern "C" fn _start() -> ! {
         // client e stallo senza recovery). Si consuma ESATTAMENTE il dichiarato;
         // il resto resta per la propria notifica.
         let expect: usize = match op_tag {
-            R_OPEN | R_MKDIR | R_READDIR | R_REGISTER | R_MOUNT | R_UMOUNT => w0 as usize,
+            R_OPEN | R_MKDIR | R_READDIR | R_REGISTER | R_MOUNT | R_UMOUNT | R_DELETE => {
+                w0 as usize
+            }
             R_WRITE | R_RIGHTS_DROP => w1 as usize,
             R_READ | R_CLOSE | R_RIGHTS_GET => 0,
             _ => {
@@ -1632,7 +1700,7 @@ pub extern "C" fn _start() -> ! {
         // il path aperto). UTF-8 invalido o spec malformata: passa oltre, lo
         // rifiuta l'handler (i diritti non decidono la validita').
         let subtree_ok = match op_tag {
-            R_OPEN | R_MKDIR | R_READDIR => match core::str::from_utf8(&payload) {
+            R_OPEN | R_MKDIR | R_READDIR | R_DELETE => match core::str::from_utf8(&payload) {
                 Ok(p) => within_subtree(rights_subtree(&rights, chan), &normalize_sub(p)),
                 Err(_) => true,
             },
@@ -1663,7 +1731,9 @@ pub extern "C" fn _start() -> ! {
         let result = match op_tag {
             R_OPEN => {
                 match core::str::from_utf8(&payload) {
-                    Ok(path) => handle_open(&mut fs, &mut ftable, &mut fat_mounts, &mounts, chan, path),
+                    // w1 del frame R_OPEN = flags (O_CREAT, w0 = len path):
+                    // il server li ignorava (creava sempre) — ora POSIX.
+                    Ok(path) => handle_open(&mut fs, &mut ftable, &mut fat_mounts, &mounts, chan, w1, path),
                     Err(_) => None,
                 }
             }
@@ -1705,6 +1775,13 @@ pub extern "C" fn _start() -> ! {
             R_UMOUNT => {
                 match core::str::from_utf8(&payload) {
                     Ok(target) => handle_umount(&mut fat_mounts, &ftable, target),
+                    Err(_) => None,
+                }
+            }
+
+            R_DELETE => {
+                match core::str::from_utf8(&payload) {
+                    Ok(path) => handle_delete(&mut fs, &mut fat_mounts, &mounts, path),
                     Err(_) => None,
                 }
             }

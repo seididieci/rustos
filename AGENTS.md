@@ -714,8 +714,9 @@ rustos/
   - [x] 17.0 Protocollo `R_*` centralizzato in `syscall-numbers` (come i
         `DISK_*` in 16c: prima duplicati in libr/userfs/userdisk) + nuovi tag
         `R_RIGHTS_DROP` (0x18) / `R_RIGHTS_GET` (0x19) e bit `RIGHTS_*`
-        (OPEN/READ/WRITE/READDIR/MKDIR/MOUNT/UMOUNT, ALL=0x7F, niente bit
-        CLOSE: chiudere rilascia stato, sempre consentito); `libr` riesporta.
+        (OPEN/READ/WRITE/READDIR/MKDIR/MOUNT/UMOUNT, ALL=0x7F — 0xFF con
+        `RIGHTS_DELETE` dalla 18.2; niente bit CLOSE: chiudere rilascia stato,
+        sempre consentito); `libr` riesporta.
   - [x] 17.1 userfs: tabella `chan → {ops, subtree}` (entry assente =
         `{ALL, root}`, zero alloc); check ops CENTRALE dopo validazione frame
         (a diniego consuma 20+expect + ERR, mai map_in/send — vale anche per il
@@ -792,12 +793,35 @@ rustos/
         Bug trovato: `is_empty → None` rompeva le dir VUOTE (`cd prova`
         falliva) → flag `exists` separato. Verifica: `ls /` con fat+dev in
         `test-shell.py` (14/14) + gate 36/36 invariato.
-  - [ ] 18.2 `R_DELETE`: nuovo tag in `syscall-numbers`, handler userfs
-        (ramfs `BTreeMap::remove`, FAT → ERR read-only) con check ops+subtree
-        nel choke point Fase 17, `libr::remove`, nuovo bit `RIGHTS_DELETE`
-        (incluso in `ALL` per retrocompatibilita'), builtin `rm`/`mv` (= cp+rm
-        client-side, zero nuove op)/`rmdir`. Test: ciclo touch/write/rm/
-        read-fail su ramfs + rm su `/fat` rifiutato.
+  - [x] 18.2 `R_DELETE`: nuovo tag in `syscall-numbers`, handler userfs
+        (ramfs `BTreeMap::remove` file/dir-vuote, FAT → ERR read-only, driver
+        remoti rifiutati) con check ops+subtree nel choke point Fase 17,
+        `libr::remove`, nuovo bit `RIGHTS_DELETE` (incluso in `ALL`, ora
+        `0xFF`, per retrocompatibilita': esistenti default-ALL restano pieni),
+        builtin `rm`/`mv` (= cp+rm client-side, zero nuove op)/`rmdir`/`cp`.
+        Test: ciclo touch/write/rm/read-fail su ramfs + rm su `/fat` rifiutato
+        + cp ramfs↔ramfs, da /fat, verso /fat rifiutato.
+        Bug veri trovati: (1) `open` creava SEMPRE su ramfs ignorando i flag
+        (w1 del frame gia' trasportava i flag, il server li scartava) → ora
+        POSIX con `O_CREAT` (0x200) in `syscall-numbers`+`libr`: senza, il file
+        deve esistere (`cat` dopo `rm` ricreava il file vuoto: silent!);
+        aggiornati i creatori con flag≠O_CREAT (testfs `1`, t7/t26/t34 `0`).
+        (2) read a EOF non scrive response frame → torna -1: `cat`/`wc` lo
+        tollerano (`n<=0` break), `cp` lo trattava da fatale DOPO copia
+        completa → stessa tolleranza (contratto R_READ da pulire in futuro).
+        (3) `sendkey` MAIUSCOLE invalide su QEMU (`H`→`invalid parameter`,
+        perso in silenzio: 8 tasti invalidi di fila troncavano il comando) →
+        combo `shift-x` in KEYMAP. Verifica: `test-shell.py` 24/24 + gate
+        36/36 invariato (t7/t26/t34/testfs girano con O_CREAT esplicito),
+        zero FAIL/PANIC/FAULT.
+  - [x] 18.2-bis Contratto EOF (discusso in pianificazione, alternative
+        scartate: remaining in w1 — complessita'/TOCTOU per 1 RT risparmiato
+        solo nel caso multiplo-esatto; vedi nota): `handle_read` scrive
+        SEMPRE il response frame (anche vuoto) → read oltre EOF torna 0, non
+        -1. Round trip invariati (`libr` faceva gia' short-break): cambia solo
+        il valore della sonda + file vuoti funzionanti. Zero cambi client/
+        protocollo (async gia' compatibile). Test di contratto in t6 (read
+        oltre EOF ⇒ 0). Verifica: gate 36/36 + `test-shell.py` 24/24.
   - [ ] 18.3 Docs + regressione: capitolo `12-utilities.md` (tabella comandi,
         limiti onesti: no write `/fat`, no argv), estensione `test-shell.py`,
         gate invariato 36/36 + shell verde.

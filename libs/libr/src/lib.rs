@@ -564,15 +564,18 @@ const RING_TAIL: usize = 0xFFC;
 // Single source in `syscall-numbers` (Fase 17): prima duplicati qui, in
 // userfs e (R_REGISTER) userdisk.
 pub use syscall_numbers::{
-    R_CLOSE, R_MKDIR, R_MOUNT, R_OPEN, R_READ, R_READDIR, R_REGISTER, R_UMOUNT, R_WRITE,
-    R_RIGHTS_DROP, R_RIGHTS_GET,
+    R_CLOSE, R_DELETE, R_MKDIR, R_MOUNT, R_OPEN, R_READ, R_READDIR, R_REGISTER, R_UMOUNT,
+    R_WRITE, R_RIGHTS_DROP, R_RIGHTS_GET,
 };
-/// Bit dei diritti per-canale (Fase 17, self-restriction): mask per
-/// `rights_drop`, valore di ritorno di `rights_get`.
+/// Bit dei diritti per-canale (Fase 17, self-restriction; DELETE in 18.2):
+/// mask per `rights_drop`, valore di ritorno di `rights_get`.
 pub use syscall_numbers::{
-    RIGHTS_ALL, RIGHTS_MKDIR, RIGHTS_MOUNT, RIGHTS_OPEN, RIGHTS_READ, RIGHTS_READDIR,
-    RIGHTS_UMOUNT, RIGHTS_WRITE,
+    RIGHTS_ALL, RIGHTS_DELETE, RIGHTS_MKDIR, RIGHTS_MOUNT, RIGHTS_OPEN, RIGHTS_READ,
+    RIGHTS_READDIR, RIGHTS_UMOUNT, RIGHTS_WRITE,
 };
+
+/// Flag `open` (Fase 18.2): crea il file se non esiste.
+pub use syscall_numbers::O_CREAT;
 
 /// IPC tag: il client ha scritto nel request ring e notifica il server.
 const FS_NOTIFY: u64 = 0x32;
@@ -1154,6 +1157,27 @@ pub fn mkdir(path: &str) -> i64 {
     }
     match fs_notify_result(FS_NOTIFY, || {
         req_ring_write(R_MKDIR, path.len() as u64, 0, path.as_bytes())
+    }) {
+        Some((result, _, _)) => {
+            resp_ring_consume(16);
+            fs_reply_val(result)
+        }
+        None => -1,
+    }
+}
+
+/// `remove(path)`: cancella un file o una directory VUOTA (Fase 18.2).
+/// Solo ramfs: FAT read-only e device remoti rifiutano. Ritorna 0 o -1.
+#[inline]
+pub fn remove(path: &str) -> i64 {
+    if !fs_init() || fs_async_pending() {
+        return -1;
+    }
+    if !req_ring_write(R_DELETE, path.len() as u64, 0, path.as_bytes()) {
+        return -1;
+    }
+    match fs_notify_result(FS_NOTIFY, || {
+        req_ring_write(R_DELETE, path.len() as u64, 0, path.as_bytes())
     }) {
         Some((result, _, _)) => {
             resp_ring_consume(16);

@@ -5,8 +5,9 @@
 //! console server possiede la VGA, disegna l'output e fa l'echo dei tasti
 //! (Opzione B). La shell gestisce solo la linea logica dei comandi.
 //! Comandi: ls, cat, touch, mkdir, mount, umount, echo, clear, wc, hexdump,
-//! kill, cd, pwd, exit, help. Tutti i path passano per `resolve()`: la shell
-//! tiene una cwd client-side e accetta path relativi (Fase 18.1).
+//! kill, cd, pwd, cp, mv, rm, rmdir, exit, help. Tutti i path passano per
+//! `resolve()`: la shell tiene una cwd client-side e accetta path relativi
+//! (Fase 18.1).
 
 #![no_std]
 #![no_main]
@@ -213,7 +214,7 @@ fn cmd_touch(args: &[&str]) {
         return;
     }
     let path = resolve(args[1]);
-    let fd = libr::open(&path, 0x200 /* O_CREAT */);
+    let fd = libr::open(&path, libr::O_CREAT);
     if fd < 0 {
         term_print("touch: failed\n");
         return;
@@ -257,7 +258,7 @@ fn cmd_umount(args: &[&str]) {
 }
 
 fn cmd_help() {
-    term_print("Commands: ls [path], cat <file>, touch <file>, mkdir <dir>, mount <src> <tgt>, umount <tgt>, echo [args], clear, wc <file>, hexdump <file>, kill <pid|service>, cd [dir], pwd, exit, help\n");
+    term_print("Commands: ls [path], cat <file>, touch <file>, mkdir <dir>, mount <src> <tgt>, umount <tgt>, echo [args], clear, wc <file>, hexdump <file>, kill <pid|service>, cd [dir], pwd, cp <src> <dst>, mv <src> <dst>, rm <file>, rmdir <dir>, exit, help\n");
 }
 
 // ── Utility Fase 18.1 ───────────────────────────────────────────────
@@ -457,8 +458,101 @@ fn cmd_kill(args: &[&str]) {
     }
 }
 
-fn cmd_cd(args: &[&str]) {
+/// Copia file client-side (Fase 18.2): read a chunk + write. Usata da `cp`
+/// e `mv`. Niente nuove op FS: su /fat la write rifiuta (read-only) e la
+/// copia fallisce pulita senza toccare la sorgente.
+fn copy_file(src: &str, dst: &str) -> bool {
+    let from = resolve(src);
+    let to = resolve(dst);
+    let fd_in = libr::open(&from, 0);
+    if fd_in < 0 {
+        term_print("cp: cannot open ");
+        term_print(src);
+        term_print("\n");
+        return false;
+    }
+    let fd_out = libr::open(&to, 0x200 /* O_CREAT */);
+    if fd_out < 0 {
+        term_print("cp: cannot create ");
+        term_print(dst);
+        term_print("\n");
+        libr::close(fd_in);
+        return false;
+    }
+    let mut buf = vec![0u8; 4096];
+    let mut ok = true;
+    loop {
+        // Come `cat`: n<=0 chiude il loop. Nota: a EOF il server NON scrive
+        // response frame (solo i driver lo fanno sempre) e la read torna -1:
+        // trattarlo da fatale dopo una copia completa e' sbagliato.
+        let n = libr::read_fs(fd_in, &mut buf, 4096);
+        if n <= 0 {
+            break;
+        }
+        let n = n as usize;
+        if libr::write_fs(fd_out, &buf[..n], n) != n as i64 {
+            ok = false;
+            break;
+        }
+    }
+    libr::close(fd_in);
+    libr::close(fd_out);
+    if !ok {
+        term_print("cp: I/O error\n");
+    }
+    ok
+}
+
+fn cmd_cp(args: &[&str]) {
+    if args.len() < 3 {
+        term_print("cp: usage: cp <src> <dst>\n");
+        return;
+    }
+    copy_file(args[1], args[2]);
+}
+
+fn cmd_mv(args: &[&str]) {
+    if args.len() < 3 {
+        term_print("mv: usage: mv <src> <dst>\n");
+        return;
+    }
+    // mv = cp + rm client-side, zero nuove op (Fase 18.2): la sorgente si
+    // rimuove SOLO a copia riuscita.
+    if !copy_file(args[1], args[2]) {
+        return;
+    }
+    let src = resolve(args[1]);
+    if libr::remove(&src) < 0 {
+        term_print("mv: copied but cannot remove source\n");
+    }
+}
+
+fn cmd_rm(args: &[&str]) {
     if args.len() < 2 {
+        term_print("rm: missing file\n");
+        return;
+    }
+    let path = resolve(args[1]);
+    if libr::remove(&path) < 0 {
+        term_print("rm: cannot remove ");
+        term_print(args[1]);
+        term_print("\n");
+    }
+}
+
+fn cmd_rmdir(args: &[&str]) {
+    if args.len() < 2 {
+        term_print("rmdir: missing directory\n");
+        return;
+    }
+    // Stessa op del server (dir vuote): il server rifiuta le non vuote.
+    let path = resolve(args[1]);
+    if libr::remove(&path) < 0 {
+        term_print("rmdir: failed (not empty or missing?)\n");
+    }
+}
+
+fn cmd_cd(args: &[&str]) {    if args.len() < 2 {
         cwd_set(String::from("/"));
         return;
     }
@@ -529,6 +623,10 @@ pub extern "C" fn _start() -> ! {
             "kill" => cmd_kill(&args),
             "cd" => cmd_cd(&args),
             "pwd" => cmd_pwd(),
+            "cp" => cmd_cp(&args),
+            "mv" => cmd_mv(&args),
+            "rm" => cmd_rm(&args),
+            "rmdir" => cmd_rmdir(&args),
             "exit" => libr::exit(0),
             "help" => cmd_help(),
             _ => {

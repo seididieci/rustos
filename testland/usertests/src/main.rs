@@ -186,8 +186,20 @@ fn t_hello() -> bool {
     }
     let mut buf = [0u8; 64];
     let n = libr::read_fs(fd, &mut buf, 64);
+    if !(n as usize >= HELLO.len() && buf[..HELLO.len()] == *HELLO) {
+        let _ = libr::close(fd);
+        return false;
+    }
+    // Contratto EOF (Fase 18.2-bis): leggere oltre la fine torna 0, non -1
+    // (il server scrive sempre il response frame, anche vuoto).
+    let mut one = [0u8; 1];
+    let eof = libr::read_fs(fd, &mut one, 1);
     let _ = libr::close(fd);
-    n as usize >= HELLO.len() && buf[..HELLO.len()] == *HELLO
+    if eof != 0 {
+        println!("[usertests] t6: read oltre EOF = {} (atteso 0)", eof);
+        return false;
+    }
+    true
 }
 
 fn read_all(fd: i64, out: &mut Vec<u8>, total: usize) -> bool {
@@ -205,7 +217,7 @@ fn read_all(fd: i64, out: &mut Vec<u8>, total: usize) -> bool {
 }
 
 fn t_ramfs_write_chunk() -> bool {
-    let fd = libr::open("utdata.bin", 0);
+    let fd = libr::open("utdata.bin", libr::O_CREAT);
     if fd < 0 {
         return false;
     }
@@ -1158,7 +1170,7 @@ fn t_client_death_purge() -> bool {
         println!("[usertests] t26: smoke short read hello.txt");
         return false;
     }
-    let fw = libr::open("ut26.bin", 0);
+    let fw = libr::open("ut26.bin", libr::O_CREAT);
     if fw < 0 {
         println!("[usertests] t26: smoke open ut26.bin FAILED");
         return false;
@@ -1878,7 +1890,7 @@ fn t_rights() -> bool {
         println!("[usertests] t34: GET default non ALL+root");
         return false;
     }
-    let fd = libr::open("/t34.txt", 0);
+    let fd = libr::open("/t34.txt", libr::O_CREAT);
     if fd < 0 {
         println!("[usertests] t34: open baseline FAILED");
         return false;

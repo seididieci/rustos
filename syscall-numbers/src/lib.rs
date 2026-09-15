@@ -106,6 +106,14 @@ pub const R_MKDIR: u32 = 0x15;
 pub const R_MOUNT: u32 = 0x16;
 /// Smonta un target: payload "target".
 pub const R_UMOUNT: u32 = 0x17;
+/// Cancella un file o una directory VUOTA: payload = path (Fase 18.2).
+/// Solo ramfs (FAT read-only e device remoti rifiutano con ERR).
+pub const R_DELETE: u32 = 0x1A;
+/// Flag `open`: crea il file se non esiste (Fase 18.2: prima l'open creava
+/// sempre su ramfs ignorando i flag — ora POSIX: senza O_CREAT il file deve
+/// esistere). Viaggia in w1 del frame R_OPEN (libr lo passava gia', il server
+/// lo ignorava).
+pub const O_CREAT: u32 = 0x200;
 /// Un driver registra il proprio prefix di mount.
 pub const R_REGISTER: u32 = 0x30;
 /// Riduce i propri diritti sul canale (Fase 17, self-restriction only):
@@ -116,7 +124,7 @@ pub const R_RIGHTS_DROP: u32 = 0x18;
 /// `[ops:8][sublen:8][subtree]` (subtree normalizzato, "" = root).
 pub const R_RIGHTS_GET: u32 = 0x19;
 
-// ── Bit dei diritti per-canale lato userfs (Fase 17) ──────────────────────
+// ── Bit dei diritti per-canale lato userfs (Fase 17, 18.2) ───────────────
 // Solo riduzione (DROP fa AND), default ALL. CLOSE sempre consentito (rilascia
 // stato, mai escalation: nessun bit). Diritti effimeri: restart userfs =
 // re-handshake full; niente policy per-identita' (serve il kernel).
@@ -127,7 +135,9 @@ pub const RIGHTS_READDIR: u32 = 0x08;
 pub const RIGHTS_MKDIR: u32 = 0x10;
 pub const RIGHTS_MOUNT: u32 = 0x20;
 pub const RIGHTS_UMOUNT: u32 = 0x40;
-pub const RIGHTS_ALL: u32 = 0x7F;
+/// Cancellazione file/dir vuote (Fase 18.2, `R_DELETE`).
+pub const RIGHTS_DELETE: u32 = 0x80;
+pub const RIGHTS_ALL: u32 = 0xFF;
 
 // ── Costanti condivise kernel/userland ─────────────────────────────────────
 // Pagina fisica scratch riservata dal kernel all'avvio (phys_mem::reserve):

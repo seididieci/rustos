@@ -22,8 +22,11 @@ FAT = "userland/fs/fat.img"
 
 # Nomi sendkey VERIFICATI su QEMU 10.2.2 (il monitor risponde
 # "invalid parameter" ai nomi ignoti — e lo script lo ignorerebbe in
-# silenzio: 'period' NON esiste, il punto e' 'dot').
+# silenzio): 'period' NON esiste (il punto e' 'dot'), le MAIUSCOLE non
+# esistono (si mandano come combo 'shift-x', verificato: 'H' invalido,
+# 'shift-h' ok).
 KEYMAP = {" ": "spc", ".": "dot", "-": "minus", "/": "slash"}
+KEYMAP.update({chr(c): "shift-%s" % chr(c).lower() for c in range(ord("A"), ord("Z") + 1)})
 
 SHOT0 = "/tmp/rustos-shot0.ppm"
 SHOT1 = "/tmp/rustos-shot1.ppm"
@@ -107,9 +110,16 @@ def send_mon(cmd: str, sleep=0.12):
     s.close()
     time.sleep(sleep)
 
-def type_text(text: str):
-    for ch in text:
-        send_mon("sendkey %s" % KEYMAP.get(ch, ch))
+def type_text(text: str, sleep=0.18):
+    # Sleep generoso (era 0.12): a 8 tasti/s il guest perde scancode sotto
+    # carico (buffer PS/2 a 1 byte, drain IRQ1+schedule ~40-60ms — overrun).
+    # Umano digita piu' piano: e' un artefatto dell'harness, non dell'OS.
+    # In piu': pausa di drain ogni 12 tasti (i comandi lunghi troncavano la
+    # coda: "cp /fat/HELLO.TXT fatcopy.txt" arrivava come "cp /fat/.").
+    for i, ch in enumerate(text):
+        send_mon("sendkey %s" % KEYMAP.get(ch, ch), sleep=sleep)
+        if (i + 1) % 12 == 0:
+            time.sleep(1.0)
 
 def read_log():
     try:
@@ -259,6 +269,16 @@ def main():
             send_mon("sendkey ret")
             time.sleep(sleep)
 
+        def run_out(cmd: str, sleep=1.0):
+            """Esegue e ritorna SOLO l'output nuovo (coda del log): serve per
+            gli assert di assenza (il log cumulativo contiene gia' tutto)."""
+            wait_prompt()
+            mark = len(read_log())
+            type_text(cmd)
+            send_mon("sendkey ret")
+            time.sleep(sleep)
+            return read_log()[mark:]
+
         # echo
         run("echo hello world")
         data = read_log()
@@ -310,8 +330,73 @@ def main():
         print(("PASS " if found else "FAIL ") + "kill errori + init rifiutato")
         ok = ok and found
 
-        # clear: scherma testo, pulisce, shell resta viva
-        run("echo marker123")
+        # Fase 18.2: rm/cp/mv/rmdir (R_DELETE: ramfs si, /fat no).
+        # rmdir su dir NON vuota (prova contiene inner.txt dai test cd).
+        out = run_out("rmdir prova")
+        found = b"rmdir: failed" in out
+        print(("PASS " if found else "FAIL ") + "rmdir rifiutata su dir piena")
+        ok = ok and found
+
+        # rm file + read-fail dopo.
+        run("rm prova/inner.txt")
+        out = run_out("ls prova")
+        found = b"inner.txt" not in out
+        print(("PASS " if found else "FAIL ") + "rm prova/inner.txt sparito da ls")
+        ok = ok and found
+        out = run_out("cat prova/inner.txt")
+        found = b"cannot open" in out
+        print(("PASS " if found else "FAIL ") + "cat dopo rm fallisce")
+        ok = ok and found
+
+        # rmdir su dir ormai vuota + sparizione.
+        run("rmdir prova")
+        out = run_out("ls")
+        found = b"prova" not in out
+        print(("PASS " if found else "FAIL ") + "rmdir prova vuota")
+        ok = ok and found
+
+        # cp ramfs->ramfs con contenuto verificato.
+        run("cp hello.txt copy.txt")
+        out = run_out("cat copy.txt")
+        found = b"Hello from rustOS ramfs!" in out
+        print(("PASS " if found else "FAIL ") + "cp hello.txt copy.txt")
+        ok = ok and found
+
+        # mv = cp+rm: contenuto preservato, sorgente sparita.
+        run("mv copy.txt moved.txt")
+        out = run_out("cat moved.txt")
+        found = b"Hello from rustOS ramfs!" in out
+        print(("PASS " if found else "FAIL ") + "mv preserva contenuto")
+        ok = ok and found
+        out = run_out("cat copy.txt")
+        found = b"cannot open" in out
+        print(("PASS " if found else "FAIL ") + "mv rimuove sorgente")
+        ok = ok and found
+        run("rm moved.txt")
+
+        # cp da /fat (read-only ok come sorgente) verso ramfs.
+        run("cp /fat/HELLO.TXT fatcopy.txt")
+        out = run_out("cat fatcopy.txt")
+        found = b"Hello from rustOS FAT32!" in out
+        print(("PASS " if found else "FAIL ") + "cp /fat/HELLO.TXT -> ramfs")
+        ok = ok and found
+        run("rm fatcopy.txt")
+
+        # rm e cp VERSO /fat rifiutati, disco invariato.
+        out = run_out("rm /fat/HELLO.TXT")
+        found = b"cannot remove" in out
+        print(("PASS " if found else "FAIL ") + "rm su /fat rifiutato")
+        ok = ok and found
+        out = run_out("cp hello.txt /fat/nope.txt")
+        found = b"I/O error" in out or b"cannot create" in out
+        print(("PASS " if found else "FAIL ") + "cp verso /fat rifiutato")
+        ok = ok and found
+        out = run_out("cat /fat/HELLO.TXT")
+        found = b"Hello from rustOS FAT32!" in out
+        print(("PASS " if found else "FAIL ") + "/fat invariato")
+        ok = ok and found
+
+        # clear: scherma testo, pulisce, shell resta viva        run("echo marker123")
         wait_prompt()
         if not screendump(SHOT0):
             print("FAIL clear: screendump pre mancato")
