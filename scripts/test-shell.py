@@ -161,6 +161,9 @@ def main():
                     "--serial", "C0FFEE01", "--label", "SECOND",
                     "--marker", "second disk marker"], check=True)
 
+    # Servizi da disco (Fase 21, stesso script di run.sh): /bin + /test.
+    subprocess.run(["bash", "scripts/inject-bins.sh"], check=True)
+
     args = [
         "qemu-system-x86_64", "-m", "256M", "-display", "none",
         "-serial", "file:" + SERIAL,

@@ -82,12 +82,14 @@ extern "x86-interrupt" fn page_fault_handler(
         fault_addr,
         error_code
     );
+    let (pnb, pnl) = crate::sched::process_name(pid);
+    let pname = core::str::from_utf8(&pnb[..pnl as usize]).unwrap_or("???");
     crate::serial_println!(
         "[int ] rip={:#x} rsp={:#x} pid={} '{}'",
         stack_frame.instruction_pointer.as_u64(),
         stack_frame.stack_pointer.as_u64(),
         pid,
-        crate::sched::process_name(pid).unwrap_or("???"),
+        pname,
     );
     halt();
 }

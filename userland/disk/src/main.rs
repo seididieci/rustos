@@ -771,7 +771,14 @@ pub extern "C" fn _start() -> ! {
             let handle = msg.w0 as u32;
             let lba = msg.w1;
             let mut sec = [0u8; 512];
-            if node_read(&disks, &disk_sectors, &parts, handle, lba, &mut sec) {
+            // DEBUG temporaneo (lentezza t24): latenza PIO per settore.
+            let t0 = libr::get_ticks();
+            let ok = node_read(&disks, &disk_sectors, &parts, handle, lba, &mut sec);
+            let dt = libr::get_ticks() - t0;
+            if dt > 5 {
+                println!("[userdisk] DBG slow read lba={} dt={}t ok={}", lba, dt, ok as u8);
+            }
+            if ok {
                 unsafe { disk_resp_write(512, 0, &sec) };
                 let _ = libr::reply(0, 0, 0);
             } else {

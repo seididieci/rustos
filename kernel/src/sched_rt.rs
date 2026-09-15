@@ -214,7 +214,7 @@ pub unsafe fn create_user(
     entry: u64,
     parent: Option<usize>,
     parent_chan: Option<usize>,
-    io_ranges: &'static [(u16, u16)],
+    io_ranges: &[(u16, u16)],
 ) -> Option<usize> {
     let mut guard = SCHED.lock();
     let sched = guard.as_mut().expect("scheduler non inizializzato");
@@ -253,13 +253,30 @@ pub fn process_state(pid: usize) -> Option<State> {
 
 /// Snapshot dei campi di `ps` per il processo `pid` (Fase 19.1): un solo lock,
 /// `None` se lo slot e' vuoto o il processo e' terminato (come `process_state`).
+/// Nome come copia owned 16 B (Fase 21: embedded o `spawn_image`, vedi
+/// `Process::name_str`): PsSnap esce dal lock, niente borrow.
 pub struct PsSnap {
-    pub name: &'static str,
+    pub name: [u8; 16],
     pub state: State,
     pub prio: u8,
     pub parent: Option<usize>,
     pub ipc: crate::process::IpcState,
     pub ticks_used: u64,
+}
+
+/// Copia il nome display in un buffer locale (i log avvengono dopo il
+/// rilascio dei borrow sul PCB).
+fn name_buf(p: &crate::process::Process) -> ([u8; 16], u8) {
+    let s = p.name_str();
+    let mut b = [0u8; 16];
+    let n = s.len().min(16);
+    b[..n].copy_from_slice(&s.as_bytes()[..n]);
+    (b, n as u8)
+}
+
+/// Nome display come &str da un buffer di `name_buf` (sempre UTF-8 valido).
+fn name_str_of(buf: &([u8; 16], u8)) -> &str {
+    core::str::from_utf8(&buf.0[..buf.1 as usize]).unwrap_or("?")
 }
 
 pub fn process_ps(pid: usize) -> Option<PsSnap> {
@@ -273,13 +290,24 @@ pub fn process_ps(pid: usize) -> Option<PsSnap> {
         return None;
     }
     Some(PsSnap {
-        name: p.name,
+        name: name_buf(p).0,
         state: p.state,
         prio: p.priority.0,
         parent: p.parent,
         ipc: p.ipc_state,
         ticks_used: p.ticks_used,
     })
+}
+
+/// Imposta il nome owned del processo (Fase 21, `spawn_image`): il nome arriva
+/// dal chiamante, non dalla tabella statica. No-op su pid invalido.
+pub fn set_owned_name(pid: usize, raw: &[u8]) {
+    let mut guard = SCHED.lock();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(p) = sched.processes.get_mut(pid) {
+            p.set_owned_name(raw);
+        }
+    }
 }
 
 /// Imposta il canale di nascita di `pid` (creato da sys_spawn, ADR-0008).
@@ -366,11 +394,30 @@ pub fn on_tick() {
         }
     }
 
+    // DEBUG temporaneo (deadlock t24): chi e' Blocked e su cosa, a ogni
+    // 100 tick incondizionato (il ramo no-switch campiona male sotto churn).
+    #[cfg(feature = "sched_debug")]
+    if tn % 100 == 0 {
+        for (pid, p) in sched.processes.iter().enumerate() {
+            if p.state == State::Blocked {
+                crate::serial_println!("[blkdbg] pid={} '{}' ipc={:?} wait={:?} prio={}",
+                    pid, p.name_str(), p.ipc_state, p.waiting_pid, p.priority.0);
+            }
+        }
+    }
+
     if !need_switch {
         #[cfg(feature = "sched_debug")]
         if tn % 100 == 0 {
             crate::serial_println!("[sched] tick={} cur={:?} mask={:#x} l16={:#x}",
                 tn, sched.current, sched.ready_prio_mask, sched.ready_by_prio[16]);
+            // DEBUG temporaneo (deadlock t24): chi e' Blocked e su cosa.
+            for (pid, p) in sched.processes.iter().enumerate() {
+                if p.state == State::Blocked {
+                    crate::serial_println!("[blkdbg] pid={} '{}' ipc={:?} wait={:?}",
+                        pid, p.name_str(), p.ipc_state, p.waiting_pid);
+                }
+            }
         }
         return;
     }
@@ -711,13 +758,20 @@ pub fn process_of(target: usize) -> Option<*mut Process> {
     }
 }
 
-pub fn process_name(pid: usize) -> Option<&'static str> {
+/// Nome display del processo (copia owned 16 B + len, Fase 21): il nome puo'
+/// venire dalla tabella embedded (statico) o da `spawn_image` (owned nel PCB,
+/// non 'static). `([0;16], 0)` se il pid non esiste.
+pub fn process_name(pid: usize) -> ([u8; 16], u8) {
     let guard = SCHED.lock();
-    let sched = guard.as_ref()?;
-    if pid < sched.processes.len() {
-        Some(sched.processes[pid].name)
-    } else {
-        None
+    match guard.as_ref().and_then(|s| s.processes.get(pid)) {
+        Some(p) => {
+            let s = p.name_str();
+            let mut b = [0u8; 16];
+            let n = s.len().min(16);
+            b[..n].copy_from_slice(&s.as_bytes()[..n]);
+            (b, n as u8)
+        }
+        None => ([0u8; 16], 0),
     }
 }
 
@@ -793,9 +847,9 @@ pub fn kill(pid: usize, code: i64) -> bool {
     if p.cr3 == crate::vmm_user::kernel_cr3() {
         return false; // processo kernel (solo idle oltre init)
     }
-    let name = p.name;
+    let name = name_buf(p);
     sched.terminate(pid, code);
-    crate::serial_println!("[kill ] pid {} '{}' ucciso (code {})", pid, name, code);
+    crate::serial_println!("[kill ] pid {} '{}' ucciso (code {})", pid, name_str_of(&name), code);
     true
 }
 
@@ -817,7 +871,7 @@ impl Scheduler {
             panic!("init terminato (pid 1)");
         }
 
-        let name = self.processes[pid].name;
+        let name = name_buf(&self.processes[pid]);
 
         {
             let p = &mut self.processes[pid];
@@ -870,7 +924,7 @@ impl Scheduler {
         self.push_reclaim(pid);
         crate::serial_println!(
             "[proc ] '{}' pid {} terminato (code {}), reclaim accodato",
-            name, pid, code
+            name_str_of(&name), pid, code
         );
     }
 
@@ -924,7 +978,7 @@ impl Scheduler {
 
         let (die_peers, npeer, name, stack_base, cr3, exit_code, tss_slot) = {
             let p = &self.processes[pid];
-            (p.die_peers, p.die_peer_count, p.name, p.stack_base, p.cr3, p.exit_code, p.tss_slot)
+            (p.die_peers, p.die_peer_count, name_buf(p), p.stack_base, p.cr3, p.exit_code, p.tss_slot)
         };
 
         crate::phys_mem::free_contiguous(stack_base, crate::process::STACK_FRAMES);
@@ -977,7 +1031,7 @@ impl Scheduler {
 
         crate::serial_println!(
             "[reap ] '{}' pid {} reclamato{}: frame liberi = {}",
-            name,
+            name_str_of(&name),
             pid,
             if is_user { " (addr space)" } else { "" },
             crate::phys_mem::free_frames()
