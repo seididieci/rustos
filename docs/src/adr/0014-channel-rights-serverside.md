@@ -20,7 +20,8 @@ Self-restriction only, senza kernel:
   `{ALL, root}`: zero alloc, comportamento invariato finche' nessuno droppa
   (tutta la suite esistente resta verde a default pieni).
 - Bit `RIGHTS_*` (`syscall-numbers`, riesportati da `libr`): OPEN/READ/WRITE/
-  READDIR/MKDIR/MOUNT/UMOUNT, `ALL = 0x7F`. CLOSE senza bit: chiudere rilascia
+  READDIR/MKDIR/MOUNT/UMOUNT, `ALL = 0x7F` (0xFF dalla Fase 18.2, che aggiunge
+  `RIGHTS_DELETE` per `R_DELETE`). CLOSE senza bit: chiudere rilascia
   stato, sempre consentito (negare la cleanup intrappolerebbe il client).
 - Check su due livelli: ops bit CENTRALE dopo validazione frame (a diniego
   consuma `20+expect` + ERR, mai `map_in`/`send` al driver — vale anche per il

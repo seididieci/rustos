@@ -72,7 +72,7 @@ pub extern "C" fn _start() -> ! {
 
     // Test 3: Write a file and read it back
     println!("[testfs] Test 3: write + read verification");
-    let fd2 = libr::open("test_write.txt", 1);
+    let fd2 = libr::open("test_write.txt", libr::O_CREAT);
     println!("[testfs] open fd={}", fd2);
 
     if fd2 >= 0 {
