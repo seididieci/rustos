@@ -66,6 +66,19 @@ def load_ppm(path: str):
     w, h = int(parts[0]), int(parts[1])
     return w, h, data[i:i + w * h * 3]
 
+def lit_pixels(path: str):
+    """Byte accesi nello screendump (testo bianco su nero), escluse le
+    ultime 3 scanline (cursore lampeggiante)."""
+    w, h, p = load_ppm(path)
+    row = w * 3
+    lit = 0
+    for y in range(h - 3):
+        off = y * row
+        for k in range(row):
+            if p[off + k] != 0:
+                lit += 1
+    return lit
+
 def diff_masked(a: str, b: str):
     """Byte diversi tra due screendump, mascherando le ultime 3 scanline
     (cursore hardware lampeggiante: non e' contenuto)."""
@@ -153,8 +166,9 @@ def main():
         send_mon("sendkey ret")
         time.sleep(1.2)
         data = read_log()
-        found = b"hello.txt" in data and b"test.txt" in data
-        print(("PASS " if found else "FAIL ") + "ls / (hello.txt, test.txt)")
+        found = (b"hello.txt" in data and b"test.txt" in data
+                 and b"fat" in data and b"dev" in data)
+        print(("PASS " if found else "FAIL ") + "ls / (hello.txt, test.txt, fat, dev)")
         ok = ok and found
 
         # Esegui: cat hello.txt<Enter> -> contenuto ramfs
@@ -227,6 +241,98 @@ def main():
             found = d1 > 50 and d2 <= 64 and d3 <= 64
             print(("PASS " if found else "FAIL ")
                   + "backspace: eco ok, cancel ok, prompt intatto a riga vuota")
+            ok = ok and found
+
+        # Fase 18.1: builtin (echo/wc/hexdump/cd/pwd/kill/clear).
+        # Nota: il wait e' quasi sempre un no-op (prompt gia' presente, shell
+        # idle): timeout corto, serve solo dopo un comando appena eseguito.
+        def wait_prompt(timeout=8):
+            base = count_prompts(read_log())
+            deadline = time.time() + timeout
+            while count_prompts(read_log()) <= base and time.time() < deadline:
+                time.sleep(0.2)
+            time.sleep(0.3)
+
+        def run(cmd: str, sleep=1.0):
+            wait_prompt()
+            type_text(cmd)
+            send_mon("sendkey ret")
+            time.sleep(sleep)
+
+        # echo
+        run("echo hello world")
+        data = read_log()
+        found = b"hello world" in data
+        print(("PASS " if found else "FAIL ") + "echo hello world")
+        ok = ok and found
+
+        # wc su path relativo (cwd=/): "Hello from Velordor ramfs!\n"
+        run("wc hello.txt")
+        data = read_log()
+        found = b"1 4 25 hello.txt" in data
+        print(("PASS " if found else "FAIL ") + "wc hello.txt (=1 4 25)")
+        ok = ok and found
+
+        # hexdump: "Hello" = 48 65 6c 6c 6f
+        run("hexdump hello.txt")
+        data = read_log()
+        found = b"48 65 6c 6c 6f" in data
+        print(("PASS " if found else "FAIL ") + "hexdump hello.txt")
+        ok = ok and found
+
+        # cd/pwd + path relativi (prova esiste dal test mkdir)
+        run("cd prova")
+        run("pwd")
+        data = read_log()
+        found = b"/prova" in data
+        print(("PASS " if found else "FAIL ") + "cd prova + pwd")
+        ok = ok and found
+        run("touch inner.txt")
+        run("ls")
+        data = read_log()
+        found = b"inner.txt" in data
+        print(("PASS " if found else "FAIL ") + "path relativo in ls")
+        ok = ok and found
+        run("cd ..")
+        run("ls prova")
+        data = read_log()
+        found = b"inner.txt" in data
+        print(("PASS " if found else "FAIL ") + "cd .. + ls prova")
+        ok = ok and found
+
+        # kill: nome ignoto, pid inesistente, init non killabile (rifiuto)
+        run("kill nosuchsvc")
+        run("kill 99999")
+        run("kill init")
+        data = read_log()
+        found = (b"kill: unknown pid/service" in data
+                 and data.count(b"kill: failed") >= 2)
+        print(("PASS " if found else "FAIL ") + "kill errori + init rifiutato")
+        ok = ok and found
+
+        # clear: scherma testo, pulisce, shell resta viva
+        run("echo marker123")
+        wait_prompt()
+        if not screendump(SHOT0):
+            print("FAIL clear: screendump pre mancato")
+            ok = False
+        else:
+            before = lit_pixels(SHOT0)
+            run("clear")
+            wait_prompt()
+            if not screendump(SHOT1):
+                print("FAIL clear: screendump post mancato")
+                ok = False
+            else:
+                after = lit_pixels(SHOT1)
+                print("info clear: lit prima=%d dopo=%d" % (before, after))
+                found = after < 3000 and before - after > 3000
+                print(("PASS " if found else "FAIL ") + "clear pulisce la VGA")
+                ok = ok and found
+            run("echo alive")
+            data = read_log()
+            found = b"alive" in data
+            print(("PASS " if found else "FAIL ") + "shell viva dopo clear")
             ok = ok and found
 
         if not ok:
