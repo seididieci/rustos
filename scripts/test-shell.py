@@ -213,13 +213,12 @@ def main():
 
         # wait_prompt event-driven sul conteggio prompt CONSUMATO (non un
         # base locale: quello aspettava un prompt nuovo a shell gia' idle e
-        # bruciava sempre il timeout, ~8 s a comando = 6 min a run).
+        # bruciava sempre il timeout, ~8 s a comando = 6 min a run). Aspetta
+        # DAVVERO solo se un comando e' in volo (need_sync): dopo un interludio
+        # senza Enter (screendump/backspace) non esiste alcun prompt nuovo e
+        # il conteggio-da solo brucerebbe comunque il timeout (~8 s x3 = 25 s).
         # Definito qui (prima del primo uso nei blocchi ls/cat/...) e usato
         # anche da run()/run_out() sotto.
-        # wait_prompt event-driven: aspetta DAVVERO solo se un comando e' in
-        # volo (need_sync). Il conteggio-da solo non basta: dopo un interludio
-        # senza Enter (screendump/backspace) non esiste alcun prompt nuovo e
-        # l'attesa brucerebbe sempre il timeout (~8 s x3 = 25 s a run).
         prompt_seen = [0]
         need_sync = [False]
         def wait_prompt(timeout=8):

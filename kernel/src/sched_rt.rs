@@ -41,7 +41,15 @@ struct Scheduler {
     processes: Vec<Process>,
     current: Option<usize>,
     ticks_current: u64,
-    round_robin: usize,
+    /// Cursore round-robin PER LIVELLO: ultimo PID scelto al livello p. La
+    /// rotazione riparte dal bit successivo all'ultimo scelto A QUESTO
+    /// LIVELLO (vero round-robin sul sottoinsieme presente). Un contatore
+    /// globale condiviso tra sottoinsiemi diversi NON e' equo: con cicli IPC
+    /// deterministici il cursore si aggancia in fase e un membro muore di fame
+    /// per sempre (osservato sotto KVM: pid 7 mai scelto tra {4,7}/{7,8}/{7,9}
+    /// per parita' bloccata — 968+484+484 pick senza mai 7 — mentre TCG, piu'
+    /// lento, rompeva la fase con i pick dei quanti e lo mascherava).
+    rr_cursor: [u32; 32],
     next_id: usize,
     /// free_pids: bit i = PID i libero (processo reclamato, riusabile).
     free_pids: u32,
@@ -73,7 +81,7 @@ impl Scheduler {
             processes: Vec::new(),
             current: None,
             ticks_current: 0,
-            round_robin: 0,
+            rr_cursor: [0u32; 32],
             next_id: 0,
             free_pids: 0,
             reclaim_q: [0; MAX_PIDS],
@@ -156,18 +164,15 @@ impl Scheduler {
         // Livello di priorita' piu' alto con almeno un processo pronto.
         let p = 31 - self.ready_prio_mask.leading_zeros() as usize;
         let mask = self.ready_by_prio[p];
-        let total = mask.count_ones() as usize;
-        let bit_idx = (self.round_robin as usize) % total;
-        // Trova il bit_idx-esimo bit impostato (round-robin).
-        let mut m = mask;
-        for _ in 0..bit_idx {
-            m &= m - 1;
-        }
-        let bit = (m & (!m + 1)).trailing_zeros() as usize;
-        // Unico avanzamento di round_robin (una volta per selezione): NON
-        // incrementarlo anche in switch_to, altrimenti con un numero pari di
-        // pronti meta' morirebbe di fame per sempre (parita' bloccata).
-        self.round_robin += 1;
+        // Rotazione dal bit successivo all'ultimo scelto a questo livello:
+        // ogni membro dell'insieme persistente viene scelto entro N pick.
+        // (mask != 0 per invariante: il bit p di ready_prio_mask e' alto solo
+        // se la word del livello non e' vuota — mantenuto sotto lock.)
+        let k = (self.rr_cursor[p] + 1) % 32;
+        let rot = mask.rotate_right(k);
+        let j = rot.trailing_zeros() as usize;
+        let bit = (j + k as usize) % 32;
+        self.rr_cursor[p] = bit as u32;
         Some(bit)
     }
 }
@@ -364,8 +369,8 @@ pub fn on_tick() {
     if !need_switch {
         #[cfg(feature = "sched_debug")]
         if tn % 100 == 0 {
-            crate::serial_println!("[sched] tick={} cur={:?} mask={:#x} l16={:#x} rr={}",
-                tn, sched.current, sched.ready_prio_mask, sched.ready_by_prio[16], sched.round_robin);
+            crate::serial_println!("[sched] tick={} cur={:?} mask={:#x} l16={:#x}",
+                tn, sched.current, sched.ready_prio_mask, sched.ready_by_prio[16]);
         }
         return;
     }
@@ -376,8 +381,8 @@ pub fn on_tick() {
         _ => {
             #[cfg(feature = "sched_debug")]
             if tn % 100 == 0 {
-                crate::serial_println!("[sched] tick={} cur={:?} mask={:#x} l16={:#x} rr={} (no-switch)",
-                    tn, sched.current, sched.ready_prio_mask, sched.ready_by_prio[16], sched.round_robin);
+                crate::serial_println!("[sched] tick={} cur={:?} mask={:#x} l16={:#x} (no-switch)",
+                    tn, sched.current, sched.ready_prio_mask, sched.ready_by_prio[16]);
             }
             return;
         }
