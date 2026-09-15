@@ -200,6 +200,7 @@ usertests 17/17, shell 3/3.
 16c  Resolve nome→handle lato driver (DISK_RESOLVE, single source)   [x]
 16d  Identità stabile UUID/LABEL + listing + register multi-prefix     [x]
 17   Diritti per-canale lato server ([ADR-0014](../adr/0014-channel-rights-serverside.md): tabella chan→{ops,subtree}, DROP solo-shrink + GET, fd capability pure) [x]
+19.2 Metadati senza open (R_STAT 0x1B, risposta self-written `[size:8][kind:8]`: ramfs/FAT readonly/device, check RIGHTS_READDIR+subtree, `libr::stat`, t38) [x]
 ```
 
 ## File coinvolti

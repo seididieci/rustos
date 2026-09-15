@@ -124,7 +124,8 @@ fn clear_ready(&mut self, pid: usize) {
 ```
 
 `pick_next` trova il livello piu' alto con `leading_zeros()` (istruzione CLZ,
-come FreeRTOS) e fa round-robin interno al livello sulla bitmask:
+come FreeRTOS) e fa round-robin interno al livello sulla bitmask, ripartendo
+dal bit successivo all'ultimo scelto A QUEL LIVELLO (`rr_cursor[p]`):
 
 ```rust
 fn pick_next(&mut self) -> Option<usize> {
@@ -134,20 +135,26 @@ fn pick_next(&mut self) -> Option<usize> {
     // Livello di priorita' piu' alto con almeno un processo pronto.
     let p = 31 - self.ready_prio_mask.leading_zeros() as usize;
     let mask = self.ready_by_prio[p];
-    let total = mask.count_ones() as usize;
-    let bit_idx = (self.round_robin as usize) % total;
-    let mut m = mask;
-    for _ in 0..bit_idx {
-        m &= m - 1;                       // round-robin: scarta i primi bit_idx
-    }
-    let bit = (m & (!m + 1)).trailing_zeros() as usize;
-    self.round_robin += 1;
+    let k = (self.rr_cursor[p] + 1) % 32;
+    let rot = mask.rotate_right(k);
+    let j = rot.trailing_zeros() as usize;
+    let bit = (j + k as usize) % 32;
+    self.rr_cursor[p] = bit as u32;
     Some(bit)
 }
 ```
 
 E' la generalizzazione a 32 livelli del bitmask di Fase 10 (10.1.3): nessuna
 allocazione, nessuna scansione di liste.
+
+> Lezione imparata (starvation deterministica): un contatore globale condiviso
+> tra sottoinsiemi diversi NON e' un round-robin equo. Con cicli IPC
+> deterministici il contatore si aggancia in fase con la sequenza dei
+> sottoinsiemi e un membro non viene mai scelto: osservato sotto KVM (pid 7,
+> userkbd, mai scelto in ~1900 pick tra {4,7}/{7,8}/{7,9} → tastiera muta dopo
+> i primi tasti), mentre TCG — piu' lento — rompeva la fase con i pick dei
+> quanti e mascherava il bug. Il cursore per-livello garantisce che ogni membro
+> dell'insieme persistente venga scelto entro N pick, a qualunque velocita'.
 
 ## Constant Bandwidth Server (CBS)
 

@@ -316,7 +316,14 @@ rustos/
           ready O(1)
     - [x] 11.2.2 `pick_next` O(1): priorita' piu' alta via `leading_zeros()` su
           `ready_prio_mask`, round-robin interno al livello sul bitmask
-          (generalizzazione di 10.1.3 a 32 livelli)
+          (generalizzazione di 10.1.3 a 32 livelli) con cursore PER LIVELLO
+          (`rr_cursor[p]`: la rotazione riparte dal bit successivo all'ultimo
+          scelto a quel livello). Un contatore globale condiviso tra
+          sottoinsiemi diversi NON e' equo: con cicli IPC deterministici il
+          cursore si aggancia in fase e un membro muore di fame per sempre
+          (osservato sotto KVM: pid 7 mai scelto in ~1900 pick tra
+          {4,7}/{7,8}/{7,9} → tastiera muta; TCG lo mascherava rompendo la
+          fase con i pick dei quanti)
     - [x] 11.2.3 Mapping priorita' processi esistenti: idle=0, demo/uptime/
           testspin=1, test/demo=2-5, servizi Normal (console/fs/devfs/shell)=
           16-20, utspin_high/keyboard/urgenti=31; quantum invariato (2 tick)
@@ -825,7 +832,7 @@ rustos/
   - [x] 18.3 Docs + regressione: capitolo `12-utilities.md` (tabella comandi,
         limiti onesti: no write `/fat`, no argv), estensione `test-shell.py`,
         gate invariato 36/36 + shell verde.
-- [ ] Fase 19: introspezione + metadati (ps/stat).
+- [x] Fase 19: introspezione + metadati (ps/stat).
   - [x] 19.1 `ps` tabellare stile Linux: syscall `SYS_PS_INFO` (37, pattern
         multi-registro `CBS_GET_INFO`: nome 16 B in rdi+rsi, packed
         stato/prio/parent+1/ipc in rdx, tick in r10; -1 se slot vuoto/
@@ -835,12 +842,16 @@ rustos/
         `syscall-numbers`, deve restare = `MAX_PIDS` kernel) + builtin shell
         `ps` (`PID NAME PRIO STATE TIME PARENT`, `run` = se stesso) + t37
         (idle/init presenti parent-None, self Ready, count>=8, TIME init>0 e
-        TIME proprio crescente dopo spin puro). Verifica: gate 37/37 +
-        `test-shell.py` 25/25, zero FAIL/PANIC/FAULT.
-  - [ ] 19.2 `stat` lato userfs (zero kernel): frame `R_STAT` con risposta
-        `[size:8][kind:8]` (kind=file/dir/device + flag readonly; ramfs=len,
-        FAT=dir entry, device=size 0) + `libr::stat` + test + (stretch: `ls -l`
-        minimale).
+        TIME proprio crescente dopo spin puro). Verifica: gate 38/38 +
+        `test-shell.py` 26/26, zero FAIL/PANIC/FAULT.
+  - [x] 19.2 `stat` lato userfs (zero kernel): frame `R_STAT` (0x1B) con risposta
+        self-written `[size:8][kind:8]` (kind=file/dir/device + flag readonly;
+        ramfs=len reale, FAT=size da dir entry sempre readonly, device=size 0
+        readonly 0 senza interrogare il driver) + `libr::stat`/`Stat` +
+        check ops+subtree nel choke point Fase 17 (bit `RIGHTS_READDIR`) +
+        t38 (ramfs/FAT/device/padri sintetizzati/error paths) + (stretch
+        `ls -l` minimale: rimandato). Verifica: gate 38/38 +
+        `test-shell.py` 26/26, zero FAIL/PANIC/FAULT.
 
 ## Important Notes
 
@@ -1005,9 +1016,9 @@ timeout 60 ./run.sh > /tmp/boot.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 6/6
-#   [usertests] PASS 37/37
+#   [usertests] PASS 38/38
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 6/6|\[usertests\] PASS 37/37' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 6/6|\[usertests\] PASS 38/38' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 
