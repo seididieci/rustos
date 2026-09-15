@@ -93,6 +93,9 @@ pub const EXIT_NOTIFY: u64 = 0x7C;
 // Canale diretto userfs→userdisk (service_lookup(Disk)):
 // - HELLO/OPEN/CLOSE: solo registri, niente frame.
 // - READ: un settore per chiamata, frame `[512:8][0:8][settore]` nel ring DISK_RESP.
+// - WRITE (20): un settore per chiamata, frame `[512:8][settore]` nel ring
+//   DISK_REQ (handle in w0, lba in w1 dei registri); reply w0 = 0 o ERR,
+//   nessun frame di risposta.
 // - RESOLVE (16c): il nome nodo ("sda", "sda1") viaggia in un frame
 //   `[namelen:8][name]` nel ring DISK_REQ; la reply porta l'handle in w0
 //   (o ERR). userdisk e' l'unico proprietario della mappa nome→handle:
@@ -102,6 +105,8 @@ pub const DISK_OPEN: u64 = 0x51;
 pub const DISK_READ: u64 = 0x52;
 pub const DISK_CLOSE: u64 = 0x53;
 pub const DISK_RESOLVE: u64 = 0x54;
+/// Scrive un settore (Fase 20, FAT scrivibile): vedi sopra.
+pub const DISK_WRITE: u64 = 0x55;
 
 // ── Tag delle operazioni FS (nel frame del ring, non nell'IPC) ────────────
 // Single source of truth (Fase 17): prima duplicati in `libr`, `userfs` e

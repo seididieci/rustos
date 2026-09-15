@@ -1130,6 +1130,15 @@ fn handle_open(
     // resolve_local copre ramfs + il caso "mount noto ma inattivo" (→ None,
     // mai shadow in ramfs: stesso contratto di prima).
     if let Some((mi, rel)) = resolve_fsmount(mounts_fat, path) {
+        // POSIX come ramfs (20.4): con O_CREAT crea l'entry 8.3 se manca
+        // (no LFN, mkdir-su-FAT fuori scope); senza, il file deve esistere.
+        if flags as u32 & libr::O_CREAT != 0 {
+            if let Some(fat) = mounts_fat.get(mi).and_then(|m| m.fat()) {
+                if fat.find(rel).is_none() {
+                    let _ = fat.create_file(rel);
+                }
+            }
+        }
         let fat = mounts_fat[mi].fat()?;
         fat.find(rel)?;
         return Some(ftable.open(chan, rel, FsKind::Fat, Some(mi)));
@@ -1251,18 +1260,35 @@ fn handle_write_remote(
 }
 
 /// Write locale (ramfs): il frame e' gia' stato consumato e il payload e' in
-/// `payload`. FAT32 e' read-only.
+/// Scrive `count` byte di `payload` sul fd (ramfs o FAT-overwrite). FAT32 e'
+/// scrivibile dalla Fase 20 (write-through, niente cache): solo overwrite
+/// entro la size esistente (20.2) — la crescita/creazione arrivano dopo.
 fn handle_write_local(
     fs: &mut RamFs,
     ftable: &mut FileTable,
+    mounts_fat: &mut Vec<FsMount>,
     chan: u64,
     fd: u32,
     count: usize,
     payload: &[u8],
 ) -> Option<u64> {
-    let (path, kind, offset, _mnt) = ftable.get(chan, fd)?;
+    let (path, kind, offset, mnt) = ftable.get(chan, fd)?;
     if kind == FsKind::Fat {
-        return None; // FAT32 read-only
+        // Scrittura FAT (Fase 20): overwrite + crescita con allocazione
+        // (write-through, niente cache). Ritorna i byte scritti; parziale =
+        // disco pieno o errore IO (il chiamante vede count corto).
+        let mi = mnt?;
+        if !reactivate_mount(mounts_fat, mi) {
+            return None;
+        }
+        let fat = mounts_fat.get(mi)?.fat()?;
+        let info = fat.find(path)?;
+        if info.is_dir {
+            return None;
+        }
+        let n = fat.write_grow(&info, offset, &payload[..count.min(payload.len())]);
+        ftable.set_offset(chan, fd, offset + n);
+        return Some(n as u64);
     }
 
     match fs.find_or_create(path)? {
@@ -1378,9 +1404,9 @@ fn stat_reply(rings: &BTreeMap<u64, (u64, u64)>, chan: u64, size: u64, kind: u64
 /// attivazione lazy) → ramfs → padri sintetizzati 16d → None. Mount FAT noto
 /// ma inattivo = errore (stesso contratto di open/readdir). kind in
 /// `syscall-numbers` (STAT_FILE/DIR/DEVICE + STAT_READONLY): ramfs da' len
-/// reale (dir = 0, mai readonly), FAT size dalla dir entry (sempre readonly:
-/// read-only), device size 0 readonly 0 (sconosciuto senza interrogare il
-/// driver: i prefix registrati sono foglie, qui mai contattati).
+/// reale (dir = 0, mai readonly), FAT size dalla dir entry (scrivibile dalla
+/// Fase 20: mai readonly), device size 0 readonly 0 (sconosciuto senza
+/// interrogare il driver: i prefix registrati sono foglie, qui mai contattati).
 fn handle_stat(
     fs: &RamFs,
     mounts_fat: &mut Vec<FsMount>,
@@ -1408,16 +1434,10 @@ fn handle_stat(
     if let Some((mi, rel)) = resolve_fsmount(mounts_fat, path) {
         let fat = mounts_fat[mi].fat()?;
         if rel.is_empty() {
-            return Some(stat_reply(
-                rings,
-                chan,
-                0,
-                libr::STAT_DIR | libr::STAT_READONLY,
-            ));
+            return Some(stat_reply(rings, chan, 0, libr::STAT_DIR));
         }
         let info = fat.find(rel)?;
-        let kind = if info.is_dir { libr::STAT_DIR } else { libr::STAT_FILE }
-            | libr::STAT_READONLY;
+        let kind = if info.is_dir { libr::STAT_DIR } else { libr::STAT_FILE };
         return Some(stat_reply(rings, chan, info.size as u64, kind));
     }
     match resolve_local(mounts_fat, path) {
@@ -1823,7 +1843,7 @@ pub extern "C" fn _start() -> ! {
             }
 
             R_WRITE => {
-                handle_write_local(&mut fs, &mut ftable, chan, w0 as u32, w1 as usize, &payload)
+                handle_write_local(&mut fs, &mut ftable, &mut fat_mounts, chan, w0 as u32, w1 as usize, &payload)
             }
 
             R_CLOSE => {

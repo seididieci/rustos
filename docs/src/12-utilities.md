@@ -38,7 +38,7 @@ la mostra (`/prova$ `, `$ ` a root).
 | `pwd` | Stampa la directory corrente |
 | `cp <src> <dst>` | Copia file (client-side: read+write) |
 | `mv <src> <dst>` | Sposta file (cp+rm, la sorgente si rimuove solo a copia riuscita) |
-| `rm <file>` | Cancella file (`R_DELETE`; su `/fat` rifiutato: read-only) |
+| `rm <file>` | Cancella file (`R_DELETE`; su `/fat` rifiutato: niente unlink, fuori scope) |
 | `rmdir <dir>` | Cancella directory vuota (rifiutata se piena) |
 | `ps` | Tabella processi stile Linux: PID NAME PRIO STATE TIME PARENT (syscall 37, Fase 19.1) |
 | `help` | Mostra comandi disponibili |
@@ -49,9 +49,9 @@ linea in `usertty`: conta i digitati, ingoia il resto — Fase 18.0).
 
 ### Limiti onesti
 
-- **Niente write su `/fat`**: FAT32 e' read-only (`cp` verso `/fat` fallisce
-  pulito, `rm` rifiutato). La persistenza scrivibile e' solo ramfs (persa al
-  reboot).
+- **Write su `/fat`, si** (Fase 20, scrivibile write-through): `cp` verso
+  `/fat` crea/scrive con persistenza al reboot (ramfs resta volatile). Resta
+  rifiutato: `rm`/`rmdir`/`mkdir` su `/fat` (niente unlink, fuori scope).
 - **Niente `argv` per binari separati**: i comandi sono builtin; `spawn`
   passa solo il nome (gli helper di test usano il canale di nascita come
   argv). Lo split in binari separati arrivera' con l'avvio servizi da disco
@@ -93,7 +93,7 @@ La tastiera è gestita da `userkbd`/`usertty` (Fase 15): input da `/dev/input/ke
 
 File system server con mount table dinamica:
 - `/` → ramfs (BTreeMap, scrivibile)
-- `/fat` → FAT32 (read-only, via `userdisk` — Fase 16)
+- `/fat` → FAT32 scrivibile (via `userdisk` — Fase 16, scrittura Fase 20)
 - `/dev` → userdevfs (instradamento IPC)
 - mount dinamici via `mount`/`umount` (Fase 16b, [ADR-0013](./adr/0013-mount-syscall.md)):
   tabella `Vec<FsMount>` con longest-prefix, attivazione lazy, re-apply delle

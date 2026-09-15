@@ -69,6 +69,9 @@ use libr::DISK_CLOSE;
 /// of truth nel driver). Richiesta: frame `[namelen:8][name]` nel DISK_REQ
 /// ring; reply w0 = handle o ERR, niente frame.
 use libr::DISK_RESOLVE;
+/// Scrive un settore (Fase 20, FAT scrivibile): handle in w0, lba in w1,
+/// payload 512 byte nel frame DISK_REQ; reply senza frame.
+use libr::DISK_WRITE;
 
 // ── Ring I/O ────────────────────────────────────────────────────────
 // Due coppie SEPARATE (lezione CLI_* del fix kbd/tty: mai protocolli diversi
@@ -173,6 +176,37 @@ fn disk_req_read_name() -> Option<String> {
         let new_tail = (t + 8 + len) % RING_DATA_CAP;
         core::ptr::write_volatile((DISK_REQ_VA + RING_TAIL as u64) as *mut u32, new_tail as u32);
         core::str::from_utf8(&name_b[..len]).ok().map(String::from)
+    }
+}
+
+/// Legge un frame di write `[len:8][512 byte]` dal DISK_REQ ring e lo consuma
+/// (stesso pattern di `disk_req_read_name`: frame intero prima della notify,
+/// incompleto = epoca morta → resync). Accetta solo len == 512.
+fn disk_req_read_sector(out: &mut [u8; 512]) -> bool {
+    unsafe {
+        let head = core::ptr::read_volatile((DISK_REQ_VA + RING_HEAD as u64) as *const u32);
+        let tail = core::ptr::read_volatile((DISK_REQ_VA + RING_TAIL as u64) as *const u32);
+        let avail = (head.wrapping_sub(tail)) % RING_DATA_CAP as u32;
+        if avail < 8 {
+            return false;
+        }
+        let src = DISK_REQ_VA as *const u8;
+        let t = tail as usize;
+        let mut len_b = [0u8; 8];
+        for i in 0..8 {
+            len_b[i] = core::ptr::read_volatile(src.add((t + i) % RING_DATA_CAP));
+        }
+        let len = u64::from_le_bytes(len_b) as usize;
+        if len != 512 || avail < (8 + len) as u32 {
+            core::ptr::write_volatile((DISK_REQ_VA + RING_TAIL as u64) as *mut u32, head);
+            return false;
+        }
+        for i in 0..512 {
+            out[i] = core::ptr::read_volatile(src.add((t + 8 + i) % RING_DATA_CAP));
+        }
+        let new_tail = (t + 8 + 512) % RING_DATA_CAP;
+        core::ptr::write_volatile((DISK_REQ_VA + RING_TAIL as u64) as *mut u32, new_tail as u32);
+        true
     }
 }
 
@@ -292,6 +326,28 @@ fn node_read(
     }
     match disks.get(disk) {
         Some(d) => d.read_sector(base + lba, out),
+        None => false,
+    }
+}
+
+/// Scrive il settore `lba` del nodo `handle` (bound check sul nodo, come read).
+fn node_write(
+    disks: &[block::AtaDisk],
+    disk_sectors: &[u64],
+    parts: &[Vec<PartLoc>],
+    handle: u32,
+    lba: u64,
+    data: &[u8; 512],
+) -> bool {
+    let (disk, base, sectors) = match locate(handle, disk_sectors, parts) {
+        Some(r) => r,
+        None => return false,
+    };
+    if lba >= sectors {
+        return false;
+    }
+    match disks.get(disk) {
+        Some(d) => d.write_sector(base + lba, data),
         None => false,
     }
 }
@@ -725,6 +781,22 @@ pub extern "C" fn _start() -> ! {
         }
         if msg.tag == DISK_CLOSE {
             let _ = libr::reply(0, 0, 0);
+            continue;
+        }
+        if msg.tag == DISK_WRITE {
+            // Handle in w0, lba in w1, 512 byte nel frame DISK_REQ (consumato
+            // sempre, anche a handle/lba invalidi: la tail va avanzata o il
+            // prossimo request e' male — stesso contratto dei ring FS).
+            let handle = msg.w0 as u32;
+            let lba = msg.w1;
+            let mut sec = [0u8; 512];
+            if disk_req_read_sector(&mut sec)
+                && node_write(&disks, &disk_sectors, &parts, handle, lba, &sec)
+            {
+                let _ = libr::reply(0, 0, 0);
+            } else {
+                let _ = libr::reply(0, ERR, 0);
+            }
             continue;
         }
         if msg.tag == DISK_RESOLVE {

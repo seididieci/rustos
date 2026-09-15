@@ -11,7 +11,7 @@ userland/   SOLO binari "ad uso utente": init, console, fs, devfs, shell, uptime
 libs/libr   libreria di sistema condivisa (runtime + allocatore)
 testland/   test suite + repro + demo storiche
   testfs        usertestfs   — ramfs (read/write/mkdir/errori)   → PASS 5/5
-  testfat       usertestfat  — FAT32 read-only + /dev/null, /dev/zero → PASS 6/6
+  testfat       usertestfat  — FAT32 scrivibile (Fase 20) + /dev/null, /dev/zero → PASS 7/7
   usertests     usertests    — suite completa (38 test)          → PASS 38/38
   usertest-client usertestcli  — helper a modalita' (ECHO/ZEROREAD/NULLW/SRV)
   usertest-spin  usertestspin  — busy-loop a budget di tick (priorita')
@@ -43,7 +43,7 @@ Righe di gate:
 
 ```
 [testfs] PASS 5/5
-[testfat] PASS 6/6
+[testfat] PASS 7/7
 [usertests] PASS 38/38
 ```
 
@@ -87,7 +87,7 @@ Righe di gate:
 | t35 | resolve nome→handle lato driver (Fase 16c): nomi ignoti senza stato (niente spec fantasma), bad-replace innocuo, mount valido operativo |
 | t36 | identità stabile (Fase 16d): mount per `UUID=` e per `LABEL=` del secondo disco + contenuto MARKER (prova il disco giusto), open raw dei by-path con firma+seriale, listing sintetizzato `/dev`/by-uuid/by-label. Gira anche con `SWAP_DRIVES=1` (lettere cambiano, chiavi no) |
 | t37 | snapshot processi (Fase 19.1): idle/init presenti con parent `None`, self Ready, count >= 8, TIME di init > 0 e TIME proprio crescente dopo spin |
-| t38 | `stat` metadati senza open (Fase 19.2): file/dir ramfs (size reale, vita dopo mkdir/rm), file/dir FAT readonly, device (`/dev/null`), padri sintetizzati (`/dev`), error paths (inesistente, sotto-device) |
+| t38 | `stat` metadati senza open (Fase 19.2; FAT senza readonly dalla Fase 20): file/dir ramfs (size reale, vita dopo mkdir/rm), file/dir FAT, device (`/dev/null`), padri sintetizzati (`/dev`), error paths (inesistente, sotto-device) |
 | t34 | diritti per-canale lato server (Fase 17, per ultimo: drop irrevocabili): GET default ALL+root, drop WRITE (write -1/read ok), drop MOUNT+subtree /fat (mount/open-fuori -1, open-dentro+read+readdir-dentro ok, readdir-fuori -1), widen rifiutato + GET conferma |
 
 > Il CBS e' sempre attivo (lo scheduler RT e' l'unico): t18/t19 sono test

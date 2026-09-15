@@ -28,7 +28,7 @@ use libr::println;
 /// Tag DISK_* (single source in `syscall-numbers`, Fase 16c): handshake,
 /// validazione nodo, lettura settoriale, resolve nome→handle di proprieta'
 /// del driver.
-use libr::{DISK_HELLO, DISK_OPEN, DISK_READ, DISK_RESOLVE};
+use libr::{DISK_HELLO, DISK_OPEN, DISK_READ, DISK_RESOLVE, DISK_WRITE};
 
 /// Finestra del request ring di userdisk (stessa VA del server: ogni processo
 /// ha le proprie page table, nessun conflitto). userfs e' l'unico writer.
@@ -206,6 +206,47 @@ impl IpcDisk {
         }
     }
 
+    /// Scrive un frame di write `[512:8][settore]` nel DISK_REQ ring (Fase 20).
+    /// Ritorna false se non c'e' spazio (disciplina sync + reset a ogni
+    /// connessione: non dovrebbe mai accadere; il chiamante fallisce loud).
+    unsafe fn req_write_sector(data: &[u8; 512]) -> bool {
+        unsafe {
+            let head = core::ptr::read_volatile((DISK_REQ_VA + RING_HEAD as u64) as *const u32);
+            let tail = core::ptr::read_volatile((DISK_REQ_VA + RING_TAIL as u64) as *const u32);
+            let used = (head.wrapping_sub(tail)) % RING_DATA_CAP as u32;
+            if RING_DATA_CAP as u32 - used < (8 + 512 + 1) as u32 {
+                return false;
+            }
+            let dst = DISK_REQ_VA as *mut u8;
+            let len_b = (512u64).to_le_bytes();
+            for (i, byte) in len_b.iter().enumerate() {
+                core::ptr::write_volatile(dst.add(((head as usize) + i) % RING_DATA_CAP), *byte);
+            }
+            for (i, byte) in data.iter().enumerate() {
+                core::ptr::write_volatile(dst.add(((head as usize) + 8 + i) % RING_DATA_CAP), *byte);
+            }
+            let new_head = ((head as usize) + 8 + 512) % RING_DATA_CAP;
+            core::ptr::write_volatile((DISK_REQ_VA + RING_HEAD as u64) as *mut u32, new_head as u32);
+            true
+        }
+    }
+
+    /// Un tentativo di scrittura (Fase 20, nessun retry qui: lo fa il
+    /// chiamante). Reply senza frame: w0 = 0 ok, ERR fallito (canale intatto:
+    /// niente retry). Send fallita = driver morto: invalida.
+    fn try_write(&self, chan: u64, lba: u64, data: &[u8; 512]) -> bool {
+        if !unsafe { Self::req_write_sector(data) } {
+            return false;
+        }
+        match libr::send(chan, DISK_WRITE, self.handle as u64, lba) {
+            Ok(rep) => rep.w0 != ERR,
+            Err(_) => {
+                self.chan.set(None);
+                false
+            }
+        }
+    }
+
     /// Scrive un frame di resolve `[namelen:8][name]` nel DISK_REQ ring.
     /// Ritorna false se non c'e' spazio (disciplina sync + reset a ogni
     /// connessione: non dovrebbe mai accadere; il chiamante fallisce loud).
@@ -296,5 +337,25 @@ impl BlockSource for IpcDisk {
             None => return false,
         };
         self.try_read(chan, lba, buf)
+    }
+
+    /// Scrive un settore via DISK_WRITE (Fase 20): stessa disciplina del read
+    /// (un retry solo a canale caduto, mai su errore IO vero).
+    fn write_sector(&self, lba: u64, data: &[u8; 512]) -> bool {
+        let chan = match self.ensure() {
+            Some(c) => c,
+            None => return false,
+        };
+        if self.try_write(chan, lba, data) {
+            return true;
+        }
+        if self.chan.get().is_some() {
+            return false;
+        }
+        let chan = match self.ensure() {
+            Some(c) => c,
+            None => return false,
+        };
+        self.try_write(chan, lba, data)
     }
 }

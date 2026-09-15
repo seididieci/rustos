@@ -8,7 +8,7 @@ delega tutto al FS server.
 
 ```
 Processi userspace:
-  userfs    (PID 4) -- ramfs + FAT32 (read-only) + mount table
+  userfs    (PID 4) -- ramfs + FAT32 (scrivibile dalla Fase 20) + mount table
   userdevfs (PID 6) -- /dev/null, /dev/zero
   init      (PID 1) -- spawna userfs, devfs, console, shell
   shell     -- usa libr wrappers per accedere ai file
@@ -82,7 +82,7 @@ senza copie ne' race, ogni processo ha una coppia di **ring SPSC** dedicati.
          |           USER_FS_BUFFER + USER_RESP_RING |
          |  Mount table:                             |
          |    "/"   → ramfs                          |
-         |    "/fat" → FAT32 (read-only)             |
+         |    "/fat" → FAT32 (scrivibile, Fase 20)     |
          |    "/dev" → userdevfs (PID 6)             |
          |  ramfs: BTreeMap<String, Node>            |
          |  FAT32: BPB + cluster chain               |
@@ -112,7 +112,7 @@ intercalano corrompono i dati nella pagina condivisa.
 **Checkpoint originale:** ramfs funzionava via IPC (write + read
 verification).
 
-### 9.2 -- FAT32 read-only
+### 9.2 -- FAT32 read-only (poi scrivibile in Fase 20)
 
 Driver ATA PIO e parser FAT32 nel processo userspace userfs, abilitato
 alle porte 0x1F0-0x1F7 via **TSS per-processo** (ADR-0006).
@@ -200,7 +200,8 @@ usertests 17/17, shell 3/3.
 16c  Resolve nome→handle lato driver (DISK_RESOLVE, single source)   [x]
 16d  Identità stabile UUID/LABEL + listing + register multi-prefix     [x]
 17   Diritti per-canale lato server ([ADR-0014](../adr/0014-channel-rights-serverside.md): tabella chan→{ops,subtree}, DROP solo-shrink + GET, fd capability pure) [x]
-19.2 Metadati senza open (R_STAT 0x1B, risposta self-written `[size:8][kind:8]`: ramfs/FAT readonly/device, check RIGHTS_READDIR+subtree, `libr::stat`, t38) [x]
+19.2 Metadati senza open (R_STAT 0x1B, risposta self-written `[size:8][kind:8]`: ramfs size reale, FAT mai readonly dalla Fase 20, device size 0, check RIGHTS_READDIR+subtree, `libr::stat`, t38) [x]
+20   FAT32 scrivibile ([ADR-0016](../adr/0016-fat-writable.md): DISK_WRITE + write PIO + overwrite/grow/alloc/O_CREAT write-through, `testfat` 7/7, fsck pulito) [x]
 ```
 
 ## File coinvolti
