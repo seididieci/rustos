@@ -75,6 +75,12 @@ pub const SYS_SERVICE_PID: u64 = 36;
 /// 8-15 prio (0-31), 16-23 parent+1 (0=nessuno), 24-31 ipc (0=None, 1=OnRecv,
 /// 2=OnReply). Il chiamante marca "run" il proprio pid (da `getpid`).
 pub const SYS_PS_INFO: u64 = 37;
+/// Spawna un processo dal binario in memoria del chiamante (Fase 21, servizi
+/// da disco): `(img_ptr, img_len, meta_ptr, meta_len)`. Primitiva generale
+/// (come fork+exec): le porte I/O sono privilegio root (solo pid 1, gli altri
+/// con `io_count == 0`); prio 1..31 per tutti. `meta` e' uno SpawnMeta da 40 B
+/// (vedi sotto); ritorna il channel di nascita o -1.
+pub const SYS_SPAWN_IMAGE: u64 = 38;
 /// Bound di scansione per `ps` (Fase 19.1): i PID vivono in 0..PS_SCAN_MAX.
 /// Deve restare uguale al `MAX_PIDS` del kernel (32, Fase 14).
 pub const PS_SCAN_MAX: u32 = 32;

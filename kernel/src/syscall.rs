@@ -254,6 +254,10 @@ extern "C" fn syscall_handler() -> i64 {
             syscall_numbers::SYS_SERVICE_PID => sys_service_pid((*p).arg1),
             // Fase 19.1: snapshot `ps` di un processo.
             syscall_numbers::SYS_PS_INFO => sys_ps_info((*p).arg1 as usize),
+            // Fase 21: spawn dal binario in memoria (servizi da disco).
+            syscall_numbers::SYS_SPAWN_IMAGE => {
+                sys_spawn_image((*p).arg1, (*p).arg2 as usize, (*p).arg3, (*p).arg4 as usize)
+            }
             _ => -1,
         }
     }
@@ -401,6 +405,22 @@ fn service_name(s: syscall_numbers::Service) -> &'static str {
     }
 }
 
+/// Coda comune di spawn (ADR-0008): canale di nascita tra parent e figlio.
+/// Ritorna il channel id o -1 a pool esaurito (mai panic a boot).
+fn finish_spawn(parent: usize, pid: usize, log_name: &str) -> i64 {
+    match crate::channels::alloc(parent, pid) {
+        Some(chan) => {
+            crate::sched::set_parent_chan(pid, Some(chan));
+            crate::serial_println!("[spawn] '{}' → pid={} canale={}", log_name, pid, chan);
+            chan as i64
+        }
+        None => {
+            crate::serial_println!("[syscall] spawn: pool canali esaurito");
+            -1
+        }
+    }
+}
+
 /// spawn(name_ptr, name_len): crea un nuovo processo dal binario embedded
 /// chiamato `name`. Crea il canale di nascita tra il chiamante (parent) e il
 /// figlio (ADR-0008): il figlio lo eredita come canale 0, e il chiamante riceve
@@ -423,25 +443,91 @@ fn sys_spawn(name_ptr: u64, name_len: usize) -> i64 {
     };
     let parent = current_id() as usize;
     match crate::user_binary::spawn_named(name, Some(parent), None) {
-        Some(pid) => {
-            // Canale di nascita tra parent e figlio: il figlio lo usera' come
-            // canale 0 (parent), il parent come handle di ritorno di spawn.
-            // Mai panic qui (Fase 15): a pool esaurito ritorna -1 e init
-            // riporta il fallimento (un panic nel kernel inchioderebbe il boot).
-            match crate::channels::alloc(parent, pid) {
-                Some(chan) => {
-                    crate::sched::set_parent_chan(pid, Some(chan));
-                    crate::serial_println!("[spawn] '{}' → pid={} canale={}", name, pid, chan);
-                    chan as i64
-                }
-                None => {
-                    crate::serial_println!("[syscall] spawn: pool canali esaurito");
-                    -1
-                }
-            }
-        }
+        Some(pid) => finish_spawn(parent, pid, name),
         None => {
             crate::serial_println!("[syscall] spawn: binario sconosciuto '{}'", name);
+            -1
+        }
+    }
+}
+
+/// Layout di `SpawnMeta` (Fase 21, 40 B, `repr(C)` anche in libr): nome NUL-
+/// padded (non vuoto), priorita', porte I/O. Il kernel valida tutto (init e'
+/// trusted ma il formato deve essere fail-loud, mai UB).
+#[repr(C)]
+struct SpawnMeta {
+    name: [u8; 16],
+    prio: u8,
+    io_count: u8,
+    _pad: [u8; 6],
+    io_ranges: [(u16, u16); 4],
+}
+
+/// Immagine massima spawabile (64 frame = 256 KiB; i binari sono < 70 KiB):
+/// un singolo spawn non puo' svuotare il pool frame.
+const SPAWN_IMAGE_MAX: usize = 256 * 1024;
+
+/// spawn_image(img_ptr, img_len, meta_ptr, meta_len): come `spawn` ma il
+/// binario e' letto dalla memoria del chiamante (servizi da disco, Fase 21).
+/// E' la primitiva generale di creazione (come fork+exec): le PORTE I/O sono
+/// un privilegio root — solo pid 1 (init) puo' chiederle, gli altri devono
+/// avere `io_count == 0` (stesse capacita' dello spawn per-nome di oggi, dove
+/// chiunque poteva spawnare anche `utspin_high`: la prio resta 1..31 per tutti,
+/// mai 0/idle). Ritorna il channel di nascita o -1.
+fn sys_spawn_image(img_ptr: u64, img_len: usize, meta_ptr: u64, meta_len: usize) -> i64 {
+    if img_len == 0 || img_len > SPAWN_IMAGE_MAX {
+        return -1;
+    }
+    if meta_len != core::mem::size_of::<SpawnMeta>() {
+        return -1;
+    }
+    if !crate::vmm_user::is_user_range(img_ptr, img_len)
+        || !crate::vmm_user::is_user_range(meta_ptr, meta_len)
+    {
+        crate::serial_println!("[syscall] spawn_image: fuori dallo spazio user");
+        return -1;
+    }
+    // Copia meta sullo stack kernel (read_unaligned: il chiamante puo' non
+    // allinearla; validazione su copia stabile: niente TOCTOU).
+    let meta: SpawnMeta = unsafe { core::ptr::read_unaligned(meta_ptr as *const SpawnMeta) };
+    if meta.name[0] == 0 || meta.io_count as usize > meta.io_ranges.len() {
+        return -1;
+    }
+    if meta.name.iter().any(|&b| b != 0 && (b < 0x20 || b > 0x7e)) {
+        return -1; // nome stampabile (ps/log), niente control byte
+    }
+    // Porte I/O: solo init (pid 1). Gli altri processi girano senza porte
+    // (come tutti i binari embedded tranne disk/kbd/console): chiederle = -1.
+    let is_init = current_id() == 1;
+    if !is_init && meta.io_count != 0 {
+        return -1;
+    }
+    let prio = match meta.prio {
+        1..=31 => crate::sched::Priority(meta.prio),
+        _ => return -1, // mai 0 (idle) ne' oltre 31
+    };
+    for (s, e) in meta.io_ranges[..meta.io_count as usize].iter() {
+        if s > e {
+            return -1;
+        }
+    }
+    let parent = current_id() as usize;
+    let name_len = meta.name.iter().position(|&b| b == 0).unwrap_or(16);
+    match crate::user_binary::spawn_image(
+        &meta.name[..name_len],
+        prio,
+        img_ptr as *const u8,
+        img_len,
+        Some(parent),
+        None,
+        &meta.io_ranges[..meta.io_count as usize],
+    ) {
+        Some(pid) => {
+            let disp = core::str::from_utf8(&meta.name[..name_len]).unwrap_or("?");
+            finish_spawn(parent, pid, disp)
+        }
+        None => {
+            crate::serial_println!("[syscall] spawn_image: creazione fallita");
             -1
         }
     }
@@ -671,15 +757,11 @@ fn sys_ps_info(pid: usize) -> i64 {
         Some(s) => s,
         None => return -1,
     };
-    // Nome (max 16 B) in rdi+rsi, little-endian; oltre si tronca (oggi max 13).
-    let bytes = snap.name.as_bytes();
-    let mut buf = [0u8; 16];
-    let n = bytes.len().min(16);
-    buf[..n].copy_from_slice(&bytes[..n]);
+    // Nome (max 16 B) in rdi+rsi, little-endian (gia' zero-padded in PsSnap).
     let mut lo_b = [0u8; 8];
     let mut hi_b = [0u8; 8];
-    lo_b.copy_from_slice(&buf[0..8]);
-    hi_b.copy_from_slice(&buf[8..16]);
+    lo_b.copy_from_slice(&snap.name[0..8]);
+    hi_b.copy_from_slice(&snap.name[8..16]);
     let lo = u64::from_le_bytes(lo_b);
     let hi = u64::from_le_bytes(hi_b);
     let state = match snap.state {

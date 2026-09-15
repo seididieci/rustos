@@ -306,6 +306,59 @@ pub fn spawn(name: &[u8]) -> Result<i64, ()> {
     Ok(pid)
 }
 
+/// Metadati di `spawn_image` (Fase 21, servizi da disco): layout `repr(C)` da
+/// 40 B, identico allo `SpawnMeta` kernel (validato per size). Nome NUL-padded
+/// (non vuoto, stampabile); `prio` 1..31; fino a 4 range I/O (start <= end).
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct SpawnMeta {
+    pub name: [u8; 16],
+    pub prio: u8,
+    pub io_count: u8,
+    pub _pad: [u8; 6],
+    pub io_ranges: [(u16, u16); 4],
+}
+
+impl SpawnMeta {
+    /// Costruisce i metadati da nome/priorita'/porte (tronca il nome a 16,
+    /// NUL-padded; piu' di 4 range → i primi 4? No: troppi → None, fail-loud).
+    pub fn new(name: &str, prio: u8, io: &[(u16, u16)]) -> Option<Self> {
+        if name.is_empty() || io.len() > 4 {
+            return None;
+        }
+        let mut m = SpawnMeta {
+            name: [0u8; 16],
+            prio,
+            io_count: io.len() as u8,
+            _pad: [0u8; 6],
+            io_ranges: [(0, 0); 4],
+        };
+        let bytes = name.as_bytes();
+        let n = bytes.len().min(16);
+        m.name[..n].copy_from_slice(&bytes[..n]);
+        m.io_ranges[..io.len()].copy_from_slice(io);
+        Some(m)
+    }
+}
+
+/// `spawn_image(img, meta)`: come `spawn` ma il binario e' letto dalla memoria
+/// del chiamante (Fase 21, servizi da disco e helper di test). Primitiva
+/// generale: le porte I/O restano privilegio di init (pid 1, gli altri con
+/// `io_count == 0` o rifiuto). Ritorna il channel di nascita o `Err`.
+#[inline]
+pub fn spawn_image(img: &[u8], meta: &SpawnMeta) -> Result<i64, ()> {
+    let c = unsafe {
+        syscall4(
+            SYS_SPAWN_IMAGE,
+            img.as_ptr() as u64,
+            img.len() as u64,
+            (meta as *const SpawnMeta) as u64,
+            core::mem::size_of::<SpawnMeta>() as u64,
+        )
+    };
+    if c < 0 { Err(()) } else { Ok(c) }
+}
+
 /// `service_register(service)`: occupa lo slot del servizio (ADR-0008). Il
 /// chiamante diventa l'owner raggiungibile per nome. `Err` se gia' occupato.
 #[inline]

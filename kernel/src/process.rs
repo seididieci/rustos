@@ -122,6 +122,12 @@ pub const MAX_NOTIFY_PEERS: usize = 31;
 
 pub struct Process {
     pub name: &'static str,
+    /// Nome owned per i processi da `spawn_image` (Fase 21, servizi da disco:
+    /// il nome arriva dal chiamante, non dalla tabella statica). `name_len=0`
+    /// = usa `name`; altrimenti i primi `name_len` byte di `name_owned`
+    /// (NUL-trimmed, max 16). Lo slot PCB e' riusato ai reclaim: niente leak.
+    pub name_owned: [u8; 16],
+    pub name_len: u8,
     /// Priorita' BASE del processo (0 = massima, 31 = minima). Immutabile.
     pub priority: crate::sched::Priority,
     pub state: State,
@@ -194,6 +200,30 @@ pub struct Process {
 }
 
 impl Process {
+    /// Nome display: l'owned di `spawn_image` se presente, altrimenti lo
+    /// static della tabella embedded. Sempre UTF-8 valido (validato in input).
+    pub fn name_str(&self) -> &str {
+        if self.name_len > 0 {
+            let n = (self.name_len as usize).min(16);
+            core::str::from_utf8(&self.name_owned[..n]).unwrap_or("?")
+        } else {
+            self.name
+        }
+    }
+
+    /// Imposta il nome owned (Fase 21): copia NUL-trimmed, max 16 B.
+    pub fn set_owned_name(&mut self, raw: &[u8]) {
+        let mut n = raw.len().min(16);
+        while n > 0 && raw[n - 1] == 0 {
+            n -= 1;
+        }
+        self.name_owned[..n].copy_from_slice(&raw[..n]);
+        for b in self.name_owned[n..].iter_mut() {
+            *b = 0;
+        }
+        self.name_len = n as u8;
+    }
+
     /// Crea un processo **kernel**. `parent` = pid del creatore (albero
     /// processi, radicato in init), `parent_chan` = canale di nascita verso il
     /// creatore (`None` per init/idle/... creati dal kernel).
@@ -203,7 +233,7 @@ impl Process {
         entry: ProcessFn,
         parent: Option<usize>,
         parent_chan: Option<usize>,
-        io_ranges: &'static [(u16, u16)],
+        io_ranges: &[(u16, u16)],
     ) -> Option<Process> {
         let stack_base = crate::phys_mem::alloc_contiguous(STACK_FRAMES)?;
         let stack_top = stack_base + (STACK_FRAMES as u64 * crate::phys_mem::FRAME_SIZE);
@@ -217,6 +247,8 @@ impl Process {
 
         Some(Process {
             name,
+            name_owned: [0u8; 16],
+            name_len: 0,
             priority,
             state: State::Ready,
             parent,
@@ -262,7 +294,7 @@ impl Process {
         entry: u64,
         parent: Option<usize>,
         parent_chan: Option<usize>,
-        io_ranges: &'static [(u16, u16)],
+        io_ranges: &[(u16, u16)],
     ) -> Option<Process> {
         // Kernel stack: RSP0 (per rientrare a ring 0 su interrupt) + frame.
         let stack_base = crate::phys_mem::alloc_contiguous(STACK_FRAMES)?;
@@ -285,6 +317,8 @@ impl Process {
 
         Some(Process {
             name,
+            name_owned: [0u8; 16],
+            name_len: 0,
             priority,
             state: State::Ready,
             parent,
@@ -314,7 +348,7 @@ impl Process {
     /// Alloca uno slot TSS dal pool, lo configura (RSP0 + IST + bitmap I/O) e
     /// ritorna lo SLOT del pool (1-based). Il selettore GDT e' derivabile con
     /// `gdt::selectors().tss_selector(slot)`.
-    fn alloc_tss(stack_top: u64, io_ranges: &'static [(u16, u16)]) -> Option<usize> {
+    fn alloc_tss(stack_top: u64, io_ranges: &[(u16, u16)]) -> Option<usize> {
         let slot = crate::gdt::alloc_tss_slot()?;
         crate::gdt::configure_tss(slot, x86_64::VirtAddr::new(stack_top), io_ranges);
         Some(slot)

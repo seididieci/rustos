@@ -33,7 +33,8 @@ pub extern "C" fn _start() -> ! {
     println!("[testfat] starting, pid={}", pid);
     let mut all_ok = true;
 
-    // Test 1: readdir "/fat" — attese HELLO.TXT, README.TXT, SUB
+    // Test 1: readdir "/fat" — attese HELLO.TXT, README.TXT, SUB + BIN, TEST
+    // (Fase 21: servizi da disco iniettati a build via mcopy).
     println!("[testfat] Test 1: readdir /fat");
     let mut entries = [0u8; 2048];
     let count = libr::readdir("/fat", &mut entries, 2048);
@@ -66,9 +67,11 @@ pub extern "C" fn _start() -> ! {
         let has_hello = names[..n_names].contains(&"HELLO.TXT");
         let has_readme = names[..n_names].contains(&"README.TXT");
         let has_sub = names[..n_names].contains(&"SUB");
-        let ok = count == 3 && has_hello && has_readme && has_sub;
+        let has_bin = names[..n_names].contains(&"BIN");
+        let has_test = names[..n_names].contains(&"TEST");
+        let ok = count == 5 && has_hello && has_readme && has_sub && has_bin && has_test;
         println!("[testfat] entries: {:?}", &names[..n_names]);
-        all_ok &= expect("readdir /fat (3 entry)", &[ok as u8], &[1]);
+        all_ok &= expect("readdir /fat (5 entry)", &[ok as u8], &[1]);
     } else {
         all_ok = false;
         println!("[testfat] readdir /fat: FAIL (count={})", count);

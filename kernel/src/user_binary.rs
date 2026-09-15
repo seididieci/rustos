@@ -35,43 +35,17 @@ macro_rules! user_binary {
 
 // Ogni macro viene espansa DENTRO il suo modulo: le costanti `BIN`/`BIN_BYTES`
 // restano private al modulo e non collidono tra i binari.
-mod demo_bin { user_binary!(userdemo_phys, userdemo_frames, "/../testland/build/userdemo.bin"); }
+//
+// Fase 21 (servizi da disco): il kernel embedda SOLO lo storage-TCB
+// (init/disk/fs, caricati prima che il FS esista); tutto il resto vive in
+// `/bin` e `/test` su /fat e parte via `spawn_image` (syscall 38).
 mod init_bin { user_binary!(userinit_phys, userinit_frames, "/../userland/build/userinit.bin"); }
-mod console_bin { user_binary!(userconsole_phys, userconsole_frames, "/../userland/build/userconsole.bin"); }
-mod uptime_bin { user_binary!(useruptime_phys, useruptime_frames, "/../userland/build/useruptime.bin"); }
 mod fs_bin { user_binary!(userfs_phys, userfs_frames, "/../userland/build/userfs.bin"); }
-mod testfs_bin { user_binary!(usertestfs_phys, usertestfs_frames, "/../testland/build/usertestfs.bin"); }
-mod testfat_bin { user_binary!(usertestfat_phys, usertestfat_frames, "/../testland/build/usertestfat.bin"); }
-mod devfs_bin { user_binary!(userdevfs_phys, userdevfs_frames, "/../userland/build/userdevfs.bin"); }
 mod disk_bin { user_binary!(userdisk_phys, userdisk_frames, "/../userland/build/userdisk.bin"); }
-mod kbd_bin { user_binary!(userkbd_phys, userkbd_frames, "/../userland/build/userkbd.bin"); }
-mod tty_bin { user_binary!(usertty_phys, usertty_frames, "/../userland/build/usertty.bin"); }
-mod shell_bin { user_binary!(usershell_phys, usershell_frames, "/../userland/build/usershell.bin"); }
-mod hogheap_bin { user_binary!(userhogheap_phys, userhogheap_frames, "/../testland/build/userhogheap.bin"); }
-mod devreader_bin { user_binary!(userdevreader_phys, userdevreader_frames, "/../testland/build/userdevreader.bin"); }
-mod usertests_bin { user_binary!(usertests_phys, usertests_frames, "/../testland/build/usertests.bin"); }
-mod usertestcli_bin { user_binary!(usertestcli_phys, usertestcli_frames, "/../testland/build/usertestcli.bin"); }
-mod usertestspin_bin { user_binary!(usertestspin_phys, usertestspin_frames, "/../testland/build/usertestspin.bin"); }
-mod utcbstest_bin { user_binary!(utcbstest_phys, utcbstest_frames, "/../testland/build/utcbstest.bin"); }
 
-use demo_bin::{userdemo_frames, userdemo_phys};
 use init_bin::{userinit_frames, userinit_phys};
-use console_bin::{userconsole_frames, userconsole_phys};
-use uptime_bin::{useruptime_frames, useruptime_phys};
 use fs_bin::{userfs_frames, userfs_phys};
-use testfs_bin::{usertestfs_frames, usertestfs_phys};
-use testfat_bin::{usertestfat_frames, usertestfat_phys};
-use devfs_bin::{userdevfs_frames, userdevfs_phys};
 use disk_bin::{userdisk_frames, userdisk_phys};
-use kbd_bin::{userkbd_frames, userkbd_phys};
-use tty_bin::{usertty_frames, usertty_phys};
-use shell_bin::{usershell_frames, usershell_phys};
-use hogheap_bin::{userhogheap_frames, userhogheap_phys};
-use devreader_bin::{userdevreader_frames, userdevreader_phys};
-use usertests_bin::{usertests_frames, usertests_phys};
-use usertestcli_bin::{usertestcli_frames, usertestcli_phys};
-use usertestspin_bin::{usertestspin_frames, usertestspin_phys};
-use utcbstest_bin::{utcbstest_frames, utcbstest_phys};
 
 /// RIP iniziale del codice user: mappato a `USER_CODE`.
 pub fn entry() -> u64 {
@@ -92,7 +66,7 @@ fn spawn_user(
     code_frames: usize,
     parent: Option<usize>,
     parent_chan: Option<usize>,
-    io_ranges: &'static [(u16, u16)],
+    io_ranges: &[(u16, u16)],
 ) -> Option<usize> {
     // Il binario embedded viene COPIATO in frame privati per ogni processo:
     // mappare gli stessi frame fisici a piu' processi condividerebbe .bss/.data
@@ -127,6 +101,42 @@ fn copy_binary(code_phys: u64, frames: usize) -> Option<u64> {
         }
     }
     Some(dst)
+}
+
+/// Spawna un processo user dal binario in memoria del CHIAMANTE (Fase 21,
+/// servizi da disco: `spawn_image`). `src/len` e' il raw flat PIC (stesso
+/// formato dei `.bin`: entry a `USER_CODE`); la copia va in frame privati
+/// con coda azzerata (igiene .bss), come `copy_binary`. Corre col CR3 del
+/// chiamante: la sorgente user e' leggibile direttamente. Il nome display
+/// arriva dal chiamante (`owned`, validato): transitorio "image" visibile al
+/// massimo per un tick prima di `set_owned_name` (solo display, mai ABI).
+pub fn spawn_image(
+    owned: &[u8],
+    priority: crate::sched::Priority,
+    src: *const u8,
+    len: usize,
+    parent: Option<usize>,
+    parent_chan: Option<usize>,
+    io_ranges: &[(u16, u16)],
+) -> Option<usize> {
+    let frame = crate::phys_mem::FRAME_SIZE as usize;
+    let frames = len.div_ceil(frame);
+    let dst = crate::phys_mem::alloc_contiguous(frames)?;
+    for i in 0..len {
+        unsafe {
+            *(dst as *mut u8).add(i) = *src.add(i);
+        }
+    }
+    for i in len..frames * frame {
+        unsafe {
+            *(dst as *mut u8).add(i) = 0;
+        }
+    }
+    let id = unsafe {
+        crate::sched::create_user("image", priority, dst, frames, entry(), parent, parent_chan, io_ranges)
+    }?;
+    crate::sched::set_owned_name(id, owned);
+    Some(id)
 }
 
 /// Spawna init, il primo processo user (PID 1). Chiamato dal kernel a boot,
@@ -167,31 +177,12 @@ const KBD_PS2_RANGES: &[(u16, u16)] = &[(0x60, 0x64)];
 
 use crate::sched::Priority;
 
-/// I binari embedded spawabili per nome dalla syscall `spawn`. L'ordine non e'
-/// rilevante: la ricerca e' lineare (pochi elementi). I processi "di servizio"
-/// (console/fs/devfs/shell) sono `Normal`; quelli puramente informativi o demo
-/// (`useruptime`) sono `Low`, cosi' girano solo quando non c'e' lavoro Normal.
+/// I binari embedded spawabili per nome dalla syscall `spawn`. Fase 21: SOLO
+/// lo storage-TCB (init/disk/fs) — il resto parte da disco via `spawn_image`.
+/// I processi di servizio (fs) sono `Normal`.
 const NAMED_BINARIES: &[NamedBinary] = &[
-    NamedBinary { name: "userconsole", phys: userconsole_phys, frames: userconsole_frames, io_ranges: VGA_CURSOR_RANGES, priority: Priority::Normal },
-    NamedBinary { name: "userdemo",    phys: userdemo_phys,    frames: userdemo_frames,    io_ranges: &[], priority: Priority::Low },
-    NamedBinary { name: "useruptime",  phys: useruptime_phys,  frames: useruptime_frames,  io_ranges: &[], priority: Priority::Low },
     NamedBinary { name: "userfs",      phys: userfs_phys,      frames: userfs_frames,      io_ranges: &[], priority: Priority::Normal },
-    NamedBinary { name: "usertestfs",  phys: usertestfs_phys,  frames: usertestfs_frames,  io_ranges: &[], priority: Priority::Normal },
-    NamedBinary { name: "usertestfat", phys: usertestfat_phys, frames: usertestfat_frames, io_ranges: &[], priority: Priority::Normal },
-    NamedBinary { name: "userdevfs",   phys: userdevfs_phys,   frames: userdevfs_frames,   io_ranges: &[], priority: Priority::Normal },
     NamedBinary { name: "userdisk",    phys: userdisk_phys,    frames: userdisk_frames,    io_ranges: ATA_PIO_RANGES, priority: Priority::Normal },
-    NamedBinary { name: "userkbd",     phys: userkbd_phys,     frames: userkbd_frames,     io_ranges: KBD_PS2_RANGES, priority: Priority::Normal },
-    NamedBinary { name: "usertty",     phys: usertty_phys,     frames: usertty_frames,     io_ranges: &[], priority: Priority::Normal },
-    NamedBinary { name: "usershell",   phys: usershell_phys,   frames: usershell_frames,   io_ranges: &[], priority: Priority::Normal },
-    NamedBinary { name: "userhogheap", phys: userhogheap_phys, frames: userhogheap_frames, io_ranges: &[], priority: Priority::Normal },
-    NamedBinary { name: "userdevreader", phys: userdevreader_phys, frames: userdevreader_frames, io_ranges: &[], priority: Priority::Normal },
-    NamedBinary { name: "usertestcli",   phys: usertestcli_phys,   frames: usertestcli_frames,   io_ranges: &[], priority: Priority::Normal },
-    NamedBinary { name: "usertests",     phys: usertests_phys,     frames: usertests_frames,     io_ranges: &[], priority: Priority::Normal },
-    // Stesso binario spin esposto a piu' priorita': la suite spawna per nome.
-    NamedBinary { name: "usertestspin",  phys: usertestspin_phys,  frames: usertestspin_frames,  io_ranges: &[], priority: Priority::Low },
-    NamedBinary { name: "utspin_norm",   phys: usertestspin_phys,  frames: usertestspin_frames,  io_ranges: &[], priority: Priority::Normal },
-    NamedBinary { name: "utspin_high",   phys: usertestspin_phys,  frames: usertestspin_frames,  io_ranges: &[], priority: Priority::High },
-    NamedBinary { name: "utcbstest",     phys: utcbstest_phys,     frames: utcbstest_frames,     io_ranges: &[], priority: Priority::Normal },
     NamedBinary { name: "userinit",    phys: userinit_phys,    frames: userinit_frames,    io_ranges: &[], priority: Priority::Normal },
 ];
 

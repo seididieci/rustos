@@ -68,12 +68,46 @@ fn spin_ticks(n: i64) {
     }
 }
 
-/// Spawna un helper e gli invia la CFG (modo=w0,param=w1) sul canale di nascita
-/// (ADR-0008). Ritorna (canale verso il figlio, ack.w0).
-fn spawn_cfg(name: &[u8], mode: u64, param: u64) -> Option<(u64, u64)> {
-    let chan = libr::spawn(name).ok()? as u64;
+/// Spawna un helper da disco (Fase 21: `/test/*.bin` iniettati a build) e gli
+/// invia la CFG (modo=w0,param=w1) sul canale di nascita (ADR-0008). Ritorna
+/// (canale verso il figlio, ack.w0). Qualunque processo puo' spawnare senza
+/// porte (primitiva generale); le porte restano privilegio di init.
+fn spawn_cfg(path: &str, name: &str, prio: u8, mode: u64, param: u64) -> Option<(u64, u64)> {
+    let img = load_bin(path)?;
+    let meta = libr::SpawnMeta::new(name, prio, &[])?;
+    let chan = libr::spawn_image(&img, &meta).ok()? as u64;
     let ack = libr::send(chan, T_CFG, mode, param).ok()?;
     Some((chan, ack.w0))
+}
+
+/// Legge un file intero in heap (bound 256 KiB). None su errore.
+fn load_bin(path: &str) -> Option<Vec<u8>> {
+    // DEBUG temporaneo (lentezza t24): dove va il tempo del load.
+    let t0 = libr::get_ticks();
+    let fd = libr::open(path, 0);
+    if fd < 0 {
+        return None;
+    }
+    let mut data = Vec::new();
+    let mut chunk = [0u8; 2048];
+    loop {
+        if data.len() >= 256 * 1024 {
+            let _ = libr::close(fd);
+            return None;
+        }
+        let n = libr::read_fs(fd, &mut chunk, 2048);
+        if n <= 0 {
+            break;
+        }
+        data.extend_from_slice(&chunk[..n as usize]);
+    }
+    let _ = libr::close(fd);
+    if data.is_empty() {
+        return None;
+    }
+    // DEBUG temporaneo.
+    println!("[usertests] DBG load {}B in {}t", data.len(), libr::get_ticks() - t0);
+    Some(data)
 }
 
 /// Legge `want` entry di una dir e dice se contiene `needle`.
@@ -169,7 +203,7 @@ fn t_spawn_identity() -> bool {
     // con ACK portando il proprio pid. Il parent non conosce il pid (identita'
     // interna al kernel): verifica che il canale sia valido e che il figlio
     // abbia risposto (ack > 0) e completato (DONE).
-    match spawn_cfg(b"usertestcli", M_ECHO, 0) {
+    match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, M_ECHO, 0) {
         Some((chan, ack_pid)) => {
             // rounds=0 → nessun REQ, solo DONE. Risponde/scarta eventuali
             // residui finche' non arriva il DONE del figlio.
@@ -391,7 +425,7 @@ fn wait_exit(chan: u64) -> Option<(i64, i64)> {
 
 fn t_ipc_echo() -> bool {
     drain_stray();
-    let (chan, _) = match spawn_cfg(b"usertestcli", M_ECHO, 8) {
+    let (chan, _) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, M_ECHO, 8) {
         Some(x) => x,
         None => return false,
     };
@@ -424,7 +458,7 @@ fn t_ipc_multiclient() -> bool {
     let rounds = 50usize;
     let mut chans = Vec::new();
     for _ in 0..n_clients {
-        match spawn_cfg(b"usertestcli", M_ECHO, rounds as u64) {
+        match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, M_ECHO, rounds as u64) {
             Some((c, _)) => chans.push(c),
             None => return false,
         }
@@ -465,7 +499,7 @@ fn t_devfs_concurrent_churn() -> bool {
     // Buffer FS per-processo (Fase 9.6): ogni client ha la propria pagina, non
     // serve serializzare le OPEN. L'handshake T_OPENED resta come barriera.
     for _ in 0..3 {
-        match spawn_cfg(b"usertestcli", M_ZERO, 30) {
+        match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, M_ZERO, 30) {
             Some((c, _)) => {
                 // Il client apre /dev/zero e notifica; reply per sbloccarlo.
                 // `recv_expect` ignora gli estranei (es. EXIT_NOTIFY di helper
@@ -510,7 +544,7 @@ fn t_sched_preempt() -> bool {
     let ctr = SPIN_VA as *mut u64;
     unsafe { core::ptr::write_volatile(ctr, 0) };
 
-    let (chan, _) = match spawn_cfg(b"utspin_norm", 25, 1) {
+    let (chan, _) = match spawn_cfg("/fat/test/testspin.bin", "utspin", 16, 25, 1) {
         Some(x) => x,
         None => return false,
     };
@@ -530,11 +564,11 @@ fn t_sched_priority() -> bool {
     // High). Niente Low qui: i server Normal idle (fs/shell) girano in recv-loop
     // sempre-Ready e affamerebbero una fascia Low.
     drain_stray();
-    let (high, _) = match spawn_cfg(b"utspin_high", 20, 0) {
+    let (high, _) = match spawn_cfg("/fat/test/testspin.bin", "utspin", 31, 20, 0) {
         Some(x) => x,
         None => return false,
     };
-    let (norm, _) = match spawn_cfg(b"utspin_norm", 8, 0) {
+    let (norm, _) = match spawn_cfg("/fat/test/testspin.bin", "utspin", 16, 8, 0) {
         Some(x) => x,
         None => return false,
     };
@@ -595,7 +629,7 @@ fn t_cbs_bandwidth() -> bool {
 
     // Audio: utcbstest crea server Q=3 P=10 e si attacha; busy-loop di 200
     // tick wall-clock contando i tick osservati (~60 attesi a 30%).
-    let (audio_chan, _) = match spawn_cfg(b"utcbstest", 3, 10) {
+    let (audio_chan, _) = match spawn_cfg("/fat/test/cbstest.bin", "utcbs", 16, 3, 10) {
         Some(x) => x,
         None => {
             println!("[usertests] t_cbs_bandwidth: spawn utcbstest FAILED");
@@ -605,7 +639,7 @@ fn t_cbs_bandwidth() -> bool {
 
     // Hog: utspin_norm senza CBS, budget 300 tick wall-clock: resta attivo
     // per l'intera finestra dell'audio (200) e contende la CPU.
-    let (hog_chan, _) = match spawn_cfg(b"utspin_norm", 300, 0) {
+    let (hog_chan, _) = match spawn_cfg("/fat/test/testspin.bin", "utspin", 16, 300, 0) {
         Some(x) => x,
         None => {
             println!("[usertests] t_cbs_bandwidth: spawn hog FAILED");
@@ -693,7 +727,7 @@ fn t_ipc_async() -> bool {
     // Helper server echo (modalita' 3): risponde a ogni T_REQ con 2*w0.
     // (srv_pid serve a distinguere la morte DEL server dalle EXIT_NOTIFY
     // tardive di helper precedenti: il parent le riceve tutte.)
-    let (chan, srv_pid) = match spawn_cfg(b"usertestcli", 3, 0) {
+    let (chan, srv_pid) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, 3, 0) {
         Some(x) => x,
         None => {
             println!("[usertests] t_ipc_async: spawn MODE_SRV FAILED");
@@ -843,7 +877,7 @@ fn t_lifecycle_churn() -> bool {
     let mut pids = Vec::new();
     for i in 0..N {
         // Spawn + CFG (modo CHURN): l'ACK porta il pid del figlio.
-        let (chan, pid) = match spawn_cfg(b"usertestcli", M_CHURN, KIB) {
+        let (chan, pid) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, M_CHURN, KIB) {
             Some(x) => x,
             None => {
                 println!("[usertests] t22: spawn #{} FAILED (pool esaurito?)", i);
@@ -884,7 +918,7 @@ fn t_lifecycle_churn() -> bool {
 /// esaurito (spawn + exit di un altro helper riescono ancora).
 fn t_kill() -> bool {
     drain_stray();
-    let (chan, pid) = match spawn_cfg(b"usertestcli", M_KILLME, 0) {
+    let (chan, pid) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, M_KILLME, 0) {
         Some(x) => x,
         None => return false,
     };
@@ -904,7 +938,7 @@ fn t_kill() -> bool {
         }
     }
     // Dopo la kill il pool deve accettare ancora spawn/exit (riuso sicuro).
-    let (chan2, _pid2) = match spawn_cfg(b"usertestcli", M_CHURN, 256) {
+    let (chan2, _pid2) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, M_CHURN, 256) {
         Some(x) => x,
         None => {
             println!("[usertests] t23: spawn post-kill FAILED");
@@ -932,14 +966,14 @@ fn t_kill() -> bool {
 /// niente `wait_exit` per lui qui (il path parent e' gia' coperto da t23).
 fn t_server_death_notify() -> bool {
     drain_stray();
-    let (s_chan, s_pid) = match spawn_cfg(b"usertestcli", M_SRVDIE, 0) {
+    let (s_chan, s_pid) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, M_SRVDIE, 0) {
         Some(x) => x,
         None => {
             println!("[usertests] t24: spawn SRVDIE FAILED");
             return false;
         }
     };
-    let (h_chan, _h_pid) = match spawn_cfg(b"usertestcli", M_SYNCWAIT, 0) {
+    let (h_chan, _h_pid) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, M_SYNCWAIT, 0) {
         Some(x) => x,
         None => {
             println!("[usertests] t24: spawn SYNCWAIT FAILED");
@@ -1010,7 +1044,7 @@ fn t_server_death_notify() -> bool {
         return false;
     }
     // Pool sano: spawn/exit post-mortem.
-    let (chan2, _) = match spawn_cfg(b"usertestcli", M_CHURN, 64) {
+    let (chan2, _) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, M_CHURN, 64) {
         Some(x) => x,
         None => {
             println!("[usertests] t24: spawn post-kill FAILED");
@@ -1031,7 +1065,7 @@ fn t_server_death_notify() -> bool {
 /// Con purge: serve il nuovo driver. Deterministico, nessun timing.
 fn t_driver_death_mount() -> bool {
     drain_stray();
-    let (d1_chan, d1_pid) = match spawn_cfg(b"usertestcli", M_MNTDIE, 0) {
+    let (d1_chan, d1_pid) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, M_MNTDIE, 0) {
         Some(x) => x,
         None => {
             println!("[usertests] t25: spawn MNTDIE#1 FAILED");
@@ -1060,7 +1094,7 @@ fn t_driver_death_mount() -> bool {
         }
     }
     // Re-registrazione stesso prefix: deve servire il NUOVO driver.
-    let (d2_chan, d2_pid) = match spawn_cfg(b"usertestcli", M_MNTDIE, 0) {
+    let (d2_chan, d2_pid) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, M_MNTDIE, 0) {
         Some(x) => x,
         None => {
             println!("[usertests] t25: spawn MNTDIE#2 FAILED");
@@ -1111,7 +1145,7 @@ fn t_client_death_purge() -> bool {
     drain_stray();
     const N: usize = 10;
     for i in 0..N {
-        let (chan, pid) = match spawn_cfg(b"usertestcli", M_OPENDIE, 0) {
+        let (chan, pid) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, M_OPENDIE, 0) {
             Some(x) => x,
             None => {
                 println!("[usertests] t26: spawn OPENDIE#{} FAILED", i);
@@ -1462,7 +1496,7 @@ fn t_mapflap() -> bool {
         }
     }
     // Fase B: con helper concorrente (stessa VA, pagine diverse).
-    let (h_chan, _) = match spawn_cfg(b"usertestcli", M_MAPHAMMER, N as u64) {
+    let (h_chan, _) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, M_MAPHAMMER, N as u64) {
         Some(x) => x,
         None => {
             println!("[usertests] t29: spawn MAPHAMMER FAILED");
@@ -1532,7 +1566,7 @@ fn t_neighbor() -> bool {
     }
     let _ = libr::close(fb);
     // Helper "cattivo vicino" (nessun T_DONE atteso prima di T_STOP).
-    let (fchan, _) = match spawn_cfg(b"usertestcli", M_FLOOD, 0) {
+    let (fchan, _) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, M_FLOOD, 0) {
         Some(x) => x,
         None => {
             println!("[usertests] t30: spawn flooder FAILED");
@@ -2116,6 +2150,44 @@ fn t_stat() -> bool {
     true
 }
 
+/// t39 — servizi da disco (Fase 21): i binari in `/bin` e `/test` (iniettati
+/// a build via mcopy) esistono e sono non vuoti, e tutti i servizi sono up
+/// per nome (= il boot da disco ha funzionato: console/kbd/tty/shell non
+/// sono piu' embedded ma girano).
+fn t_diskboot() -> bool {
+    let mut st = libr::Stat { size: 0, kind: 0, readonly: false };
+    for path in [
+        "/fat/bin/console.bin",
+        "/fat/bin/uptime.bin",
+        "/fat/bin/devfs.bin",
+        "/fat/bin/kbd.bin",
+        "/fat/bin/tty.bin",
+        "/fat/bin/shell.bin",
+        "/fat/test/testfs.bin",
+        "/fat/test/testfat.bin",
+        "/fat/test/tests.bin",
+    ] {
+        if libr::stat(path, &mut st) != 0 || !st.is_file() || st.size == 0 {
+            println!("[usertests] t39: {} mancante/vuoto", path);
+            return false;
+        }
+    }
+    for svc in [
+        libr::Service::Console,
+        libr::Service::Fs,
+        libr::Service::Devfs,
+        libr::Service::Kbd,
+        libr::Service::Tty,
+        libr::Service::Disk,
+    ] {
+        if libr::service_lookup(svc).is_err() {
+            println!("[usertests] t39: servizio {:?} non registrato", svc as u64);
+            return false;
+        }
+    }
+    true
+}
+
 /// Fixture disco secondario (Fase 16d, accoppiate a run.sh: fat2.img
 /// generata con `--serial C0FFEE01 --label SECOND --marker ...`).
 const DISK2_UUID: &str = "C0FFEE01";
@@ -2348,6 +2420,7 @@ pub extern "C" fn _start() -> ! {
     report(&mut total, &mut ok, "t36 UUID/LABEL + discovery stabile", t_stable_id());
     report(&mut total, &mut ok, "t37 ps_info snapshot processi", t_ps());
     report(&mut total, &mut ok, "t38 stat metadati senza open", t_stat());
+    report(&mut total, &mut ok, "t39 servizi da disco (/bin+/test)", t_diskboot());
     // t34 per ULTIMO: i drop sono irrevocabili sul canale di usertests.
     report(&mut total, &mut ok, "t34 diritti per-canale lato server", t_rights());
 

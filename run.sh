@@ -28,6 +28,10 @@ fi
 python3 scripts/mkfat.py userland/fs/fat.img
 python3 scripts/mkfat.py userland/fs/fat2.img --serial C0FFEE01 --label SECOND --marker "second disk marker"
 
+# Servizi da disco (Fase 21): /bin + /test iniettati via script condiviso
+# (stesso usato da test-shell.py) DOPO mkfat. Fail-loud.
+bash scripts/inject-bins.sh
+
 KERNEL=target/x86_64-unknown-none/release/rustos-kernel
 DISPLAY="${RUN_DISPLAY:-none}"   # RUN_DISPLAY=gtk per vedere la VGA in locale
 
