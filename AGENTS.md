@@ -759,12 +759,13 @@ velordor/
         niente GRANT (canali non trasferibili).
   - Verifica: testfs 5/5, testfat 6/6, usertests 36/36, shell 3/3,
         zero FAIL/PANIC/FAULT.
-- [ ] Fase 18: Shell + utility utente (era 17, slittata per la nuova 17).
+- [x] Fase 18: Shell + utility utente (era 17, slittata per la nuova 17).
       Decisioni di scoping (prese in pianificazione): builtin nella shell
       (ibrido: split in binari separati solo DOPO l'avvio servizi da disco —
       ogni `.bin` embedded ingrossa il kernel, lezione Fase 17); `rm` con
       nuova op `R_DELETE` (ramfs si, `/fat` rifiutato read-only); cwd lato
-      shell si, `ps` no (richiederebbe nuova syscall kernel: rimandato).
+      shell si; `ps` (qui marcato "rimandato": richiedeva syscall kernel) e'
+      stato poi fatto in Fase 19.1; stretch `ls -l` minimale in Fase 19.2.
   - [x] 18.0 Bugfix backspace mangia-prompt: `usertty::emit` (unico punto che
         genera sia il byte cotto 0x08 in input sia l'eco su console) conta i
         byte digitati sulla riga (`line_len`, reset a `\n` e in
@@ -843,15 +844,16 @@ velordor/
         `ps` (`PID NAME PRIO STATE TIME PARENT`, `run` = se stesso) + t37
         (idle/init presenti parent-None, self Ready, count>=8, TIME init>0 e
         TIME proprio crescente dopo spin puro). Verifica: gate 38/38 +
-        `test-shell.py` 26/26, zero FAIL/PANIC/FAULT.
+        `test-shell.py` 29/29, zero FAIL/PANIC/FAULT.
   - [x] 19.2 `stat` lato userfs (zero kernel): frame `R_STAT` (0x1B) con risposta
         self-written `[size:8][kind:8]` (kind=file/dir/device + flag readonly;
         ramfs=len reale, FAT=size da dir entry sempre readonly, device=size 0
         readonly 0 senza interrogare il driver) + `libr::stat`/`Stat` +
         check ops+subtree nel choke point Fase 17 (bit `RIGHTS_READDIR`) +
-        t38 (ramfs/FAT/device/padri sintetizzati/error paths) + (stretch
-        `ls -l` minimale: rimandato). Verifica: gate 38/38 +
-        `test-shell.py` 26/26, zero FAIL/PANIC/FAULT.
+        t38 (ramfs/FAT/device/padri sintetizzati/error paths) + stretch
+        `ls -l` minimale (Fase 18 chiusa: `ls [-l]`, riga `tipo size nome[ (ro)]`
+        via 1 stat per entry, `? nome` se la entry sparisce in corsa). Verifica:
+        gate 38/38 + `test-shell.py` 29/29, zero FAIL/PANIC/FAULT.
 
 ## Important Notes
 

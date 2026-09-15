@@ -378,6 +378,22 @@ def main():
         print(("PASS " if found else "FAIL ") + "cd .. + ls prova")
         ok = ok and found
 
+        # Fase 19.2 (stretch ls -l): tipo + size via R_STAT (1 RT per entry).
+        out = run_out("ls -l")
+        found = b"- 25 hello.txt" in out
+        print(("PASS " if found else "FAIL ") + "ls -l (tipo + size)")
+        ok = ok and found
+        run("mkdir lldir")
+        out = run_out("ls -l")
+        found = b"d 0 lldir" in out
+        print(("PASS " if found else "FAIL ") + "ls -l (marcatore dir)")
+        ok = ok and found
+        run("rmdir lldir")
+        out = run_out("ls -l /fat")
+        found = b"HELLO.TXT" in out and b"(ro)" in out
+        print(("PASS " if found else "FAIL ") + "ls -l /fat (readonly)")
+        ok = ok and found
+
         # kill: nome ignoto, pid inesistente, init non killabile (rifiuto)
         run("kill nosuchsvc")
         run("kill 99999")
