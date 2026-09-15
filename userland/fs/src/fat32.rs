@@ -33,6 +33,8 @@ pub struct DirEntry {
 pub struct FileInfo {
     pub first_cluster: u32,
     pub size: u32,
+    /// true se directory (da attr, serve a R_STAT; Fase 19.2).
+    pub is_dir: bool,
 }
 
 pub struct Fat32<B: BlockSource> {
@@ -279,6 +281,7 @@ impl<B: BlockSource> Fat32<B> {
                 return Some(FileInfo {
                     first_cluster: hit.first_cluster,
                     size: hit.size,
+                    is_dir: hit.attr & ATTR_DIR != 0,
                 });
             }
             if hit.attr & ATTR_DIR == 0 {

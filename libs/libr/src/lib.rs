@@ -615,7 +615,7 @@ const RING_TAIL: usize = 0xFFC;
 // userfs e (R_REGISTER) userdisk.
 pub use syscall_numbers::{
     R_CLOSE, R_DELETE, R_MKDIR, R_MOUNT, R_OPEN, R_READ, R_READDIR, R_REGISTER, R_UMOUNT,
-    R_WRITE, R_RIGHTS_DROP, R_RIGHTS_GET,
+    R_WRITE, R_RIGHTS_DROP, R_RIGHTS_GET, R_STAT,
 };
 /// Bit dei diritti per-canale (Fase 17, self-restriction; DELETE in 18.2):
 /// mask per `rights_drop`, valore di ritorno di `rights_get`.
@@ -623,6 +623,8 @@ pub use syscall_numbers::{
     RIGHTS_ALL, RIGHTS_DELETE, RIGHTS_MKDIR, RIGHTS_MOUNT, RIGHTS_OPEN, RIGHTS_READ,
     RIGHTS_READDIR, RIGHTS_UMOUNT, RIGHTS_WRITE,
 };
+/// `kind` per R_STAT (Fase 19.2): bit 0-1 tipo + bit 7 readonly.
+pub use syscall_numbers::{STAT_DEVICE, STAT_DIR, STAT_FILE, STAT_READONLY};
 
 /// Flag `open` (Fase 18.2): crea il file se non esiste.
 pub use syscall_numbers::O_CREAT;
@@ -1232,6 +1234,56 @@ pub fn remove(path: &str) -> i64 {
         Some((result, _, _)) => {
             resp_ring_consume(16);
             fs_reply_val(result)
+        }
+        None => -1,
+    }
+}
+
+/// Fase 19.2 — metadati di un path (zero kernel: frame R_STAT a userfs, nessun
+/// fd coinvolto). `size` = byte del file (0 per dir/device); `kind` = tipo
+/// (STAT_FILE/DIR/DEVICE); `readonly` = bit 7 (FAT sempre, ramfs mai, device
+/// mai affermato senza interrogare il driver).
+#[derive(Clone, Copy, Debug)]
+pub struct Stat {
+    pub size: u64,
+    pub kind: u64,
+    pub readonly: bool,
+}
+
+impl Stat {
+    pub fn is_file(&self) -> bool {
+        self.kind & 0x3 == STAT_FILE
+    }
+    pub fn is_dir(&self) -> bool {
+        self.kind & 0x3 == STAT_DIR
+    }
+    pub fn is_device(&self) -> bool {
+        self.kind & 0x3 == STAT_DEVICE
+    }
+}
+
+/// `stat(path, out)`: metadati senza aprire. Ritorna 0 o -1 (inesistente).
+#[inline]
+pub fn stat(path: &str, out: &mut Stat) -> i64 {
+    if !fs_init() || fs_async_pending() {
+        return -1;
+    }
+    if !req_ring_write(R_STAT, path.len() as u64, 0, path.as_bytes()) {
+        return -1;
+    }
+    match fs_notify_result(FS_NOTIFY, || {
+        req_ring_write(R_STAT, path.len() as u64, 0, path.as_bytes())
+    }) {
+        // Risposta self-written `[size:8][kind:8]`: result=size, w1=kind.
+        Some((result, w1, _)) => {
+            resp_ring_consume(16);
+            if result == ERR {
+                return -1;
+            }
+            out.size = result;
+            out.kind = w1 & 0x3;
+            out.readonly = w1 & STAT_READONLY != 0;
+            0
         }
         None => -1,
     }

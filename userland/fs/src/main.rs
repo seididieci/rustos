@@ -57,7 +57,7 @@ const ERR_NOHANDSHAKE: u64 = !0u64 - 1;
 // Single source in `syscall-numbers` (Fase 17): include R_RIGHTS_DROP/GET.
 use libr::{
     R_CLOSE, R_DELETE, R_MKDIR, R_MOUNT, R_OPEN, R_READ, R_READDIR, R_REGISTER, R_UMOUNT,
-    R_WRITE, R_RIGHTS_DROP, R_RIGHTS_GET,
+    R_WRITE, R_RIGHTS_DROP, R_RIGHTS_GET, R_STAT,
 };
 
 /// IPC tag: il client ha scritto nel request ring e notifica il server.
@@ -867,6 +867,8 @@ fn op_bit(op_tag: u32) -> Option<u32> {
         R_MOUNT => Some(libr::RIGHTS_MOUNT),
         R_UMOUNT => Some(libr::RIGHTS_UMOUNT),
         R_DELETE => Some(libr::RIGHTS_DELETE),
+        // R_STAT e' metadato di listing: stesso bit di READDIR (Fase 19.2).
+        R_STAT => Some(libr::RIGHTS_READDIR),
         _ => None,
     }
 }
@@ -1360,6 +1362,84 @@ fn handle_readdir(
     Some(entries.len() as u64)
 }
 
+/// Scrive il response frame di R_STAT (`[size:8][kind:8]`, payload vuoto) e
+/// ritorna 0 per il reply IPC (self-written: il dispatch non riscrive).
+fn stat_reply(rings: &BTreeMap<u64, (u64, u64)>, chan: u64, size: u64, kind: u64) -> u64 {
+    if rings.get(&chan).is_some() {
+        map_client_resp_ring(rings, chan);
+        resp_ring_write(size, kind, &[]);
+    }
+    0
+}
+
+/// R_STAT: metadati del path (Fase 19.2, zero kernel). Self-written come
+/// read/readdir (frame `[size:8][kind:8]`, vedi `stat_reply`); None =
+/// inesistente. Precedenza come open (mai shadow): device esatti → FAT (con
+/// attivazione lazy) → ramfs → padri sintetizzati 16d → None. Mount FAT noto
+/// ma inattivo = errore (stesso contratto di open/readdir). kind in
+/// `syscall-numbers` (STAT_FILE/DIR/DEVICE + STAT_READONLY): ramfs da' len
+/// reale (dir = 0, mai readonly), FAT size dalla dir entry (sempre readonly:
+/// read-only), device size 0 readonly 0 (sconosciuto senza interrogare il
+/// driver: i prefix registrati sono foglie, qui mai contattati).
+fn handle_stat(
+    fs: &RamFs,
+    mounts_fat: &mut Vec<FsMount>,
+    mounts: &[Mount],
+    rings: &BTreeMap<u64, (u64, u64)>,
+    chan: u64,
+    path: &str,
+) -> Option<u64> {
+    if path.is_empty() || path.len() > MAX_PATH {
+        return None;
+    }
+    // Root ramfs: esiste sempre.
+    if path == "/" {
+        return Some(stat_reply(rings, chan, 0, libr::STAT_DIR));
+    }
+    // Device registrati: foglie (rel non vuota = path sotto un device: None,
+    // come open che rifiuta i dev_type sconosciuti).
+    if let Some((_driver_chan, rel)) = resolve_mount(path, mounts) {
+        if rel.is_empty() {
+            return Some(stat_reply(rings, chan, 0, libr::STAT_DEVICE));
+        }
+        return None;
+    }
+    // FAT con attivazione lazy; mount noto ma inattivo = errore, mai shadow.
+    if let Some((mi, rel)) = resolve_fsmount(mounts_fat, path) {
+        let fat = mounts_fat[mi].fat()?;
+        if rel.is_empty() {
+            return Some(stat_reply(
+                rings,
+                chan,
+                0,
+                libr::STAT_DIR | libr::STAT_READONLY,
+            ));
+        }
+        let info = fat.find(rel)?;
+        let kind = if info.is_dir { libr::STAT_DIR } else { libr::STAT_FILE }
+            | libr::STAT_READONLY;
+        return Some(stat_reply(rings, chan, info.size as u64, kind));
+    }
+    match resolve_local(mounts_fat, path) {
+        // Mount noto ma inattivo: errore, mai shadow ramfs.
+        Some(FsKind::Fat) => None,
+        Some(FsKind::Ram) => match fs.find(path) {
+            Some(FsNode::File { data, .. }) => {
+                Some(stat_reply(rings, chan, data.len() as u64, libr::STAT_FILE))
+            }
+            Some(FsNode::Dir { .. }) => {
+                Some(stat_reply(rings, chan, 0, libr::STAT_DIR))
+            }
+            // Non in ramfs: puo' essere un padre sintetizzato (sotto).
+            None => synth_children(mounts, path)
+                .map(|_| stat_reply(rings, chan, 0, libr::STAT_DIR)),
+        },
+        // /dev/* senza prefix noto: solo sintesi (sotto).
+        None => synth_children(mounts, path)
+            .map(|_| stat_reply(rings, chan, 0, libr::STAT_DIR)),
+    }
+}
+
 fn handle_mkdir(fs: &mut RamFs, mounts: &[FsMount], path: &str) -> Option<u64> {
     if path.is_empty() || path.len() > MAX_PATH {
         return None;
@@ -1642,7 +1722,7 @@ pub extern "C" fn _start() -> ! {
         // client e stallo senza recovery). Si consuma ESATTAMENTE il dichiarato;
         // il resto resta per la propria notifica.
         let expect: usize = match op_tag {
-            R_OPEN | R_MKDIR | R_READDIR | R_REGISTER | R_MOUNT | R_UMOUNT | R_DELETE => {
+            R_OPEN | R_MKDIR | R_READDIR | R_REGISTER | R_MOUNT | R_UMOUNT | R_DELETE | R_STAT => {
                 w0 as usize
             }
             R_WRITE | R_RIGHTS_DROP => w1 as usize,
@@ -1700,7 +1780,7 @@ pub extern "C" fn _start() -> ! {
         // il path aperto). UTF-8 invalido o spec malformata: passa oltre, lo
         // rifiuta l'handler (i diritti non decidono la validita').
         let subtree_ok = match op_tag {
-            R_OPEN | R_MKDIR | R_READDIR | R_DELETE => match core::str::from_utf8(&payload) {
+            R_OPEN | R_MKDIR | R_READDIR | R_DELETE | R_STAT => match core::str::from_utf8(&payload) {
                 Ok(p) => within_subtree(rights_subtree(&rights, chan), &normalize_sub(p)),
                 Err(_) => true,
             },
@@ -1786,6 +1866,14 @@ pub extern "C" fn _start() -> ! {
                 }
             }
 
+            R_STAT => {
+                match core::str::from_utf8(&payload) {
+                    Ok("") | Ok("/") => handle_stat(&fs, &mut fat_mounts, &mounts, &rings, chan, "/"),
+                    Ok(path) => handle_stat(&fs, &mut fat_mounts, &mounts, &rings, chan, path),
+                    Err(_) => None,
+                }
+            }
+
             R_RIGHTS_DROP => handle_rights_drop(&mut rights, chan, w0 as u32, &payload),
 
             R_RIGHTS_GET => handle_rights_get(&rights, &rings, chan),
@@ -1799,11 +1887,11 @@ pub extern "C" fn _start() -> ! {
         // Scrivi il response frame (se non e' gia' stato scritto dall'handler).
         // Gli handler locali (read, readdir) scrivono direttamente nella response
         // ring; qui scriviamo solo il result frame per conferma.
-        // NOTA: handle_read, handle_readdir e handle_rights_get scrivono
-        // payload+result, quindi qui NON dobbiamo scrivere di nuovo. Per gli
-        // altri handler, scriviamo solo il result.
+        // NOTA: handle_read, handle_readdir, handle_rights_get e handle_stat
+        // scrivono payload+result, quindi qui NON dobbiamo scrivere di nuovo.
+        // Per gli altri handler, scriviamo solo il result.
         match op_tag {
-            R_READ | R_READDIR | R_RIGHTS_GET => {
+            R_READ | R_READDIR | R_RIGHTS_GET | R_STAT => {
                 // Gli handler locali hanno gia' scritto nella response ring.
                 // Per i remote, il driver ha gia' scritto nella response ring.
                 // Non fare nulla — il result e' gia' nel frame.
