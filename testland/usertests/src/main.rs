@@ -2020,23 +2020,97 @@ fn t_ps() -> bool {
         println!("[usertests] t37: solo {} processi?!", count);
         return false;
     }
-    // TIME cresce mentre giro: spin puro (IF=1, mai syscall in loop) poi
-    // rileggo; almeno un tick deve essere scattato da current.
-    let mut x = 0u64;
-    for i in 0..20_000_000u64 {
-        x = x.wrapping_add(i ^ 0x9E3779B97F4A7C15);
-    }
-    core::hint::black_box(x);
+    // TIME cresce mentre giro: attendo (bound 500 tick) che il contatore del
+    // processo avanzi — robusto a qualunque velocita' CPU. Lo spin fisso da
+    // 20M iterazioni finiva sotto un tick sulle CPU veloci (flake "TIME fermo"
+    // osservato sotto KVM): ora si aspetta l'evento con bound, mai un tempo
+    // fisso. Batch di spin puri tra le letture (pattern utspin: niente
+    // busy-loop su syscall).
+    let bound = libr::get_ticks() + 500;
     let mut my_ticks2 = my_ticks;
-    for pid in 0..libr::PS_SCAN_MAX {
-        if let Some(e) = libr::ps_info(pid) {
-            if e.pid == me {
-                my_ticks2 = e.ticks;
+    loop {
+        let mut x = 0u64;
+        for i in 0..1_000_000u64 {
+            x = x.wrapping_add(i ^ 0x9E3779B97F4A7C15);
+        }
+        core::hint::black_box(x);
+        for pid in 0..libr::PS_SCAN_MAX {
+            if let Some(e) = libr::ps_info(pid) {
+                if e.pid == me {
+                    my_ticks2 = e.ticks;
+                }
             }
         }
+        if my_ticks2 > my_ticks {
+            break;
+        }
+        if libr::get_ticks() > bound {
+            println!("[usertests] t37: TIME fermo ({} -> {})", my_ticks, my_ticks2);
+            return false;
+        }
     }
-    if my_ticks2 <= my_ticks {
-        println!("[usertests] t37: TIME fermo ({} -> {})", my_ticks, my_ticks2);
+    true
+}
+
+/// t38 — `stat` lato userfs (Fase 19.2): metadati senza aprire.
+fn t_stat() -> bool {
+    let mut st = libr::Stat { size: 0, kind: 0, readonly: false };
+    // File ramfs: size esatta, non readonly.
+    if libr::stat("hello.txt", &mut st) != 0
+        || !st.is_file()
+        || st.size as usize != HELLO.len()
+        || st.readonly
+    {
+        println!("[usertests] t38: stat hello.txt FAILED");
+        return false;
+    }
+    // Root ramfs: dir.
+    if libr::stat("/", &mut st) != 0 || !st.is_dir() {
+        println!("[usertests] t38: stat / FAILED");
+        return false;
+    }
+    // Dir ramfs creata ad hoc + rimozione (stat segue la vita del nodo).
+    if libr::mkdir("/t38dir") != 0 {
+        println!("[usertests] t38: mkdir /t38dir FAILED");
+        return false;
+    }
+    if libr::stat("/t38dir", &mut st) != 0 || !st.is_dir() || st.readonly {
+        println!("[usertests] t38: stat /t38dir FAILED");
+        return false;
+    }
+    if libr::remove("/t38dir") != 0 || libr::stat("/t38dir", &mut st) == 0 {
+        println!("[usertests] t38: stat dopo rm accettata?!");
+        return false;
+    }
+    // FAT (read-only): file + dir marcati readonly.
+    if libr::stat("/fat/HELLO.TXT", &mut st) != 0
+        || !st.is_file()
+        || st.size == 0
+        || !st.readonly
+    {
+        println!("[usertests] t38: stat /fat/HELLO.TXT FAILED");
+        return false;
+    }
+    if libr::stat("/fat", &mut st) != 0 || !st.is_dir() || !st.readonly {
+        println!("[usertests] t38: stat /fat FAILED");
+        return false;
+    }
+    // Device: tipo device, size 0; padri sintetizzati: dir.
+    if libr::stat("/dev/null", &mut st) != 0 || !st.is_device() || st.size != 0 {
+        println!("[usertests] t38: stat /dev/null FAILED");
+        return false;
+    }
+    if libr::stat("/dev", &mut st) != 0 || !st.is_dir() {
+        println!("[usertests] t38: stat /dev FAILED");
+        return false;
+    }
+    // Error paths: inesistente e sotto-device (foglie).
+    if libr::stat("/nonexistent-t38", &mut st) == 0 {
+        println!("[usertests] t38: stat inesistente accettata?!");
+        return false;
+    }
+    if libr::stat("/dev/null/trailing", &mut st) == 0 {
+        println!("[usertests] t38: stat sotto-device accettata?!");
         return false;
     }
     true
@@ -2273,6 +2347,7 @@ pub extern "C" fn _start() -> ! {
     report(&mut total, &mut ok, "t35 resolve nome->handle lato driver", t_resolve());
     report(&mut total, &mut ok, "t36 UUID/LABEL + discovery stabile", t_stable_id());
     report(&mut total, &mut ok, "t37 ps_info snapshot processi", t_ps());
+    report(&mut total, &mut ok, "t38 stat metadati senza open", t_stat());
     // t34 per ULTIMO: i drop sono irrevocabili sul canale di usertests.
     report(&mut total, &mut ok, "t34 diritti per-canale lato server", t_rights());
 
