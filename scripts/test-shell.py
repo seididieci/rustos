@@ -19,6 +19,10 @@ KERNEL = "target/x86_64-unknown-none/release/velordor-kernel"
 SERIAL = "/tmp/velordor-serial.log"
 MON = "/tmp/velordor-mon.sock"
 FAT = "userland/fs/fat.img"
+# Secondo disco (stessa fixture di run.sh: UUID C0FFEE01, label SECOND):
+# senza, t36 fallisce per ambiente (mount UUID impossibile) — osservato come
+# FAIL nascosto perche' l'harness non controllava le righe della suite.
+FAT2 = "userland/fs/fat2.img"
 
 # Nomi sendkey VERIFICATI su QEMU 10.2.2 (il monitor risponde
 # "invalid parameter" ai nomi ignoti — e lo script lo ignorerebbe in
@@ -110,6 +114,22 @@ def send_mon(cmd: str, sleep=0.12):
     s.close()
     time.sleep(sleep)
 
+def mon_query(cmd: str) -> str:
+    """Interroga il monitor HMP e ritorna la risposta (diagnostica)."""
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(MON)
+        s.sendall(cmd.encode() + b"\n")
+        time.sleep(0.3)
+        try:
+            data = s.recv(65536)
+        except Exception:
+            data = b""
+        s.close()
+        return data.decode(errors="replace")
+    except Exception as e:
+        return "<mon query failed: %s>" % e
+
 def type_text(text: str, sleep=0.18):
     # Sleep generoso (era 0.12): a 8 tasti/s il guest perde scancode sotto
     # carico (buffer PS/2 a 1 byte, drain IRQ1+schedule ~40-60ms — overrun).
@@ -137,14 +157,29 @@ def main():
         except FileNotFoundError: pass
 
     subprocess.run(["python3", "scripts/mkfat.py", FAT], check=True)
+    subprocess.run(["python3", "scripts/mkfat.py", FAT2,
+                    "--serial", "C0FFEE01", "--label", "SECOND",
+                    "--marker", "second disk marker"], check=True)
 
     args = [
         "qemu-system-x86_64", "-m", "256M", "-display", "none",
         "-serial", "file:" + SERIAL,
         "-monitor", "unix:%s,server=on,wait=off" % MON,
         "-no-reboot", "-kernel", KERNEL, "-drive", "file=%s,format=raw,if=ide" % FAT,
+        "-drive", "file=%s,format=raw,if=ide" % FAT2,
     ]
+    # KVM se disponibile (host CI senza /dev/kvm resta su TCG): abbatte la
+    # tassa di emulazione sui round-trip tastiera (IRQ1→kbd→tty→shell→prompt).
+    if os.path.exists("/dev/kvm"):
+        args[1:1] = ["-accel", "kvm"]
     q = subprocess.Popen(args)
+
+    # Diagnostica accelerazione (KVM vs TCG): spiega i tempi del run.
+    # La risposta contiene l'eco del comando: interessa la coda.
+    time.sleep(1.0)
+    kvm_info = mon_query("info kvm").replace("\r", "").strip().split("\n")
+    kvm_tail = [l for l in kvm_info if "kvm" in l.lower()][-1:]
+    print("info accel: %s" % (" | ".join(kvm_tail) if kvm_tail else kvm_info[-1:]))
 
     try:
         deadline = time.time() + 60
@@ -166,14 +201,45 @@ def main():
 
         ok = True
 
+        # Suite di boot (se il kernel bootato la include: dipende da come e'
+        # stato compilato init): t36 richiede il secondo disco (FAT2 sopra).
+        # Senza FAT2 falliva per ambiente restando invisibile — ora si asserisce
+        # quando la suite e' presente, si salta in boot di produzione.
+        data = read_log()
+        if b"[usertests] SUMMARY" in data:
+            found = b"t36 UUID/LABEL + discovery stabile: PASS" in data
+            print(("PASS " if found else "FAIL ") + "t36 suite pre-shell")
+            ok = ok and found
+
+        # wait_prompt event-driven sul conteggio prompt CONSUMATO (non un
+        # base locale: quello aspettava un prompt nuovo a shell gia' idle e
+        # bruciava sempre il timeout, ~8 s a comando = 6 min a run).
+        # Definito qui (prima del primo uso nei blocchi ls/cat/...) e usato
+        # anche da run()/run_out() sotto.
+        # wait_prompt event-driven: aspetta DAVVERO solo se un comando e' in
+        # volo (need_sync). Il conteggio-da solo non basta: dopo un interludio
+        # senza Enter (screendump/backspace) non esiste alcun prompt nuovo e
+        # l'attesa brucerebbe sempre il timeout (~8 s x3 = 25 s a run).
+        prompt_seen = [0]
+        need_sync = [False]
+        def wait_prompt(timeout=8):
+            t0 = time.time()
+            if need_sync[0]:
+                deadline = time.time() + timeout
+                while count_prompts(read_log()) <= prompt_seen[0] and time.time() < deadline:
+                    time.sleep(0.2)
+                need_sync[0] = False
+            time.sleep(0.3)
+            prompt_seen[0] = count_prompts(read_log())
+            dt = time.time() - t0
+            if dt > 3:
+                print("info slow wait_prompt %.1fs" % dt)
+
         # Attendi il primo prompt, poi esegui: ls<Enter>
-        base = count_prompts(read_log())
-        deadline = time.time() + 15
-        while count_prompts(read_log()) <= base and time.time() < deadline:
-            time.sleep(0.2)
-        time.sleep(0.3)
+        wait_prompt()
         type_text("ls")
         send_mon("sendkey ret")
+        need_sync[0] = True
         time.sleep(1.2)
         data = read_log()
         found = (b"hello.txt" in data and b"test.txt" in data
@@ -182,13 +248,10 @@ def main():
         ok = ok and found
 
         # Esegui: cat hello.txt<Enter> -> contenuto ramfs
-        base = count_prompts(read_log())
-        deadline = time.time() + 15
-        while count_prompts(read_log()) <= base and time.time() < deadline:
-            time.sleep(0.2)
-        time.sleep(0.3)
+        wait_prompt()
         type_text("cat hello.txt")
         send_mon("sendkey ret")
+        need_sync[0] = True
         time.sleep(1.2)
         data = read_log()
         found = b"Hello from Velordor ramfs!" in data
@@ -196,16 +259,14 @@ def main():
         ok = ok and found
 
         # Esegui: mkdir prova<Enter> poi ls<Enter> -> prova visibile
-        base = count_prompts(read_log())
-        deadline = time.time() + 15
-        while count_prompts(read_log()) <= base and time.time() < deadline:
-            time.sleep(0.2)
-        time.sleep(0.3)
+        wait_prompt()
         type_text("mkdir prova")
         send_mon("sendkey ret")
+        need_sync[0] = True
         time.sleep(1.0)
         type_text("ls")
         send_mon("sendkey ret")
+        need_sync[0] = True
         time.sleep(1.2)
         data = read_log()
         # "prova" non appare nel comando echo (nessun echo su seriale): deve
@@ -219,11 +280,8 @@ def main():
         # (controllo positivo: screendump sensibile); backspace torna a shot0;
         # altri 3 backspace a riga vuota devono lasciare tutto identico
         # (pre-fix mangiavano "$ ").
-        base = count_prompts(read_log())
-        deadline = time.time() + 15
-        while count_prompts(read_log()) <= base and time.time() < deadline:
-            time.sleep(0.2)
-        time.sleep(0.5)
+        wait_prompt()
+        time.sleep(0.2)  # come prima: 0.3 di wait_prompt + 0.2 = 0.5
         for p in (SHOT0, SHOT1, SHOT2, SHOT3):
             try: os.unlink(p)
             except FileNotFoundError: pass
@@ -254,29 +312,30 @@ def main():
             ok = ok and found
 
         # Fase 18.1: builtin (echo/wc/hexdump/cd/pwd/kill/clear).
-        # Nota: il wait e' quasi sempre un no-op (prompt gia' presente, shell
-        # idle): timeout corto, serve solo dopo un comando appena eseguito.
-        def wait_prompt(timeout=8):
-            base = count_prompts(read_log())
-            deadline = time.time() + timeout
-            while count_prompts(read_log()) <= base and time.time() < deadline:
-                time.sleep(0.2)
-            time.sleep(0.3)
-
         def run(cmd: str, sleep=1.0):
+            t0 = time.time()
             wait_prompt()
             type_text(cmd)
             send_mon("sendkey ret")
             time.sleep(sleep)
+            need_sync[0] = True  # comando in volo: il prossimo wait sincronizza
+            dt = time.time() - t0
+            if dt > 10:
+                print("info slow run %.1fs: %s" % (dt, cmd))
 
         def run_out(cmd: str, sleep=1.0):
             """Esegue e ritorna SOLO l'output nuovo (coda del log): serve per
             gli assert di assenza (il log cumulativo contiene gia' tutto)."""
+            t0 = time.time()
             wait_prompt()
             mark = len(read_log())
             type_text(cmd)
             send_mon("sendkey ret")
             time.sleep(sleep)
+            need_sync[0] = True  # come run()
+            dt = time.time() - t0
+            if dt > 10:
+                print("info slow run_out %.1fs: %s" % (dt, cmd))
             return read_log()[mark:]
 
         # echo
