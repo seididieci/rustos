@@ -31,6 +31,8 @@ pub use syscall_numbers::Service;
 pub use syscall_numbers::EXIT_NOTIFY;
 /// Tag della notify kernel→userkbd su IRQ1 (Fase 15, bridge interrupt→IPC).
 pub use syscall_numbers::IRQ_NOTIFY_KBD;
+/// Bound di scansione PID per `ps` (Fase 19.1, = MAX_PIDS del kernel).
+pub use syscall_numbers::PS_SCAN_MAX;
 /// Protocollo DISK_* userfs→userdisk (Fase 16, single source in
 /// `syscall-numbers`, Fase 16c): handshake/open/read/close + resolve
 /// nome→handle di proprieta' del driver.
@@ -408,6 +410,54 @@ pub fn kill(pid: i64, code: i64) -> Result<(), ()> {
 #[inline]
 pub fn is_exit_notify(m: &IpcMsg) -> bool {
     m.tag == EXIT_NOTIFY
+}
+
+/// Fase 19.1 — entry `ps`: snapshot di un processo (syscall 37, layout dei
+/// campi in `syscall-numbers::SYS_PS_INFO`). `name` = byte del nome (max 16,
+/// stop al primo NUL), `parent` = pid del padre (`None` per init/idle).
+#[derive(Clone, Copy, Debug)]
+pub struct PsEntry {
+    pub pid: u32,
+    pub name: [u8; 16],
+    pub state: u8,
+    pub prio: u8,
+    pub parent: Option<u32>,
+    pub ipc: u8,
+    pub ticks: u64,
+}
+
+impl PsEntry {
+    /// Lunghezza del nome (stop al primo NUL).
+    pub fn name_len(&self) -> usize {
+        self.name.iter().position(|&b| b == 0).unwrap_or(16)
+    }
+    /// Nome come `&str` ("?" se non UTF-8, mai in pratica: nomi statici).
+    pub fn name_str(&self) -> &str {
+        core::str::from_utf8(&self.name[..self.name_len()]).unwrap_or("?")
+    }
+}
+
+/// `ps_info(pid)`: snapshot del processo `pid`, `None` se lo slot e' vuoto o
+/// il processo e' terminato (come `ps` salta i PID morti).
+pub fn ps_info(pid: u32) -> Option<PsEntry> {
+    let (rax, rdi, rsi, rdx, r10) =
+        unsafe { syscall4_out(SYS_PS_INFO, pid as u64, 0, 0, 0) };
+    if rax != 0 {
+        return None;
+    }
+    let mut name = [0u8; 16];
+    name[..8].copy_from_slice(&rdi.to_le_bytes());
+    name[8..].copy_from_slice(&rsi.to_le_bytes());
+    let parent_raw = ((rdx >> 16) & 0xFF) as u32;
+    Some(PsEntry {
+        pid,
+        name,
+        state: (rdx & 0xFF) as u8,
+        prio: ((rdx >> 8) & 0xFF) as u8,
+        parent: if parent_raw == 0 { None } else { Some(parent_raw - 1) },
+        ipc: ((rdx >> 24) & 0xFF) as u8,
+        ticks: r10,
+    })
 }
 
 /// Scrive una stringa su stdout (fd 1) bypassando il line buffer.

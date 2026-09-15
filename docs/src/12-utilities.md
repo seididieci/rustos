@@ -40,6 +40,7 @@ la mostra (`/prova$ `, `$ ` a root).
 | `mv <src> <dst>` | Sposta file (cp+rm, la sorgente si rimuove solo a copia riuscita) |
 | `rm <file>` | Cancella file (`R_DELETE`; su `/fat` rifiutato: read-only) |
 | `rmdir <dir>` | Cancella directory vuota (rifiutata se piena) |
+| `ps` | Tabella processi stile Linux: PID NAME PRIO STATE TIME PARENT (syscall 37, Fase 19.1) |
 | `help` | Mostra comandi disponibili |
 | `exit` | Termina la shell |
 

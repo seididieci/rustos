@@ -105,6 +105,7 @@ La numerazione e' definita nel dispatch di `syscall_handler` in `kernel/src/sysc
 | 34 | `recv_nonblock()` | IPC async: come `recv` ma coda vuota → -1 subito (Fase 13) |
 | 35 | `kill(pid, code)` | termina un processo user (exit/kill kernel-side) → 0 o -1 (Fase 14, ADR-0010) |
 | 36 | `service_pid(service)` | pid dell'owner del servizio o -1 (supervisione/diagnostica, Fase 14) |
+| 37 | `ps_info(pid)` | snapshot `ps`: 0 + nome in rdi+rsi, packed stato/prio/parent/ipc in rdx, tick in r10; -1 se slot vuoto (Fase 19.1) |
 
 > **Fase 9.6**: le syscall FS 3-7, 23, 24 sono state RIMOSSE dal percorso dati.
 > Ogni processo alloca la propria pagina di trasferimento (`fs_buf_alloc`, 26) e
@@ -179,6 +180,7 @@ extern "C" fn syscall_handler() -> i64 {
 | `service_register` | 31 | occupa lo slot del servizio (Fase 12) |
 | `service_lookup` | 32 | risolve il servizio in un canale (Fase 12) |
 | `service_pid` | 36 | pid dell'owner del servizio o -1 (Fase 14, init-restart) |
+| `ps_info` | 37 | snapshot `ps` di un processo: 0 o -1; nome (16 B) in rdi+rsi, `rdx` packed (stato/prio/parent+1/ipc), `r10` tick consumati (Fase 19.1) |
 | `kill` | 35 | termina un processo user (Fase 14, ADR-0010) |
 | `spawn` | 20 | Crea un processo dal binario embedded `name` e ritorna il **canale di nascita** verso il figlio |
 | `map_physical` | 21 | Mappa pagine fisiche nello spazio user (Fase 8.2) |

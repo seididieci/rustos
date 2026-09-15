@@ -258,7 +258,61 @@ fn cmd_umount(args: &[&str]) {
 }
 
 fn cmd_help() {
-    term_print("Commands: ls [path], cat <file>, touch <file>, mkdir <dir>, mount <src> <tgt>, umount <tgt>, echo [args], clear, wc <file>, hexdump <file>, kill <pid|service>, cd [dir], pwd, cp <src> <dst>, mv <src> <dst>, rm <file>, rmdir <dir>, exit, help\n");
+    term_print("Commands: ls [path], cat <file>, touch <file>, mkdir <dir>, mount <src> <tgt>, umount <tgt>, echo [args], clear, wc <file>, hexdump <file>, kill <pid|service>, cd [dir], pwd, cp <src> <dst>, mv <src> <dst>, rm <file>, rmdir <dir>, ps, exit, help\n");
+}
+
+/// Accoda `s` paddata a `width` con spazi (colonne `ps`, niente format!).
+fn push_padded(out: &mut String, s: &str, width: usize) {
+    out.push_str(s);
+    let mut n = s.len();
+    while n < width {
+        out.push(' ');
+        n += 1;
+    }
+}
+
+/// `ps` tabellare stile Linux (Fase 19.1): PID NAME PRIO STATE TIME PARENT.
+/// STATE = run (se stesso) / ready / recv / reply / blocked; TIME = tick
+/// consumati (10 ms); PARENT = pid del padre ("-" per init/idle).
+fn cmd_ps() {
+    let me = libr::getpid() as u32;
+    let mut out = String::from("PID  NAME           PRIO STATE TIME PARENT\n");
+    for pid in 0..libr::PS_SCAN_MAX {
+        let Some(e) = libr::ps_info(pid) else { continue; };
+        let mut cell = String::new();
+        push_u64(&mut cell, pid as u64);
+        push_padded(&mut out, &cell, 5);
+        push_padded(&mut out, e.name_str(), 15);
+        cell.clear();
+        push_u64(&mut cell, e.prio as u64);
+        push_padded(&mut out, &cell, 5);
+        let state = if pid == me {
+            "run"
+        } else if e.state == 0 {
+            "ready"
+        } else if e.ipc == 1 {
+            "recv"
+        } else if e.ipc == 2 {
+            "reply"
+        } else {
+            "blocked"
+        };
+        push_padded(&mut out, state, 6);
+        cell.clear();
+        push_u64(&mut cell, e.ticks);
+        out.push_str(&cell);
+        out.push(' ');
+        match e.parent {
+            Some(p) => {
+                cell.clear();
+                push_u64(&mut cell, p as u64);
+                out.push_str(&cell);
+            }
+            None => out.push('-'),
+        }
+        out.push('\n');
+    }
+    term_print(&out);
 }
 
 // ── Utility Fase 18.1 ───────────────────────────────────────────────
@@ -627,6 +681,7 @@ pub extern "C" fn _start() -> ! {
             "mv" => cmd_mv(&args),
             "rm" => cmd_rm(&args),
             "rmdir" => cmd_rmdir(&args),
+            "ps" => cmd_ps(),
             "exit" => libr::exit(0),
             "help" => cmd_help(),
             _ => {

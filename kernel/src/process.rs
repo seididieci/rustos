@@ -188,6 +188,9 @@ pub struct Process {
     pub die_peers: [(u32, u32); MAX_NOTIFY_PEERS],
     /// Numero di entry valide in `die_peers`.
     pub die_peer_count: usize,
+    /// Tick timer consumati dal processo (Fase 19.1, colonna TIME di `ps`):
+    /// incrementato in `on_tick` per il processo corrente.
+    pub ticks_used: u64,
 }
 
 impl Process {
@@ -236,6 +239,7 @@ impl Process {
             waiting_pid: None,
             die_peers: [(0, 0); MAX_NOTIFY_PEERS],
             die_peer_count: 0,
+            ticks_used: 0,
         })
     }
 
@@ -303,6 +307,7 @@ impl Process {
             waiting_pid: None,
             die_peers: [(0, 0); MAX_NOTIFY_PEERS],
             die_peer_count: 0,
+            ticks_used: 0,
         })
     }
 

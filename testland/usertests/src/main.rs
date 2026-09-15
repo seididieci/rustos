@@ -1975,6 +1975,73 @@ fn t_rights() -> bool {
     true
 }
 
+/// t37 — syscall `ps_info` (Fase 19.1): snapshot processi.
+fn t_ps() -> bool {
+    let me = libr::getpid() as u32;
+    let mut count = 0u32;
+    let mut found_me = false;
+    let mut my_ticks = 0u64;
+    for pid in 0..libr::PS_SCAN_MAX {
+        let Some(e) = libr::ps_info(pid) else { continue; };
+        count += 1;
+        if e.prio > 31 {
+            println!("[usertests] t37: prio assurda pid={}", pid);
+            return false;
+        }
+        if pid == 0 {
+            // idle: processo kernel senza padre.
+            if e.name_str() != "idle" || e.parent.is_some() {
+                println!("[usertests] t37: idle anomalo");
+                return false;
+            }
+        }
+        if pid == 1 {
+            // init: gira da boot, ha consumato tick di sicuro.
+            if e.name_str() != "userinit" || e.parent.is_some() || e.ticks == 0 {
+                println!("[usertests] t37: init anomalo");
+                return false;
+            }
+        }
+        if e.pid == me {
+            found_me = true;
+            my_ticks = e.ticks;
+            // Sto eseguendo: Ready (mai Blocked durante una syscall).
+            if e.state != 0 {
+                println!("[usertests] t37: self non Ready");
+                return false;
+            }
+        }
+    }
+    if !found_me {
+        println!("[usertests] t37: self assente");
+        return false;
+    }
+    if count < 8 {
+        println!("[usertests] t37: solo {} processi?!", count);
+        return false;
+    }
+    // TIME cresce mentre giro: spin puro (IF=1, mai syscall in loop) poi
+    // rileggo; almeno un tick deve essere scattato da current.
+    let mut x = 0u64;
+    for i in 0..20_000_000u64 {
+        x = x.wrapping_add(i ^ 0x9E3779B97F4A7C15);
+    }
+    core::hint::black_box(x);
+    let mut my_ticks2 = my_ticks;
+    for pid in 0..libr::PS_SCAN_MAX {
+        if let Some(e) = libr::ps_info(pid) {
+            if e.pid == me {
+                my_ticks2 = e.ticks;
+            }
+        }
+    }
+    if my_ticks2 <= my_ticks {
+        println!("[usertests] t37: TIME fermo ({} -> {})", my_ticks, my_ticks2);
+        return false;
+    }
+    true
+}
+
 /// Fixture disco secondario (Fase 16d, accoppiate a run.sh: fat2.img
 /// generata con `--serial C0FFEE01 --label SECOND --marker ...`).
 const DISK2_UUID: &str = "C0FFEE01";
@@ -2205,6 +2272,7 @@ pub extern "C" fn _start() -> ! {
     report(&mut total, &mut ok, "t33 mount/umount espliciti", t_mount());
     report(&mut total, &mut ok, "t35 resolve nome->handle lato driver", t_resolve());
     report(&mut total, &mut ok, "t36 UUID/LABEL + discovery stabile", t_stable_id());
+    report(&mut total, &mut ok, "t37 ps_info snapshot processi", t_ps());
     // t34 per ULTIMO: i drop sono irrevocabili sul canale di usertests.
     report(&mut total, &mut ok, "t34 diritti per-canale lato server", t_rights());
 

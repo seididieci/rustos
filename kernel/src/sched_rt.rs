@@ -246,6 +246,37 @@ pub fn process_state(pid: usize) -> Option<State> {
     }
 }
 
+/// Snapshot dei campi di `ps` per il processo `pid` (Fase 19.1): un solo lock,
+/// `None` se lo slot e' vuoto o il processo e' terminato (come `process_state`).
+pub struct PsSnap {
+    pub name: &'static str,
+    pub state: State,
+    pub prio: u8,
+    pub parent: Option<usize>,
+    pub ipc: crate::process::IpcState,
+    pub ticks_used: u64,
+}
+
+pub fn process_ps(pid: usize) -> Option<PsSnap> {
+    let guard = SCHED.lock();
+    let sched = guard.as_ref()?;
+    if pid >= sched.processes.len() {
+        return None;
+    }
+    let p = &sched.processes[pid];
+    if p.state == State::Terminated {
+        return None;
+    }
+    Some(PsSnap {
+        name: p.name,
+        state: p.state,
+        prio: p.priority.0,
+        parent: p.parent,
+        ipc: p.ipc_state,
+        ticks_used: p.ticks_used,
+    })
+}
+
 /// Imposta il canale di nascita di `pid` (creato da sys_spawn, ADR-0008).
 pub fn set_parent_chan(pid: usize, chan: Option<usize>) {
     let mut guard = SCHED.lock();
@@ -311,8 +342,11 @@ pub fn on_tick() {
     }
 
     let mut need_switch = match sched.current {
-        Some(_) => {
+        Some(cur) => {
             sched.ticks_current += 1;
+            // Fase 19.1 (colonna TIME di `ps`): contabilizza il tick al
+            // processo che lo consuma davvero.
+            sched.processes[cur].ticks_used += 1;
             sched.ticks_current >= QUANTUM_TICKS
         }
         None => true,

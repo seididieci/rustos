@@ -330,6 +330,13 @@ def main():
         print(("PASS " if found else "FAIL ") + "kill errori + init rifiutato")
         ok = ok and found
 
+        # Fase 19.1: ps tabellare (header + init + shell stessa in lista).
+        out = run_out("ps")
+        found = (b"PID  NAME" in out and b"userinit" in out
+                 and b"usershell" in out)
+        print(("PASS " if found else "FAIL ") + "ps tabellare (init+shell)")
+        ok = ok and found
+
         # Fase 18.2: rm/cp/mv/rmdir (R_DELETE: ramfs si, /fat no).
         # rmdir su dir NON vuota (prova contiene inner.txt dai test cd).
         out = run_out("rmdir prova")

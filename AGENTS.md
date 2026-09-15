@@ -825,6 +825,22 @@ rustos/
   - [x] 18.3 Docs + regressione: capitolo `12-utilities.md` (tabella comandi,
         limiti onesti: no write `/fat`, no argv), estensione `test-shell.py`,
         gate invariato 36/36 + shell verde.
+- [ ] Fase 19: introspezione + metadati (ps/stat).
+  - [x] 19.1 `ps` tabellare stile Linux: syscall `SYS_PS_INFO` (37, pattern
+        multi-registro `CBS_GET_INFO`: nome 16 B in rdi+rsi, packed
+        stato/prio/parent+1/ipc in rdx, tick in r10; -1 se slot vuoto/
+        terminato) + snapshot atomico `process_ps` (un solo lock) + contatore
+        `ticks_used` nel PCB (incremento in `on_tick` per il current) +
+        `libr::ps_info/ps_info::PsEntry` (+ `PS_SCAN_MAX=32` in
+        `syscall-numbers`, deve restare = `MAX_PIDS` kernel) + builtin shell
+        `ps` (`PID NAME PRIO STATE TIME PARENT`, `run` = se stesso) + t37
+        (idle/init presenti parent-None, self Ready, count>=8, TIME init>0 e
+        TIME proprio crescente dopo spin puro). Verifica: gate 37/37 +
+        `test-shell.py` 25/25, zero FAIL/PANIC/FAULT.
+  - [ ] 19.2 `stat` lato userfs (zero kernel): frame `R_STAT` con risposta
+        `[size:8][kind:8]` (kind=file/dir/device + flag readonly; ramfs=len,
+        FAT=dir entry, device=size 0) + `libr::stat` + test + (stretch: `ls -l`
+        minimale).
 
 ## Important Notes
 
@@ -989,9 +1005,9 @@ timeout 60 ./run.sh > /tmp/boot.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 6/6
-#   [usertests] PASS 36/36
+#   [usertests] PASS 37/37
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 6/6|\[usertests\] PASS 36/36' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 6/6|\[usertests\] PASS 37/37' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 
