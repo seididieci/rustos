@@ -144,6 +144,11 @@ struct Tty {
     pump_now: bool,
     /// Backoff dopo un pump fallito (vedi retry in collect PumpRead).
     pump_wait_until: i64,
+    /// Byte digitati sulla riga corrente (disciplina di linea, Fase 18.0):
+    /// l'output della shell (prompt incluso) NON passa da `emit`, quindi il
+    /// contatore misura solo l'eco digitato — il backspace puo' cancellare
+    /// solo quello che l'utente ha scritto.
+    line_len: usize,
 }
 
 impl Tty {
@@ -165,6 +170,7 @@ impl Tty {
             flush_wait_until: 0,
             pump_now: false,
             pump_wait_until: 0,
+            line_len: 0,
         }
     }
 
@@ -180,6 +186,7 @@ impl Tty {
         self.con_fd = -1;
         self.input.clear();
         self.out.clear();
+        self.line_len = 0;
         self.err_streak = 0;
     }
 
@@ -402,14 +409,29 @@ impl Tty {
         }
     }
 
+    /// Unico punto che genera sia il byte cotto in input sia l'eco su
+    /// console. Conta i digitati sulla riga (`line_len`, reset a `\n`): un
+    /// backspace a riga vuota viene ingoiato (niente in input, niente eco) —
+    /// la shell fa pop no-op su String vuota, ma l'eco cancellerebbe il
+    /// prompt su VGA (la console cancella incondizionatamente).
     fn emit(&mut self, bytes: &[u8]) {
         for &b in bytes {
+            match b {
+                b'\n' => self.line_len = 0,
+                0x08 => {
+                    if self.line_len == 0 {
+                        continue;
+                    }
+                    self.line_len -= 1;
+                }
+                _ => self.line_len += 1,
+            }
             if self.input.len() < INPUT_CAPACITY {
                 self.input.push_back(b);
             }
-        }
-        if self.out.len() + bytes.len() <= OUT_CAPACITY {
-            self.out.extend_from_slice(bytes);
+            if self.out.len() < OUT_CAPACITY {
+                self.out.push(b);
+            }
         }
     }
 
