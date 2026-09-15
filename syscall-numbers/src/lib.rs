@@ -119,6 +119,14 @@ pub const R_UMOUNT: u32 = 0x17;
 /// Cancella un file o una directory VUOTA: payload = path (Fase 18.2).
 /// Solo ramfs (FAT read-only e device remoti rifiutano con ERR).
 pub const R_DELETE: u32 = 0x1A;
+/// Metadati del path (Fase 19.2, zero kernel): payload = path; risposta
+/// self-written `[size:8][kind:8]`, payload vuoto. Nessun fd coinvolto.
+pub const R_STAT: u32 = 0x1B;
+/// `kind` per R_STAT (Fase 19.2): bit 0-1 tipo + bit 7 readonly.
+pub const STAT_FILE: u64 = 0;
+pub const STAT_DIR: u64 = 1;
+pub const STAT_DEVICE: u64 = 2;
+pub const STAT_READONLY: u64 = 0x80;
 /// Flag `open`: crea il file se non esiste (Fase 18.2: prima l'open creava
 /// sempre su ramfs ignorando i flag — ora POSIX: senza O_CREAT il file deve
 /// esistere). Viaggia in w1 del frame R_OPEN (libr lo passava gia', il server
