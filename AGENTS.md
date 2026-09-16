@@ -935,6 +935,26 @@ rustos/
         normale sparita, detached viva parent==1, cleanup-kill). Suite → 40/40.
         Rimandate: generazioni PID complete (cambio protocollo), kill
         sottoalbero oltre la cascata. Verifica: gate 5/5 + 7/7 + 40/40 + shell.
+- [x] Fase P0: baseline performance throughput client→block (KVM)
+  - [x] P0.1 `libr::rdtsc` + `tsc_calibrate` (TSC in ring 3: CR4.TSD mai
+        impostato; calibrazione su PIT ~100 Hz, ~4.45 GHz sul riferimento).
+  - [x] P0.2 `testland/bench` (`userbench` → `/test/bench.bin`, 6 op
+        end-to-end con warmup, righe `[bench]`): zero_1B (solo IPC),
+        sda_512B_seq (IPC+PIO), fat_small_orc (find+IPC+PIO), ramfs_4K
+        write/read (FS+IPC), fat_4K_oow (PIO+FLUSH/settore).
+  - [x] P0.3 Wiring: feature init `bench` (ortogonale a `skip_tests`,
+        `RUN_BENCH=1`, mai nel gate) + `scripts/bench.sh` (N run KVM
+        `-accel kvm -cpu host`, fail-loud, timeout atteso). Fix latente in
+        `build_common.sh`: `build_one` prendeva solo `$5` (flag multipli
+        troncati) → ora `${*:5}`.
+  - [x] P0.4 Baseline KVM (media 3 run, stabile ±2%): IPC floor ~1.9 µs/op;
+        settore ~1.2 ms (~409 KiB/s); small FAT ~21 ms; ramfs 14-25 µs
+        (161-289 MiB/s); overwrite FAT 4K ~64 ms (~62 KiB/s). Collo di
+        bottiglia = percorso disco (moltiplicatore settori per op logica),
+        non l'IPC. Tabella in `docs/src/13-performance.md`; soglia di
+        non-regressione >10%. P1 (PIO multi-settore, flush per richiesta,
+        memo FAT intra-op, DISK multi-settore) e P2 (cache/DMA/N-in-volo)
+        parcheggiate da analizzare con calma.
 
 ## Important Notes
 
@@ -1095,6 +1115,10 @@ timeout 6 qemu-system-x86_64 -m 4G -display none -serial stdio -no-reboot \
 
 # Produzione (default): niente test, shell subito usabile
 timeout 60 ./run.sh > /tmp/boot.log
+
+# Bench throughput su KVM (Fase P0, mai nel gate): 3 run di riferimento
+./scripts/bench.sh > /tmp/bench.log
+rg '\[bench\]' /tmp/bench-run1.log /tmp/bench-run2.log /tmp/bench-run3.log
 
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5

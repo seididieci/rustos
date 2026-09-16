@@ -1857,7 +1857,6 @@ fn t_mount() -> bool {
 /// di stato (nessuna spec fantasma: l'umount successivo deve fallire);
 /// replace-con-bad-source su target attivo non distrugge il buon mount;
 /// mount valido ancora operativo dopo i rifiuti (tabella intatta).
-/// (t34 resta libero per la Fase 17.)
 fn t_resolve() -> bool {
     drain_stray();
     // 1. Nome ben formato ma assente (fat.img non partizionata: niente sda1).

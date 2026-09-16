@@ -13,9 +13,12 @@ libr = { path = "../../libs/libr" }
 # interattivi (shell subito usabile). Con `--no-default-features` (via
 # `RUN_TESTS=1`, vedi run-tests.sh) esegue usertestfs/usertestfat/
 # usertests in sequenza prima della shell (gate di regressione).
+# Feature `bench` (via `RUN_BENCH=1`, vedi scripts/bench.sh, ortogonale a
+# skip_tests): esegue userbench prima della shell (mai nel gate).
 [features]
 default = ["skip_tests"]
 skip_tests = []
+bench = []
 
 [profile.dev]
 panic = "abort"

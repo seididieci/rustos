@@ -26,6 +26,13 @@ else
     echo "[build] userinit production (test saltati)"
 fi
 
+# Bench throughput (Fase P0, scripts/bench.sh): feature `bench` ortogonale a
+# skip_tests (il bench gira anche senza suite, mai nel gate).
+if [ "${RUN_BENCH:-0}" = "1" ]; then
+    INIT_FEATURES="$INIT_FEATURES --features bench"
+    echo "[build] userinit CON bench (RUN_BENCH=1)"
+fi
+
 build_one userland/init    userland/init/src/init.ld       userinit.bin    userinit $INIT_FEATURES
 build_one userland/console userland/console/src/console.ld userconsole.bin userconsole
 build_one userland/fs      userland/fs/src/fs.ld           userfs.bin      userfs

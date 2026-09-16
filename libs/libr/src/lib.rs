@@ -168,7 +168,7 @@ pub fn send_async(channel: u64, tag: u64, w0: u64, w1: u64) -> Result<i64, ()> {
 /// e puo' gestirlo (re-lookup, retry, uscita). NOTA: significa "UN peer e'
 /// morto", non necessariamente il server atteso — una notifica stale di un
 /// server precedente puo' arrivare dopo un re-lookup; confrontare `pid` se
-/// serve precisione (retry automatico rimandato: serve init-restart).
+/// serve precisione (niente retry automatico qui: vedi `fs_send`, Fase 14.12).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaitReplyError {
     /// Il processo che avrebbe dovuto rispondere e' morto (pid, exit code).
@@ -426,6 +426,38 @@ pub fn getpid() -> i64 {
 #[inline]
 pub fn get_ticks() -> i64 {
     unsafe { syscall4(SYS_GET_TICKS, 0, 0, 0, 0) }
+}
+
+/// P0 (benchmark): legge il Time Stamp Counter (cicli CPU). Disponibile in
+/// ring 3: il boot non imposta mai CR4.TSD (solo PAE in `boot.asm`).
+#[inline]
+pub fn rdtsc() -> u64 {
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
+
+/// P0 (benchmark): calibra il TSC contro il PIT (~100 Hz). Misura i cicli
+/// TSC trascorsi su `ticks` tick e ritorna gli Hz stimati (0 se fallisce).
+/// Letture `get_ticks` spaziate da spin puri (mai busy-loop su syscall:
+/// maschera IF=0 e affama il timer, vedi robustezza scheduler in AGENTS.md).
+pub fn tsc_calibrate(ticks: i64) -> u64 {
+    if ticks <= 0 {
+        return 0;
+    }
+    let t0 = get_ticks();
+    let c0 = rdtsc();
+    loop {
+        for _ in 0..4096 {
+            core::hint::spin_loop();
+        }
+        let now = get_ticks();
+        if now - t0 >= ticks {
+            let dt = (now - t0) as u64;
+            if dt == 0 {
+                return 0;
+            }
+            return rdtsc().wrapping_sub(c0) * 100 / dt;
+        }
+    }
 }
 
 /// `sbrk(inc)`: estende l'heap del processo di `inc` byte (arrotondati a
@@ -1717,8 +1749,8 @@ pub fn fs_op_async(ipc_tag: u64, frame_tag: u32, w0: u64, w1: u64, payload: &[u8
 /// Resetta il guard 1-in-volo (anche su errore).
 /// NOTA (Fase 14): l'attesa filtra per canale (`wait_reply_chan` sul canale FS
 /// cachato, stabile per vita del processo): le EXIT_NOTIFY *stale* di altri
-/// peer morti vengono saltate, solo la morte del server FS da' -1. Retry
-/// automatico e restart del server sono rimandati (serve init-restart).
+/// peer morti vengono saltate, solo la morte del server FS da' -1. Niente retry
+/// automatico qui (il retry-once vive in `fs_send`, Fase 14.12; il restart in init).
 pub fn fs_collect(req: i64, dst: &mut [u8], cap: usize) -> i64 {
     // Invariante: collect segue una read_async riuscita, che ha risolto e
     // cachato FS_CHAN (>= 0) prima di registrare FS_PENDING.
@@ -1727,7 +1759,7 @@ pub fn fs_collect(req: i64, dst: &mut [u8], cap: usize) -> i64 {
         Ok(m) => m,
         Err(WaitReplyError::ServerDied { pid, code }) => {
             // Server morto mentre attendevamo: niente retry automatico qui
-            // (serve init-restart, rimandato); il chiamante vede -1. Azzera i
+            // (scelta voluta: il retry-once vive in `fs_send`); il chiamante vede -1. Azzera i
             // ring: il frame async e' orfano (mai consumato o senza reply) e
             // disallineerebbe le op successive; la prossima op riscrive.
             println!("[libr] fs_collect: server pid {} morto (code {}), req {} perso", pid, code, req);
