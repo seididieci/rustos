@@ -31,10 +31,16 @@ fn run(name: &str, iters: u64, bytes: u64, hz: u64, mut f: impl FnMut() -> bool)
         }
     }
     let t0 = libr::rdtsc();
+    let mut max_cyc = 0u64;
     for _ in 0..iters {
+        let s = libr::rdtsc();
         if !f() {
             println!("[bench] {}: FAIL (iter)", name);
             return false;
+        }
+        let dt = libr::rdtsc().wrapping_sub(s);
+        if dt > max_cyc {
+            max_cyc = dt;
         }
     }
     let total = libr::rdtsc().wrapping_sub(t0);
@@ -44,7 +50,10 @@ fn run(name: &str, iters: u64, bytes: u64, hz: u64, mut f: impl FnMut() -> bool)
     }
     let cyc_op = total / iters;
     let kb_s = bytes * iters * hz / total / 1024;
-    println!("[bench] {} iters={} cyc_op={} kb_s={}", name, iters, cyc_op, kb_s);
+    println!(
+        "[bench] {} iters={} cyc_op={} max_cyc={} kb_s={}",
+        name, iters, cyc_op, max_cyc, kb_s
+    );
     true
 }
 

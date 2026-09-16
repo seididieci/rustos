@@ -56,8 +56,8 @@ impl AtaDisk {
         false
     }
 
-    /// Legge le 256 word di dati dopo DRQ nel buffer.
-    fn read_data(&self, buf: &mut [u8; 512]) {
+    /// Legge le 256 word di dati dopo DRQ nel buffer (primi 512 byte).
+    fn read_data(&self, buf: &mut [u8]) {
         for i in 0..256 {
             let w = unsafe { io::inw(self.cmd) };
             buf[i * 2] = (w & 0xFF) as u8;
@@ -153,8 +153,71 @@ impl AtaDisk {
         }
     }
 
-    /// Scrive le 256 word di dati dopo DRQ dal buffer (speculare a read_data).
-    fn write_data(&self, buf: &[u8; 512]) {
+    /// P1.2 — legge `n` (1..=255) settori contigui con UN solo comando PIO
+    /// (count=n): una fase di setup invece di n. `out` deve contenere almeno
+    /// `n*512` byte. Ritorna `false` (e dati parziali in `out`) su
+    /// errore/timeout/fuori range.
+    pub fn read_sectors(&self, lba: u64, n: u8, out: &mut [u8]) -> bool {
+        if n == 0 || out.len() < n as usize * 512 {
+            return false;
+        }
+        if self.lba48 {
+            if lba > 0xFFFF_FFFF_FFFF {
+                return false;
+            }
+            if !self.wait_not_busy() {
+                return false;
+            }
+            unsafe {
+                io::outb(self.cmd + 6, 0x40 | (self.drive << 4));
+                io::outb(self.cmd + 1, 0x00);
+                io::outb(self.cmd + 2, 0x00); // count high
+                io::outb(self.cmd + 3, ((lba >> 24) & 0xFF) as u8);
+                io::outb(self.cmd + 4, ((lba >> 32) & 0xFF) as u8);
+                io::outb(self.cmd + 5, ((lba >> 40) & 0xFF) as u8);
+                io::outb(self.cmd + 1, 0x00);
+                io::outb(self.cmd + 2, n); // count low
+                io::outb(self.cmd + 3, (lba & 0xFF) as u8);
+                io::outb(self.cmd + 4, ((lba >> 8) & 0xFF) as u8);
+                io::outb(self.cmd + 5, ((lba >> 16) & 0xFF) as u8);
+                io::outb(self.cmd + 7, 0x24); // READ SECTORS EXT
+            }
+        } else {
+            if lba > 0x0FFF_FFFF {
+                return false;
+            }
+            if !self.wait_not_busy() {
+                return false;
+            }
+            unsafe {
+                io::outb(self.cmd + 6, 0xE0 | (self.drive << 4) | ((lba >> 24) & 0x0F) as u8);
+                io::outb(self.cmd + 1, 0x00);
+                io::outb(self.cmd + 2, n); // sector count
+                io::outb(self.cmd + 3, (lba & 0xFF) as u8);
+                io::outb(self.cmd + 4, ((lba >> 8) & 0xFF) as u8);
+                io::outb(self.cmd + 5, ((lba >> 16) & 0xFF) as u8);
+                io::outb(self.cmd + 7, 0x20); // READ SECTORS with retry
+            }
+        }
+        for k in 0..n as usize {
+            if !self.wait_not_busy() {
+                return false;
+            }
+            let st = unsafe { io::inb(self.cmd + 7) };
+            if st & 0x01 != 0 {
+                return false;
+            }
+            if !self.wait_drq() {
+                return false;
+            }
+            self.read_data(&mut out[k * 512..(k + 1) * 512]);
+        }
+        true
+    }
+
+    /// Scrive le 256 word di dati dopo DRQ dal buffer (primi 512 byte, speculare
+    /// a read_data).
+    fn write_data(&self, buf: &[u8]) {
         for i in 0..256 {
             let w = (buf[i * 2] as u16) | ((buf[i * 2 + 1] as u16) << 8);
             unsafe { io::outw(self.cmd, w) };
@@ -248,5 +311,85 @@ impl AtaDisk {
         } else {
             self.write_lba28(lba, buf)
         }
+    }
+
+    /// P1.2 — scrive `n` (1..=255) settori contigui con UN solo comando PIO e
+    /// UN solo FLUSH CACHE alla fine (prima: un comando + un flush a settore).
+    /// Durabilita' per-richiesta invariata (il flush chiude l'intero run);
+    /// `data` deve contenere almeno `n*512` byte. `false` su errore/timeout.
+    pub fn write_sectors(&self, lba: u64, n: u8, data: &[u8]) -> bool {
+        if n == 0 || data.len() < n as usize * 512 {
+            return false;
+        }
+        // (comando, flush): (0x30, 0xE7) in LBA28, (0x34, 0xEA) in LBA48.
+        if self.lba48 {
+            if lba > 0xFFFF_FFFF_FFFF {
+                return false;
+            }
+            if !self.wait_not_busy() {
+                return false;
+            }
+            unsafe {
+                io::outb(self.cmd + 6, 0x40 | (self.drive << 4));
+                io::outb(self.cmd + 1, 0x00);
+                io::outb(self.cmd + 2, 0x00);
+                io::outb(self.cmd + 3, ((lba >> 24) & 0xFF) as u8);
+                io::outb(self.cmd + 4, ((lba >> 32) & 0xFF) as u8);
+                io::outb(self.cmd + 5, ((lba >> 40) & 0xFF) as u8);
+                io::outb(self.cmd + 1, 0x00);
+                io::outb(self.cmd + 2, n);
+                io::outb(self.cmd + 3, (lba & 0xFF) as u8);
+                io::outb(self.cmd + 4, ((lba >> 8) & 0xFF) as u8);
+                io::outb(self.cmd + 5, ((lba >> 16) & 0xFF) as u8);
+                io::outb(self.cmd + 7, 0x34); // WRITE SECTORS EXT
+            }
+            for k in 0..n as usize {
+                if !self.wait_drq() {
+                    return false;
+                }
+                self.write_data(&data[k * 512..(k + 1) * 512]);
+            }
+            if !self.wait_not_busy() {
+                return false;
+            }
+            unsafe {
+                io::outb(self.cmd + 6, 0x40 | (self.drive << 4));
+                io::outb(self.cmd + 7, 0xEA); // FLUSH CACHE EXT
+            }
+        } else {
+            if lba > 0x0FFF_FFFF {
+                return false;
+            }
+            if !self.wait_not_busy() {
+                return false;
+            }
+            unsafe {
+                io::outb(self.cmd + 6, 0xE0 | (self.drive << 4) | ((lba >> 24) & 0x0F) as u8);
+                io::outb(self.cmd + 1, 0x00);
+                io::outb(self.cmd + 2, n);
+                io::outb(self.cmd + 3, (lba & 0xFF) as u8);
+                io::outb(self.cmd + 4, ((lba >> 8) & 0xFF) as u8);
+                io::outb(self.cmd + 5, ((lba >> 16) & 0xFF) as u8);
+                io::outb(self.cmd + 7, 0x30); // WRITE SECTORS with retry
+            }
+            for k in 0..n as usize {
+                if !self.wait_drq() {
+                    return false;
+                }
+                self.write_data(&data[k * 512..(k + 1) * 512]);
+            }
+            if !self.wait_not_busy() {
+                return false;
+            }
+            unsafe {
+                io::outb(self.cmd + 6, 0xE0 | (self.drive << 4));
+                io::outb(self.cmd + 7, 0xE7); // FLUSH CACHE
+            }
+        }
+        if !self.wait_not_busy() {
+            return false;
+        }
+        let st = unsafe { io::inb(self.cmd + 7) };
+        st & 0x01 == 0
     }
 }

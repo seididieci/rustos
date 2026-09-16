@@ -169,6 +169,24 @@ unsafe fn heap_free(ptr: *mut u8) {
     }
 }
 
+/// P1.2-diagnosi (temporaneo): (blocchi liberi, byte liberi) nella free-list.
+pub fn heap_stats() -> (usize, usize) {
+    unsafe {
+        let mut n = 0usize;
+        let mut bytes = 0usize;
+        let mut cur = FREE_HEAD;
+        while !cur.is_null() {
+            n += 1;
+            bytes += (*cur).size;
+            cur = (*cur).next;
+            if n > 1_000_000 {
+                break; // lista corrotta: non impiccare il chiamante
+            }
+        }
+        (n, bytes)
+    }
+}
+
 /// Allocatore globale del processo: una sola istanza per binario.
 pub struct HeapAlloc;
 

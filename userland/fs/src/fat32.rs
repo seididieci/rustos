@@ -9,8 +9,8 @@ extern crate alloc;
 
 use alloc::format;
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
+use core::cell::Cell;
 
 /// Sorgente di settori da 512 byte (LBA assoluti nel nodo montato).
 /// Implementata dal driver ATA locale (Fase 9.2) o dal client IPC verso
@@ -20,6 +20,37 @@ pub trait BlockSource {
     /// Scrive un settore (Fase 20, FAT scrivibile): write-through, nessun
     /// caching — ogni write torna solo a settore stabile su disco.
     fn write_sector(&self, lba: u64, data: &[u8; 512]) -> bool;
+    /// P1.2 — run di `n` settori contigui (default: loop sui singoli;
+    /// `IpcDisk` li trasferisce in 1 IPC da ≤7 + 1 comando PIO + 1 flush).
+    /// `out`/`data` lunghi almeno `n*512` byte.
+    fn read_sectors(&self, lba: u64, n: usize, out: &mut [u8]) -> bool {
+        if out.len() < n * 512 {
+            return false;
+        }
+        for k in 0..n {
+            let mut sec = [0u8; 512];
+            if !self.read_sector(lba + k as u64, &mut sec) {
+                return false;
+            }
+            out[k * 512..(k + 1) * 512].copy_from_slice(&sec);
+        }
+        true
+    }
+    /// P1.2 — come `read_sectors` in scrittura (write-through per run:
+    /// il flush chiude l'intero run, vedi `AtaDisk::write_sectors`).
+    fn write_sectors(&self, lba: u64, n: usize, data: &[u8]) -> bool {
+        if data.len() < n * 512 {
+            return false;
+        }
+        for k in 0..n {
+            let mut sec = [0u8; 512];
+            sec.copy_from_slice(&data[k * 512..(k + 1) * 512]);
+            if !self.write_sector(lba + k as u64, &sec) {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 const EOC: u32 = 0x0FFFFFF8;   // valori >= questo = fine catena
@@ -65,6 +96,13 @@ pub struct Fat32<B: BlockSource> {
     vol_serial: Option<u32>,
     /// Label volume BPB+71 (11 byte raw, padding spazi): identità `LABEL=`.
     vol_label: [u8; 11],
+    /// P1.1 — memo dell'ultimo settore FAT letto (lba → contenuto). NON e'
+    /// una cache persistente che nasconde il disco: elimina solo i re-read
+    /// dello STESSO settore a distanza di microsecondi (walk catena,
+    /// scan alloc). Invalidata a ogni scrittura FAT (`set_fat_entry`) e
+    /// azzerata a ogni epoca (l'istanza nasce per mount). userfs e'
+    /// single-threaded: `Cell` basta.
+    fat_memo: Cell<Option<(u32, [u8; 512])>>,
 }
 
 const ATTR_DIR: u8 = 0x10;
@@ -117,6 +155,7 @@ impl<B: BlockSource> Fat32<B> {
             root_cluster: root,
             vol_serial,
             vol_label,
+            fat_memo: Cell::new(None),
         })
     }
 
@@ -144,22 +183,20 @@ impl<B: BlockSource> Fat32<B> {
         &self.disk
     }
 
-    /// Legge `n` settori contigui a partire da `lba`.
-    fn read_sectors(&self, lba: u32, n: usize, out: &mut [u8]) -> bool {
-        for i in 0..n {
-            let mut sector = [0u8; 512];
-            if !self.disk.read_sector(lba as u64 + i as u64, &mut sector) {
-                return false;
+    /// Settore della PRIMA copia FAT a `lba`, via memo (P1.1): hit = copia
+    /// in RAM (~100 ns), miss = 1 lettura disco + memorizzazione.
+    fn fat_sector(&self, lba: u32) -> Option<[u8; 512]> {
+        if let Some((cached, sec)) = self.fat_memo.get() {
+            if cached == lba {
+                return Some(sec);
             }
-            out[i * 512..i * 512 + 512].copy_from_slice(&sector);
         }
-        true
-    }
-
-    /// Legge un intero cluster nel buffer (grandezza cluster).
-    fn read_cluster(&self, cluster: u32, out: &mut [u8]) -> bool {
-        let lba = self.data_start + (cluster - 2) * self.spc as u32;
-        self.read_sectors(lba, self.spc as usize, out)
+        let mut sec = [0u8; 512];
+        if !self.disk.read_sector(lba as u64, &mut sec) {
+            return None;
+        }
+        self.fat_memo.set(Some((lba, sec)));
+        Some(sec)
     }
 
     /// Valore della entry FAT per `cluster` (28 bit utili).
@@ -167,10 +204,10 @@ impl<B: BlockSource> Fat32<B> {
         let byte_off = cluster as usize * 4;
         let lba = self.fat_start + (byte_off / 512) as u32;
         let off = byte_off % 512;
-        let mut sec = [0u8; 512];
-        if !self.read_sectors(lba, 1, &mut sec) {
-            return BAD_CLUSTER;
-        }
+        let sec = match self.fat_sector(lba) {
+            Some(s) => s,
+            None => return BAD_CLUSTER,
+        };
         u32::from_le_bytes([sec[off], sec[off + 1], sec[off + 2], sec[off + 3]]) & 0x0FFFFFFF
     }
 
@@ -182,24 +219,6 @@ impl<B: BlockSource> Fat32<B> {
         } else {
             Some(v)
         }
-    }
-
-    /// Legge l'intera catena di cluster (es. un file o una directory).
-    fn read_chain(&self, start: u32, out: &mut Vec<u8>) -> bool {
-        let csize = self.cluster_bytes();
-        let mut cluster = start;
-        let mut chunk = vec![0u8; csize];
-        loop {
-            if !self.read_cluster(cluster, &mut chunk) {
-                return false;
-            }
-            out.extend_from_slice(&chunk);
-            match self.next_cluster(cluster) {
-                Some(next) => cluster = next,
-                None => break,
-            }
-        }
-        true
     }
 
     /// Nome 8.3 dalla directory entry (spazi rimossi, estensione ricostruita).
@@ -216,53 +235,71 @@ impl<B: BlockSource> Fat32<B> {
 
     /// Legge le entry di una directory (catena di cluster) saltando
     /// 0x00 (fine), 0xE5 (cancellata), 0x0F (LFN) e i volumi.
+    /// P1.2 — parse incrementale settore per settore, SENZA accumulare lo
+    /// stream in un Vec (ogni Vec temporaneo per-op frammentava la free-list
+    /// dell'heap di userfs: +1 blocco non coalescibile per op → scansioni
+    /// O(n)/O(n²) su tutte le op successive). Gli `entry_off` sono identici
+    /// a prima (offset aritmetici nello stesso stream).
     fn read_dir(&self, cluster: u32) -> Vec<DirEntry> {
-        let mut data = Vec::new();
-        if !self.read_chain(cluster, &mut data) {
-            return Vec::new();
-        }
-
         let mut entries = Vec::new();
-        let mut i = 0;
-        while i + 32 <= data.len() {
-            let e = &data[i..i + 32];
-            let first = e[0];
-            if first == 0x00 {
-                break; // fine directory
-            }
-            if first == 0xE5 {
-                i += 32; // cancellata
-                continue;
-            }
-            let attr = e[11];
-            if attr & 0x0F == 0x0F {
-                i += 32; // entry LFN: la segue l'8.3
-                continue;
-            }
-            if attr & ATTR_VOLUME != 0 {
-                i += 32; // volume label
-                continue;
-            }
+        let spc = self.spc as usize;
+        let mut c = cluster;
+        let mut base = 0usize; // offset stream all'inizio del cluster corrente
+        let mut sec = [0u8; 512];
+        'walk: loop {
+            for si in 0..spc {
+                let lba =
+                    self.data_start as u64 + (c - 2) as u64 * spc as u64 + si as u64;
+                if !self.disk.read_sector(lba, &mut sec) {
+                    return Vec::new();
+                }
+                let mut k = 0usize;
+                while k + 32 <= 512 {
+                    let e = &sec[k..k + 32];
+                    let first = e[0];
+                    if first == 0x00 {
+                        break 'walk; // fine directory
+                    }
+                    if first == 0xE5 {
+                        k += 32; // cancellata
+                        continue;
+                    }
+                    let attr = e[11];
+                    if attr & 0x0F == 0x0F {
+                        k += 32; // entry LFN: la segue l'8.3
+                        continue;
+                    }
+                    if attr & ATTR_VOLUME != 0 {
+                        k += 32; // volume label
+                        continue;
+                    }
 
-            let name = Self::entry_name(e);
-            if name == "." || name == ".." {
-                i += 32;
-                continue;
+                    let name = Self::entry_name(e);
+                    if name == "." || name == ".." {
+                        k += 32;
+                        continue;
+                    }
+
+                    let cl_lo = u16::from_le_bytes([e[26], e[27]]);
+                    let cl_hi = u16::from_le_bytes([e[20], e[21]]);
+                    let first_cluster = ((cl_hi as u32) << 16) | cl_lo as u32;
+                    let size = u32::from_le_bytes([e[28], e[29], e[30], e[31]]);
+
+                    entries.push(DirEntry {
+                        name,
+                        attr,
+                        first_cluster,
+                        size,
+                        entry_off: base + si * 512 + k,
+                    });
+                    k += 32;
+                }
             }
-
-            let cl_lo = u16::from_le_bytes([e[26], e[27]]);
-            let cl_hi = u16::from_le_bytes([e[20], e[21]]);
-            let first_cluster = ((cl_hi as u32) << 16) | cl_lo as u32;
-            let size = u32::from_le_bytes([e[28], e[29], e[30], e[31]]);
-
-            entries.push(DirEntry {
-                name,
-                attr,
-                first_cluster,
-                size,
-                entry_off: i,
-            });
-            i += 32;
+            base += spc * 512;
+            match self.next_cluster(c) {
+                Some(next) => c = next,
+                None => break,
+            }
         }
         entries
     }
@@ -314,6 +351,9 @@ impl<B: BlockSource> Fat32<B> {
 
     /// Legge fino a `count` byte del file a partire da `offset`, copiandoli in
     /// `out`. Ritorna i byte letti (puo' essere < count a fine file).
+    /// P1.1 — legge SOLO i settori coperti da [offset, offset+to_read): il
+    /// walk dei cluster saltati costa solo FAT (memo), mai dati. Prima si
+    /// leggeva ogni cluster intero (spc settori) anche per 25 byte.
     pub fn read_file(&self, info: &FileInfo, offset: usize, count: usize, out: &mut [u8]) -> usize {
         let csize = self.cluster_bytes();
         let size = info.size as usize;
@@ -321,34 +361,60 @@ impl<B: BlockSource> Fat32<B> {
             return 0;
         }
         let to_read = count.min(size - offset);
-        let mut written = 0usize;
+        let spc = self.spc as usize;
+        let first_ci = offset / csize;
+        let last_ci = (offset + to_read - 1) / csize;
+        // Walk FAT-only fino al primo cluster utile (memo: niente disco).
         let mut cluster = info.first_cluster;
-        let mut file_pos = 0usize;
-        let mut chunk = vec![0u8; csize];
-
-        while written < to_read {
-            if !self.read_cluster(cluster, &mut chunk) {
-                break;
-            }
-            let cl_start = file_pos;
-            let cl_end = (file_pos + csize).min(size); // ultimo cluster troncato
-            let ov_start = cl_start.max(offset);
-            let ov_end = cl_end.min(offset + to_read);
-            if ov_end > ov_start {
-                let src = &chunk[ov_start - cl_start..ov_end - cl_start];
-                out[written..written + src.len()].copy_from_slice(src);
-                written += src.len();
-            }
-            file_pos = cl_end;
-            if file_pos >= size {
-                break;
-            }
+        for _ in 0..first_ci {
             match self.next_cluster(cluster) {
                 Some(next) => cluster = next,
-                None => break,
+                None => return 0, // catena piu' corta di size: corrotta
             }
         }
-        written
+        let mut done = 0usize;
+        // P1.2 — un solo run per cluster a chunk da ≤8 settori in buffer
+        // stack (niente Vec temporanei: vedi read_dir). `spc` resta qualunque
+        // (potenza di 2 da BPB), il chunking interno regge spc > 8.
+        let mut run = [0u8; 8 * 512];
+        for ci in first_ci..=last_ci {
+            let ci_start = ci * csize;
+            let ci_end = ((ci + 1) * csize).min(size);
+            let s0 = if ci == first_ci { (offset - ci_start) / 512 } else { 0 };
+            let s1 = if ci == last_ci {
+                (offset + to_read - ci_start + 511) / 512
+            } else {
+                spc
+            };
+            let lba0 = self.data_start as u64 + (cluster - 2) as u64 * spc as u64;
+            let mut s = s0;
+            while s < s1 {
+                let k = (s1 - s).min(8);
+                if !self.disk.read_sectors(lba0 + s as u64, k, &mut run[..k * 512]) {
+                    return done;
+                }
+                for si in s..s + k {
+                    let g0 = ci_start + si * 512;
+                    let g1 = (g0 + 512).min(ci_end);
+                    let r0 = g0.max(offset);
+                    let r1 = g1.min(offset + to_read);
+                    if r1 > r0 {
+                        let base = (si - s) * 512;
+                        out[done..done + r1 - r0]
+                            .copy_from_slice(&run[base + (r0 - g0)..base + (r1 - g0)]);
+                        done += r1 - r0;
+                    }
+                }
+                s += k;
+            }
+            if ci != last_ci {
+                match self.next_cluster(cluster) {
+                    Some(next) => cluster = next,
+                    None => return done, // catena corta: corrotta, stop
+                }
+            }
+        }
+        done
     }
 
     /// Scrive fino a `data.len()` byte del file a partire da `offset`
@@ -374,23 +440,41 @@ impl<B: BlockSource> Fat32<B> {
             file_pos += csize;
         }
         let mut done = 0usize;
-        let mut sec = [0u8; 512];
+        // P1.2 — read-modify-write per run di cluster a chunk da ≤8 settori
+        // in buffer stack (niente Vec: vedi read_dir). Un solo PIO + flush
+        // per chunk invece di N coppie singolo-settore + N flush.
+        let mut run = [0u8; 8 * 512];
         while done < to_write {
-            let rel = offset + done - file_pos; // byte nel cluster
-            let sec_idx = (rel / 512) as u32;
-            let sec_off = rel % 512;
-            let lba = self.data_start as u64
-                + ((cluster - 2) as u64) * (self.spc as u64)
-                + sec_idx as u64;
-            let chunk = (512 - sec_off).min(to_write - done);
-            if !self.disk.read_sector(lba, &mut sec) {
-                return done;
+            // Span di settori toccati in questo cluster.
+            let rel0 = offset + done - file_pos;
+            let rel1 = (offset + to_write - file_pos).min(csize);
+            let s0 = rel0 / 512;
+            let s1 = (rel1 + 511) / 512;
+            let lba0 = self.data_start as u64
+                + ((cluster - 2) as u64) * (self.spc as u64);
+            // Rattoppa dal payload a chunk (il rattoppo segue i chunk letti).
+            let mut p = done;
+            let mut s = s0;
+            while s < s1 {
+                let k = (s1 - s).min(8);
+                if !self.disk.read_sectors(lba0 + s as u64, k, &mut run[..k * 512]) {
+                    return done;
+                }
+                let g0 = s * 512; // inizio chunk, relativo al cluster
+                while p < done + (rel1 - rel0).min(to_write - done)
+                    && offset + p - file_pos < g0 + k * 512
+                {
+                    let g = offset + p - file_pos - g0; // offset nel chunk
+                    let chunk = (k * 512 - g).min(to_write - p);
+                    run[g..g + chunk].copy_from_slice(&data[p..p + chunk]);
+                    p += chunk;
+                }
+                if !self.disk.write_sectors(lba0 + s as u64, k, &run[..k * 512]) {
+                    return done;
+                }
+                s += k;
             }
-            sec[sec_off..sec_off + chunk].copy_from_slice(&data[done..done + chunk]);
-            if !self.disk.write_sector(lba, &sec) {
-                return done;
-            }
-            done += chunk;
+            done = p;
             // Sforato nel cluster successivo: avanza la catena.
             if offset + done - file_pos >= csize {
                 file_pos += csize;
@@ -433,6 +517,8 @@ impl<B: BlockSource> Fat32<B> {
                 return false;
             }
         }
+        // La FAT e' cambiata: il memo non e' piu' valido (P1.1).
+        self.fat_memo.set(None);
         true
     }
 
@@ -476,19 +562,26 @@ impl<B: BlockSource> Fat32<B> {
     }
 
     /// Azzera un intero cluster (sicurezza: niente stale leggibile dopo grow).
+    /// P1.2 — scritture multi a chunk da ≤8 in buffer stack (1 flush a
+    /// chunk), niente Vec.
     fn zero_cluster(&self, c: u32) -> bool {
-        let zero = [0u8; 512];
-        for i in 0..self.spc as u64 {
-            let lba = self.data_start as u64 + ((c - 2) as u64) * (self.spc as u64) + i;
-            if !self.disk.write_sector(lba, &zero) {
+        let zero = [0u8; 8 * 512];
+        let spc = self.spc as usize;
+        let lba0 = self.data_start as u64 + ((c - 2) as u64) * (self.spc as u64);
+        let mut s = 0usize;
+        while s < spc {
+            let k = (spc - s).min(8);
+            if !self.disk.write_sectors(lba0 + s as u64, k, &zero[..k * 512]) {
                 return false;
             }
+            s += k;
         }
         true
     }
 
     /// Azzera il range [a, b) del file (catena da `first`, size logica `end`):
-    /// read-modify-write a settori. Usato per la coda [old_size, new_end).
+    /// read-modify-write per run di cluster a chunk stack (P1.2, come
+    /// `write_file`). Usato per la coda [old_size, new_end).
     fn zero_range(&self, first: u32, a: usize, b: usize) -> bool {
         if b <= a || first < 2 {
             return true;
@@ -503,24 +596,30 @@ impl<B: BlockSource> Fat32<B> {
             }
             file_pos += csize;
         }
-        let mut sec = [0u8; 512];
+        let mut run = [0u8; 8 * 512];
         let mut pos = a;
         while pos < b {
-            let rel = pos - file_pos;
-            let sec_idx = (rel / 512) as u64;
-            let sec_off = rel % 512;
-            let lba = self.data_start as u64
-                + ((cluster - 2) as u64) * (self.spc as u64)
-                + sec_idx;
-            let chunk = (512 - sec_off).min(b - pos);
-            if !self.disk.read_sector(lba, &mut sec) {
-                return false;
+            let rel0 = pos - file_pos;
+            let rel1 = (b - file_pos).min(csize);
+            let s0 = rel0 / 512;
+            let s1 = (rel1 + 511) / 512;
+            let lba0 = self.data_start as u64
+                + ((cluster - 2) as u64) * (self.spc as u64);
+            let mut s = s0;
+            while s < s1 {
+                let k = (s1 - s).min(8);
+                if !self.disk.read_sectors(lba0 + s as u64, k, &mut run[..k * 512]) {
+                    return false;
+                }
+                let z0 = rel0.max(s * 512) - s * 512;
+                let z1 = rel1.min((s + k) * 512) - s * 512;
+                run[z0..z1].fill(0);
+                if !self.disk.write_sectors(lba0 + s as u64, k, &run[..k * 512]) {
+                    return false;
+                }
+                s += k;
             }
-            sec[sec_off..sec_off + chunk].fill(0);
-            if !self.disk.write_sector(lba, &sec) {
-                return false;
-            }
-            pos += chunk;
+            pos += rel1 - rel0;
             if pos - file_pos >= csize && pos < b {
                 file_pos += csize;
                 match self.next_cluster(cluster) {
