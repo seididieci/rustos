@@ -81,6 +81,11 @@ pub const SYS_PS_INFO: u64 = 37;
 /// con `io_count == 0`); prio 1..31 per tutti. `meta` e' uno SpawnMeta da 40 B
 /// (vedi sotto); ritorna il channel di nascita o -1.
 pub const SYS_SPAWN_IMAGE: u64 = 38;
+/// Flag `SpawnMeta.flags` (Fase 22, detach): il figlio non partecipa alla
+/// cascata di morte del parent — alla morte del parent viene ri-parentato a
+/// init invece di terminare. Deciso dallo spawner (il figlio non puo'
+/// auto-staccarsi); irrevocabile. Bit riservati: devono essere 0 (rifiuto).
+pub const SPAWN_FLAG_DETACH: u8 = 0x01;
 /// Bound di scansione per `ps` (Fase 19.1): i PID vivono in 0..PS_SCAN_MAX.
 /// Deve restare uguale al `MAX_PIDS` del kernel (32, Fase 14).
 pub const PS_SCAN_MAX: u32 = 32;

@@ -40,6 +40,7 @@ const M_MNTDIE: u64 = 8;
 const M_OPENDIE: u64 = 9;
 const M_MAPHAMMER: u64 = 10;
 const M_FLOOD: u64 = 11;
+const M_NEST: u64 = 12;
 
 // VA per i test map_physical/aliasing (zona libera tra USER_FS_BUFFER e lo
 // heap: 0x4000_0020_0000..0x4000_0040_0000).
@@ -2197,6 +2198,117 @@ fn t_diskboot() -> bool {
     true
 }
 
+/// Attende T_READY(w0, w1) sul canale `chan` (handshake NEST, Fase 22):
+/// come `recv_expect` ma ritorna i payload invece di un bool. Le EXIT_NOTIFY
+/// altrui si scartano senza reply (mittente morto); gli altri estranei con
+/// reply, come `recv_expect`.
+fn recv_ready(chan: u64) -> Option<(u64, u64)> {
+    loop {
+        match libr::recv() {
+            Ok(m) if m.channel == chan && m.tag == T_READY => {
+                let _ = libr::reply(T_ACK, 0, 0);
+                return Some((m.w0, m.w1));
+            }
+            Ok(m) if libr::is_exit_notify(&m) => {}
+            Ok(_) => {
+                let _ = libr::reply(T_ACK, 0, 0);
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// Attesa throttled che `ps_info(pid)` sparisca (processo terminato +
+/// reclamato). Batch di spin puri tra i get_ticks (igiene scheduler).
+fn poll_gone(pid: u64, bound_ticks: i64) -> bool {
+    let t0 = libr::get_ticks();
+    loop {
+        if libr::ps_info(pid as u32).is_none() {
+            return true;
+        }
+        if libr::get_ticks() - t0 > bound_ticks {
+            return false;
+        }
+        for _ in 0..512 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+/// Attesa throttled della prima snapshot `ps` di `pid`: ritorna il parent
+/// osservato, o None a timeout / pid mai apparso.
+fn poll_parent(pid: u64, bound_ticks: i64) -> Option<Option<u32>> {
+    let t0 = libr::get_ticks();
+    loop {
+        if let Some(e) = libr::ps_info(pid as u32) {
+            return Some(e.parent);
+        }
+        if libr::get_ticks() - t0 > bound_ticks {
+            return None;
+        }
+        for _ in 0..512 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+/// t40 — detach + reparent a init (Fase 22). usertests spawna un MID (NEST)
+/// che spawna due foglie KILLME parcheggiate (una detached via flag spawn,
+/// una normale) e poi esce: la sua morte fa scattare cascata sulla normale e
+/// reparent a init della detached. Osservazione SOLO via `ps` (usertests non
+/// e' peer delle foglie, quindi niente EXIT_NOTIFY diretta): normale sparita,
+/// detached viva con parent == init (pid 1); poi cleanup-kill della detached
+/// e attesa sparizione. Bound 500 tick per fase, mai hang.
+fn t_detach() -> bool {
+    drain_stray();
+    let (mid_chan, _mid_pid) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, M_NEST, 0) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t40: spawn NEST FAILED");
+            return false;
+        }
+    };
+    let (det, norm) = match recv_ready(mid_chan) {
+        Some((d, n)) if d != 0 && n != 0 => (d, n),
+        _ => {
+            println!("[usertests] t40: T_READY dal MID mancante");
+            return false;
+        }
+    };
+    // Il MID esce (exit 0): la cascata scatta qui.
+    match wait_exit(mid_chan) {
+        Some((0, _)) => {}
+        other => {
+            println!("[usertests] t40: exit del MID anomala: {:?}", other);
+            return false;
+        }
+    }
+    // Foglia normale: cascata → deve sparire da ps.
+    if !poll_gone(norm, 500) {
+        println!("[usertests] t40: foglia normale ancora viva (pid={})", norm);
+        return false;
+    }
+    // Detached: viva e ri-parentata a init (pid 1).
+    match poll_parent(det, 500) {
+        Some(Some(1)) => {}
+        other => {
+            println!("[usertests] t40: detached parent errato: {:?}", other);
+            return false;
+        }
+    }
+    // Cleanup: kill della detached + sparizione (nessuna EXIT_NOTIFY: non
+    // siamo peer — si osserva solo via ps).
+    if libr::kill(det as i64, 0).is_err() {
+        println!("[usertests] t40: kill detached pid={} FAILED", det);
+        return false;
+    }
+    if !poll_gone(det, 500) {
+        println!("[usertests] t40: detached ancora viva dopo kill");
+        return false;
+    }
+    true
+}
+
 /// Fixture disco secondario (Fase 16d, accoppiate a run.sh: fat2.img
 /// generata con `--serial C0FFEE01 --label SECOND --marker ...`).
 const DISK2_UUID: &str = "C0FFEE01";
@@ -2430,6 +2542,7 @@ pub extern "C" fn _start() -> ! {
     report(&mut total, &mut ok, "t37 ps_info snapshot processi", t_ps());
     report(&mut total, &mut ok, "t38 stat metadati senza open", t_stat());
     report(&mut total, &mut ok, "t39 servizi da disco (/bin+/test)", t_diskboot());
+    report(&mut total, &mut ok, "t40 detach + reparent a init", t_detach());
     // t34 per ULTIMO: i drop sono irrevocabili sul canale di usertests.
     report(&mut total, &mut ok, "t34 diritti per-canale lato server", t_rights());
 

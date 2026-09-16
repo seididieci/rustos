@@ -1,7 +1,7 @@
 # ADR-0010: Process lifecycle — cleanup kernel-side, notifica exit, kill, slot a generazioni
 
-**Status**: Implemented (Fase 14)
-**Data**: 2026-09-08
+**Status**: Implemented (Fase 14), emended Fase 22 (detach)
+**Data**: 2026-09-08, emendamento 2026-09-16
 
 ## Contesto
 
@@ -86,10 +86,24 @@ kernel sa gia' tutto (canali, servizi, CBS) e nessuno fa wait/reap esplicito.
    channels/CBS/servizi restano validi per la vita del processo e non c'e'
    confusione tra un processo nuovo e uno vecchio con lo stesso numero di slot.
 
-6. **Detach (futuro, nota)**. In una fase successiva: un figlio che deve
-   sopravvivere al parent (es. launcher/daemon) verra' "staccato" e
-   ri-parentato a init; in quella fase si aggiungera' anche il kill esplicito
-   del sottoalbero.
+6. **Detach (Fase 22, implementato)**. Un figlio spawnato con flag
+   `SPAWN_FLAG_DETACH` (in `SpawnMeta`, deciso dallo spawner — mai dal figlio
+   stesso, come i diritti Fase 17 che si riducono solo) NON partecipa alla
+   cascata: alla morte del parent viene ri-parentato a init (`parent = 1`)
+   invece di terminare. Irrevocabile; inerte per i figli di init (init non
+   muore mai: panic documentato). Il birth channel muore col peer (come per
+   qualunque morte): il detached usa poi `service_lookup` (nessun fresh
+   channel verso init — servira' al futuro protocollo launcher).
+   Motivazione (come POSIX: `kill` singolo vs gruppi espliciti; qui niente
+   pidfd/cgroup): la scelta dello scope di morte sta allo spawn, non a una
+   syscall di auto-promozione (un processo "malevolo" non puo' sganciarsi
+   dalla supervisione). `kill` resta invariato (singolo pid + cascata sui
+   non-detached): nessuna nuova syscall kill. Test t40 (MID intermedio con
+   due foglie, osservazione via `ps`: normale sparita, detached viva con
+   parent == 1, poi cleanup-kill).
+   Rimandato esplicitamente: generazioni PID complete (punto 5: richiedono
+   cambio di protocollo su channel/notify) e kill esplicito dell'intero
+   sottoalbero oltre la cascata esistente.
 
 ## Conseguenze
 
@@ -116,15 +130,19 @@ kernel sa gia' tutto (canali, servizi, CBS) e nessuno fa wait/reap esplicito.
    se un driver avra' peer diretti con stato, ricavarne la tabella per
    (chan, fd). Test: t25 (morte driver + re-registrazione), t26 (morte client
    senza close + smoke completo).
- - Init-restart (14.12): init supervisiona console/fs/devfs (tabella
-   bin/servizio/chan/pid + loop su EXIT_NOTIFY condiviso con l'attesa dei test;
-   shell/uptime log-only). Respawn + attesa SVC_READY (fire-and-forget via
-   send_async per tutti: una send sync resterebbe bloccata); backoff 20 tick +
-   hold oltre 3 restart/300 tick. `service_pid` (36) per supervisione;
-   retry libr uniform-retry-once con re-lookup bounded (~200 tick), caveat
-   write at-least-once. Test: t27 (kill devfs → sparizione → ricomparsa →
-   operativo). Rimandati: t28 (restart userfs: re-register driver +
-   re-handshake client + reopen shell), generazioni PID.
+  - Init-restart (14.12): init supervisiona console/fs/devfs (tabella
+    bin/servizio/chan/pid + loop su EXIT_NOTIFY condiviso con l'attesa dei test;
+    shell/uptime log-only). Respawn + attesa SVC_READY (fire-and-forget via
+    send_async per tutti: una send sync resterebbe bloccata); backoff 20 tick +
+    hold oltre 3 restart/300 tick. `service_pid` (36) per supervisione;
+    retry libr uniform-retry-once con re-lookup bounded (~200 tick), caveat
+    write at-least-once. Test: t27 (kill devfs → sparizione → ricomparsa →
+    operativo). Rimandati: t28 (restart userfs: re-register driver +
+    re-handshake client + reopen shell), generazioni PID.
+  - Detach (Fase 22, emendamento §6): campo `detached` nel PCB (da flag spawn,
+    validato: bit riservati rifiutati), `terminate` salta i detached nella
+    cascata e li riparenta a init con log `[proc] ... detached`; `ps` mostra
+    parent == 1. Test t40. Kill invariato: nessuna nuova syscall.
 
 ## References
 

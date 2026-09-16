@@ -134,6 +134,11 @@ pub struct Process {
     /// Processo padre (chi ha creato questo processo via `spawn`). `None` per i
     /// processi creati direttamente dal kernel (es. init, idle).
     pub parent: Option<usize>,
+    /// Detached dalla cascata di morte (Fase 22): alla morte del parent NON
+    /// termina in cascata ma viene ri-parentato a init. Deciso dallo spawner
+    /// via flag `SPAWN_FLAG_DETACH` (il figlio non puo' auto-staccarsi);
+    /// irrevocabile. Inerte per i figli di init (init non muore mai).
+    pub detached: bool,
     /// Indirizzo base (basso) dello stack kernel, per un futuro rilascio.
     pub stack_base: u64,
     /// CR3 (page table) del processo. Per i processi kernel e' la CR3 di base.
@@ -252,6 +257,7 @@ impl Process {
             priority,
             state: State::Ready,
             parent,
+            detached: false,
             stack_base,
             cr3: crate::vmm_user::kernel_cr3(),
             kernel_stack_top: stack_top,
@@ -295,6 +301,7 @@ impl Process {
         parent: Option<usize>,
         parent_chan: Option<usize>,
         io_ranges: &[(u16, u16)],
+        detached: bool,
     ) -> Option<Process> {
         // Kernel stack: RSP0 (per rientrare a ring 0 su interrupt) + frame.
         let stack_base = crate::phys_mem::alloc_contiguous(STACK_FRAMES)?;
@@ -322,6 +329,7 @@ impl Process {
             priority,
             state: State::Ready,
             parent,
+            detached,
             stack_base,
             cr3,
             kernel_stack_top: stack_top,

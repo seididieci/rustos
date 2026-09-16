@@ -76,7 +76,7 @@ fn spawn_user(
     // di COW: i binari sono piccoli (pochi frame).
     let copy = copy_binary(code_phys, code_frames)?;
     let id = unsafe {
-        crate::sched::create_user(name, priority, copy, code_frames, entry(), parent, parent_chan, io_ranges)
+        crate::sched::create_user(name, priority, copy, code_frames, entry(), parent, parent_chan, io_ranges, false)
     }?;
     crate::serial_println!(
         "[user] binary '{}': phys={:#x} copy={:#x} entry={:#x} ({} frame)",
@@ -110,6 +110,8 @@ fn copy_binary(code_phys: u64, frames: usize) -> Option<u64> {
 /// chiamante: la sorgente user e' leggibile direttamente. Il nome display
 /// arriva dal chiamante (`owned`, validato): transitorio "image" visibile al
 /// massimo per un tick prima di `set_owned_name` (solo display, mai ABI).
+/// `detached` (Fase 22): il figlio non partecipa alla cascata di morte del
+/// parent (ri-parentato a init); deciso dallo spawner via SpawnMeta.
 pub fn spawn_image(
     owned: &[u8],
     priority: crate::sched::Priority,
@@ -118,6 +120,7 @@ pub fn spawn_image(
     parent: Option<usize>,
     parent_chan: Option<usize>,
     io_ranges: &[(u16, u16)],
+    detached: bool,
 ) -> Option<usize> {
     let frame = crate::phys_mem::FRAME_SIZE as usize;
     let frames = len.div_ceil(frame);
@@ -133,7 +136,7 @@ pub fn spawn_image(
         }
     }
     let id = unsafe {
-        crate::sched::create_user("image", priority, dst, frames, entry(), parent, parent_chan, io_ranges)
+        crate::sched::create_user("image", priority, dst, frames, entry(), parent, parent_chan, io_ranges, detached)
     }?;
     crate::sched::set_owned_name(id, owned);
     Some(id)

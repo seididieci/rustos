@@ -289,6 +289,11 @@ L'attesa READY non scarta le morti altrui: le `EXIT_NOTIFY` viste durante
 `wait_ready` vanno in uno stash e vengono processate dai loop (altrimenti un
 restart perso a cascata uccide il sistema — osservato Fase 21 con userdisk).
 
+Dalla **Fase 22** (emendamento ADR-0010 §6) un figlio spawnato con flag
+`SPAWN_FLAG_DETACH` non partecipa alla cascata di morte: alla morte del parent
+viene ri-parentato a init invece di terminare. Solo lo spawner decide (mai
+auto-detach); irrevocabile; inerte per i figli di init.
+
 Dalla **Fase 21** i servizi partono **da disco** invece che embedded: il kernel
 embedda solo lo storage-TCB (init/disk/fs, caricati prima che il FS esista) e
 init legge il resto da `/bin` (`/test` per la suite, iniettati a build via

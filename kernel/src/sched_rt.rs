@@ -215,13 +215,14 @@ pub unsafe fn create_user(
     parent: Option<usize>,
     parent_chan: Option<usize>,
     io_ranges: &[(u16, u16)],
+    detached: bool,
 ) -> Option<usize> {
     let mut guard = SCHED.lock();
     let sched = guard.as_mut().expect("scheduler non inizializzato");
 
     let id = sched.alloc_pid()?;
     let process = match unsafe {
-        Process::create_user(name, priority, code_phys, code_frames, entry, parent, parent_chan, io_ranges)
+        Process::create_user(name, priority, code_phys, code_frames, entry, parent, parent_chan, io_ranges, detached)
     } {
         Some(p) => p,
         None => {
@@ -857,10 +858,10 @@ impl Scheduler {
     /// Morte logica del processo `pid` (Fase 14, ADR-0010): marca
     /// `Terminated`, sblocca i mittenti sincroni che attendevano una reply da
     /// `pid`, enumera i peer da notificare (coppie peer/channel salvate nel
-    /// PCB per il reclaim), termina TUTTA la discendenza (cascata), libera
-    /// canali/servizi/CBS e accoda il processo al reclaim. Il teardown fisico
-    /// (stack/TSS/address space) e la notifica EXIT ai peer sono differiti a
-    /// `drain_reclaim`. Se `pid` e' il processo corrente, il chiamante deve
+    /// PCB per il reclaim), termina la discendenza NON-detached in cascata e
+    /// ri-parenta a init i figli detached (Fase 22), libera canali/servizi/CBS
+    /// e accoda il processo al reclaim. Il teardown fisico (stack/TSS/address
+    /// space) e la notifica EXIT ai peer sono differiti a `drain_reclaim`. Se `pid` e' il processo corrente, il chiamante deve
     /// poi fare lo switch (vedi `exit_current`).
     fn terminate(&mut self, pid: usize, code: i64) {
         if pid >= self.processes.len() || self.processes[pid].state == State::Terminated {
@@ -894,14 +895,27 @@ impl Scheduler {
         // (PID/TSS/frame) sono gia' libere e il pool non si esaurisce.
         self.wake_senders(pid);
 
-        // Cascata: tutta la discendenza muore con il capostipite.
+        // Cascata: tutta la discendenza NON-detached muore con il capostipite.
+        // I figli detached (Fase 22, flag dello spawner) sopravvivono e
+        // vengono ri-parentati a init (pid 1, che non muore mai): niente
+        // orfani con parent morto, niente cascata oltre il flag.
         for child in 0..self.processes.len() {
             if child == pid {
                 continue;
             }
             let is_child = self.processes[child].state != State::Terminated
                 && self.processes[child].parent == Some(pid);
-            if is_child {
+            if !is_child {
+                continue;
+            }
+            if self.processes[child].detached {
+                self.processes[child].parent = Some(1);
+                let name = name_buf(&self.processes[child]);
+                crate::serial_println!(
+                    "[proc ] '{}' pid {} detached: ri-parentato a init (morto parent {})",
+                    name_str_of(&name), child, pid
+                );
+            } else {
                 self.terminate(child, code);
             }
         }

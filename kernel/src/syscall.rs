@@ -452,14 +452,16 @@ fn sys_spawn(name_ptr: u64, name_len: usize) -> i64 {
 }
 
 /// Layout di `SpawnMeta` (Fase 21, 40 B, `repr(C)` anche in libr): nome NUL-
-/// padded (non vuoto), priorita', porte I/O. Il kernel valida tutto (init e'
-/// trusted ma il formato deve essere fail-loud, mai UB).
+/// padded (non vuoto), priorita', porte I/O + flags (Fase 22: solo DETACH).
+/// Il kernel valida tutto (init e' trusted ma il formato deve essere
+/// fail-loud, mai UB).
 #[repr(C)]
 struct SpawnMeta {
     name: [u8; 16],
     prio: u8,
     io_count: u8,
-    _pad: [u8; 6],
+    flags: u8,
+    _pad: [u8; 5],
     io_ranges: [(u16, u16); 4],
 }
 
@@ -473,7 +475,9 @@ const SPAWN_IMAGE_MAX: usize = 256 * 1024;
 /// un privilegio root — solo pid 1 (init) puo' chiederle, gli altri devono
 /// avere `io_count == 0` (stesse capacita' dello spawn per-nome di oggi, dove
 /// chiunque poteva spawnare anche `utspin_high`: la prio resta 1..31 per tutti,
-/// mai 0/idle). Ritorna il channel di nascita o -1.
+/// mai 0/idle). Flag `SPAWN_FLAG_DETACH` (Fase 22): il figlio non partecipa
+/// alla cascata di morte del parent (ri-parentato a init). Ritorna il channel
+/// di nascita o -1.
 fn sys_spawn_image(img_ptr: u64, img_len: usize, meta_ptr: u64, meta_len: usize) -> i64 {
     if img_len == 0 || img_len > SPAWN_IMAGE_MAX {
         return -1;
@@ -496,6 +500,12 @@ fn sys_spawn_image(img_ptr: u64, img_len: usize, meta_ptr: u64, meta_len: usize)
     if meta.name.iter().any(|&b| b != 0 && (b < 0x20 || b > 0x7e)) {
         return -1; // nome stampabile (ps/log), niente control byte
     }
+    // Flags (Fase 22): solo DETACH ammesso; i bit riservati devono essere 0
+    // (forward-compat: nuovi flag futuri restano rifiutati, mai ignorati).
+    if meta.flags & !syscall_numbers::SPAWN_FLAG_DETACH != 0 {
+        return -1;
+    }
+    let detached = meta.flags & syscall_numbers::SPAWN_FLAG_DETACH != 0;
     // Porte I/O: solo init (pid 1). Gli altri processi girano senza porte
     // (come tutti i binari embedded tranne disk/kbd/console): chiederle = -1.
     let is_init = current_id() == 1;
@@ -521,6 +531,7 @@ fn sys_spawn_image(img_ptr: u64, img_len: usize, meta_ptr: u64, meta_len: usize)
         Some(parent),
         None,
         &meta.io_ranges[..meta.io_count as usize],
+        detached,
     ) {
         Some(pid) => {
             let disp = core::str::from_utf8(&meta.name[..name_len]).unwrap_or("?");

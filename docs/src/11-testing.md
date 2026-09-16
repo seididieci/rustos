@@ -88,6 +88,8 @@ Righe di gate:
 | t36 | identità stabile (Fase 16d): mount per `UUID=` e per `LABEL=` del secondo disco + contenuto MARKER (prova il disco giusto), open raw dei by-path con firma+seriale, listing sintetizzato `/dev`/by-uuid/by-label. Gira anche con `SWAP_DRIVES=1` (lettere cambiano, chiavi no) |
 | t37 | snapshot processi (Fase 19.1): idle/init presenti con parent `None`, self Ready, count >= 8, TIME di init > 0 e TIME proprio crescente dopo spin |
 | t38 | `stat` metadati senza open (Fase 19.2; FAT senza readonly dalla Fase 20): file/dir ramfs (size reale, vita dopo mkdir/rm), file/dir FAT, device (`/dev/null`), padri sintetizzati (`/dev`), error paths (inesistente, sotto-device) |
+| t39 | servizi da disco (Fase 21): `/bin`+`/test` presenti e non vuoti, tutti i servizi registrati per nome (= boot da disco funzionante) |
+| t40 | detach + reparent a init (Fase 22): MID intermedio spawna due KILLME (uno detached via flag, uno no) poi esce; foglia normale sparita da `ps`, detached viva con parent == 1, poi cleanup-kill (osservazione solo via `ps`, mai distruttiva prima del check) |
 | t34 | diritti per-canale lato server (Fase 17, per ultimo: drop irrevocabili): GET default ALL+root, drop WRITE (write -1/read ok), drop MOUNT+subtree /fat (mount/open-fuori -1, open-dentro+read+readdir-dentro ok, readdir-fuori -1), widen rifiutato + GET conferma |
 
 > Il CBS e' sempre attivo (lo scheduler RT e' l'unico): t18/t19 sono test
