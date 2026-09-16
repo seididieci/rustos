@@ -179,34 +179,65 @@ fn disk_req_read_name() -> Option<String> {
     }
 }
 
-/// Legge un frame di write `[len:8][512 byte]` dal DISK_REQ ring e lo consuma
-/// (stesso pattern di `disk_req_read_name`: frame intero prima della notify,
-/// incompleto = epoca morta → resync). Accetta solo len == 512.
-fn disk_req_read_sector(out: &mut [u8; 512]) -> bool {
+/// Legge un frame di richiesta read `[count:8]` dal DISK_REQ ring e lo
+/// consuma (P1.2). Ritorna count (1..=7) o None a ring vuoto/count invalido
+/// (resync tail=head: frame intero prima della notify, incompleto = epoca
+/// morta — stessa invariante dei ring FS).
+fn disk_req_read_count() -> Option<usize> {
     unsafe {
         let head = core::ptr::read_volatile((DISK_REQ_VA + RING_HEAD as u64) as *const u32);
         let tail = core::ptr::read_volatile((DISK_REQ_VA + RING_TAIL as u64) as *const u32);
         let avail = (head.wrapping_sub(tail)) % RING_DATA_CAP as u32;
         if avail < 8 {
-            return false;
+            return None;
         }
         let src = DISK_REQ_VA as *const u8;
         let t = tail as usize;
-        let mut len_b = [0u8; 8];
+        let mut count_b = [0u8; 8];
         for i in 0..8 {
-            len_b[i] = core::ptr::read_volatile(src.add((t + i) % RING_DATA_CAP));
+            count_b[i] = core::ptr::read_volatile(src.add((t + i) % RING_DATA_CAP));
         }
-        let len = u64::from_le_bytes(len_b) as usize;
-        if len != 512 || avail < (8 + len) as u32 {
+        let count = u64::from_le_bytes(count_b) as usize;
+        let new_tail = (t + 8) % RING_DATA_CAP;
+        core::ptr::write_volatile((DISK_REQ_VA + RING_TAIL as u64) as *mut u32, new_tail as u32);
+        if count == 0 || count > DISK_MAX_SECTORS {
+            return None;
+        }
+        Some(count)
+    }
+}
+
+/// Legge un frame di write `[count:8][count*512 byte]` dal DISK_REQ ring e lo
+/// consuma (P1.2, generalizza il vecchio `[len:8][512]`). `out` deve tenere
+/// `DISK_MAX_SECTORS` settori. Ritorna count o None (resync come sopra).
+fn disk_req_read_multi(out: &mut [u8]) -> Option<usize> {
+    if out.len() < DISK_MAX_SECTORS * 512 {
+        return None;
+    }
+    unsafe {
+        let head = core::ptr::read_volatile((DISK_REQ_VA + RING_HEAD as u64) as *const u32);
+        let tail = core::ptr::read_volatile((DISK_REQ_VA + RING_TAIL as u64) as *const u32);
+        let avail = (head.wrapping_sub(tail)) % RING_DATA_CAP as u32;
+        if avail < 8 {
+            return None;
+        }
+        let src = DISK_REQ_VA as *const u8;
+        let t = tail as usize;
+        let mut count_b = [0u8; 8];
+        for i in 0..8 {
+            count_b[i] = core::ptr::read_volatile(src.add((t + i) % RING_DATA_CAP));
+        }
+        let count = u64::from_le_bytes(count_b) as usize;
+        if count == 0 || count > DISK_MAX_SECTORS || avail < (8 + count * 512) as u32 {
             core::ptr::write_volatile((DISK_REQ_VA + RING_TAIL as u64) as *mut u32, head);
-            return false;
+            return None;
         }
-        for i in 0..512 {
+        for i in 0..count * 512 {
             out[i] = core::ptr::read_volatile(src.add((t + 8 + i) % RING_DATA_CAP));
         }
-        let new_tail = (t + 8 + 512) % RING_DATA_CAP;
+        let new_tail = (t + 8 + count * 512) % RING_DATA_CAP;
         core::ptr::write_volatile((DISK_REQ_VA + RING_TAIL as u64) as *mut u32, new_tail as u32);
-        true
+        Some(count)
     }
 }
 
@@ -348,6 +379,64 @@ fn node_write(
     }
     match disks.get(disk) {
         Some(d) => d.write_sector(base + lba, data),
+        None => false,
+    }
+}
+
+/// P1.2 — bound del protocollo (frame nel ring: 8 + 7*512 in request,
+/// 16 + 7*512 in response, entrambi < 4087).
+const DISK_MAX_SECTORS: usize = 7;
+
+/// Legge `out.len()/512` settori contigui del nodo (bound sul nodo + bound
+/// protocollo, 1 comando PIO). `false` a parametri invalidi o errore IO.
+fn node_read_multi(
+    disks: &[block::AtaDisk],
+    disk_sectors: &[u64],
+    parts: &[Vec<PartLoc>],
+    handle: u32,
+    lba: u64,
+    out: &mut [u8],
+) -> bool {
+    let n = out.len() / 512;
+    if n == 0 || n > DISK_MAX_SECTORS || out.len() % 512 != 0 {
+        return false;
+    }
+    let (disk, base, sectors) = match locate(handle, disk_sectors, parts) {
+        Some(r) => r,
+        None => return false,
+    };
+    if lba.checked_add(n as u64).map_or(true, |end| end > sectors) {
+        return false;
+    }
+    match disks.get(disk) {
+        Some(d) => d.read_sectors(base + lba, n as u8, out),
+        None => false,
+    }
+}
+
+/// Scrive `data.len()/512` settori contigui del nodo (1 comando PIO + 1
+/// flush, vedi `AtaDisk::write_sectors`). Stessi bound di `node_read_multi`.
+fn node_write_multi(
+    disks: &[block::AtaDisk],
+    disk_sectors: &[u64],
+    parts: &[Vec<PartLoc>],
+    handle: u32,
+    lba: u64,
+    data: &[u8],
+) -> bool {
+    let n = data.len() / 512;
+    if n == 0 || n > DISK_MAX_SECTORS || data.len() % 512 != 0 {
+        return false;
+    }
+    let (disk, base, sectors) = match locate(handle, disk_sectors, parts) {
+        Some(r) => r,
+        None => return false,
+    };
+    if lba.checked_add(n as u64).map_or(true, |end| end > sectors) {
+        return false;
+    }
+    match disks.get(disk) {
+        Some(d) => d.write_sectors(base + lba, n as u8, data),
         None => false,
     }
 }
@@ -768,14 +857,28 @@ pub extern "C" fn _start() -> ! {
             continue;
         }
         if msg.tag == DISK_READ {
+            // P1.2 — richiesta multi: frame `[count:8]`, risposta con
+            // count*512 byte in UN frame (1 IPC invece di count).
             let handle = msg.w0 as u32;
             let lba = msg.w1;
-            let mut sec = [0u8; 512];
-            if node_read(&disks, &disk_sectors, &parts, handle, lba, &mut sec) {
-                unsafe { disk_resp_write(512, 0, &sec) };
-                let _ = libr::reply(0, 0, 0);
-            } else {
-                let _ = libr::reply(0, ERR, 0);
+            let mut buf = [0u8; DISK_MAX_SECTORS * 512];
+            match disk_req_read_count() {
+                Some(n)
+                    if node_read_multi(
+                        &disks,
+                        &disk_sectors,
+                        &parts,
+                        handle,
+                        lba,
+                        &mut buf[..n * 512],
+                    ) =>
+                {
+                    unsafe { disk_resp_write((n * 512) as u64, 0, &buf[..n * 512]) };
+                    let _ = libr::reply(0, 0, 0);
+                }
+                _ => {
+                    let _ = libr::reply(0, ERR, 0);
+                }
             }
             continue;
         }
@@ -784,15 +887,25 @@ pub extern "C" fn _start() -> ! {
             continue;
         }
         if msg.tag == DISK_WRITE {
-            // Handle in w0, lba in w1, 512 byte nel frame DISK_REQ (consumato
-            // sempre, anche a handle/lba invalidi: la tail va avanzata o il
-            // prossimo request e' male — stesso contratto dei ring FS).
+            // P1.2 — frame `[count:8][count*512 byte]`, 1 comando PIO + 1
+            // flush per l'intero run (prima: comando+flush a settore).
+            // Handle in w0, lba in w1. Frame consumato sempre, anche a
+            // handle/lba invalidi (stesso contratto dei ring FS).
             let handle = msg.w0 as u32;
             let lba = msg.w1;
-            let mut sec = [0u8; 512];
-            if disk_req_read_sector(&mut sec)
-                && node_write(&disks, &disk_sectors, &parts, handle, lba, &sec)
-            {
+            let mut buf = [0u8; DISK_MAX_SECTORS * 512];
+            let ok = match disk_req_read_multi(&mut buf) {
+                Some(n) => node_write_multi(
+                    &disks,
+                    &disk_sectors,
+                    &parts,
+                    handle,
+                    lba,
+                    &buf[..n * 512],
+                ),
+                None => false,
+            };
+            if ok {
                 let _ = libr::reply(0, 0, 0);
             } else {
                 let _ = libr::reply(0, ERR, 0);

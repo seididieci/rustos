@@ -955,6 +955,21 @@ rustos/
         non-regressione >10%. P1 (PIO multi-settore, flush per richiesta,
         memo FAT intra-op, DISK multi-settore) e P2 (cache/DMA/N-in-volo)
         parcheggiate da analizzare con calma.
+- [x] Fase P1: ottimizzazioni throughput (misurate, gate verde)
+  - [x] P1.1 userfs-local (nessun protocollo): memo ultimo settore FAT
+        (invalida a `set_fat_entry`, drop d'epoca) + read settoriali mirati
+        (`read_file` per span, `read_dir` stop a 0x00): small FAT ~21→~2.4 ms.
+  - [x] P1.2 DISK multi-settore (frame v2 con count ≤7/IPC, stessi tag):
+        `AtaDisk::read/write_sectors` (1 comando PIO per run, 1 flush per
+        write), `BlockSource` multi (default loop, `IpcDisk` vero multi),
+        `fat32` per run + DEV relay intatto: overwrite 4K ~36→~30 ms.
+  - [x] Lezione heap (bug vero): i `Vec` temporanei per-op in userfs
+        frammentavano la free-list first-fit (+1 blocco/op FAT → O(n)/O(n²)
+        su TUTTE le op dopo: ramfs 25 µs→2 ms). Cura: hot path FAT zero-alloc
+        (parse incrementale, run stack ≤8, risposta stack); regola "mai heap
+        nel per-op dei server". Diagnostica `libr::heap::heap_stats` mantenuta.
+  - Verifica: gate 5/5 + 7/7 + 40/40 + shell 29/29 (t36 condizionale) KVM,
+        bench 3 run stabili, tabella P1 in `docs/src/13-performance.md`.
 
 ## Important Notes
 

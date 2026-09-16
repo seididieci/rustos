@@ -45,6 +45,9 @@ const RING_TAIL: usize = 0xFFC;
 const ERR: u64 = !0u64;
 /// Bound attesa userdisk a boot/restart (~5 s, come `wait_ready` di init).
 const HELLO_BOUND_TICKS: i64 = 500;
+/// P1.2 — settori max per IPC DISK (bound del ring: 8 + 7*512 = 3592 nella
+/// request, 16 + 7*512 = 3600 nella response, entrambi < 4087).
+const DISK_MAX_SECTORS: usize = 7;
 
 pub struct IpcDisk {
     /// Handle nodo di mount codificato (disco<<16|sub): 0 = sda whole-disk.
@@ -86,11 +89,13 @@ impl IpcDisk {
     }
 
     /// Legge un response frame DISK dalla finestra mappata (consumer SPSC:
-    /// si legge a `tail`, il producer avanza `head`) e ne copia il settore in
-    /// `out`. Ritorna false se il ring e' vuoto o il frame non e' un settore
-    /// valido (resync difensivo: single-writer sequenziale, non dovrebbe mai
-    /// accadere).
-    unsafe fn frame_read(out: &mut [u8; 512]) -> bool {
+    /// si legge a `tail`, il producer avanza `head`) e ne copia `expect` byte
+    /// in `out`. P1.2 — l'header porta la lunghezza (`len == expect`, prima
+    /// era fissa a 512): resync difensivo come prima a mismatch.
+    unsafe fn frame_read(out: &mut [u8], expect: usize) -> bool {
+        if out.len() < expect {
+            return false;
+        }
         unsafe {
             let head = core::ptr::read_volatile((DISK_RESP_VA + RING_HEAD as u64) as *const u32);
             let tail = core::ptr::read_volatile((DISK_RESP_VA + RING_TAIL as u64) as *const u32);
@@ -104,17 +109,17 @@ impl IpcDisk {
                 hdr[i] = core::ptr::read_volatile(base.add((t + i) % RING_DATA_CAP));
             }
             let res = u64::from_le_bytes(hdr[0..8].try_into().unwrap_or([0xFF; 8]));
-            if res != 512 {
+            if res != expect as u64 {
                 core::ptr::write_volatile(
                     (DISK_RESP_VA + RING_TAIL as u64) as *mut u32,
                     head,
                 );
                 return false;
             }
-            for i in 0..512 {
+            for i in 0..expect {
                 out[i] = core::ptr::read_volatile(base.add((t + 16 + i) % RING_DATA_CAP));
             }
-            let new_tail = (t + 16 + 512) % RING_DATA_CAP;
+            let new_tail = (t + 16 + expect) % RING_DATA_CAP;
             core::ptr::write_volatile((DISK_RESP_VA + RING_TAIL as u64) as *mut u32, new_tail as u32);
             true
         }
@@ -209,14 +214,22 @@ impl IpcDisk {
         }
     }
 
-    /// Un tentativo di lettura (nessun retry qui: lo fa il chiamante).
-    fn try_read(&self, chan: u64, lba: u64, buf: &mut [u8; 512]) -> bool {
+    /// Un tentativo di lettura multi (nessun retry qui: lo fa il chiamante).
+    /// P1.2 — frame di richiesta `[count:8]` (1..=7), risposta con `n*512`
+    /// byte: 1 IPC invece di n.
+    fn try_read_multi(&self, chan: u64, lba: u64, n: usize, out: &mut [u8]) -> bool {
+        if n == 0 || n > DISK_MAX_SECTORS || out.len() < n * 512 {
+            return false;
+        }
+        if !unsafe { Self::req_write_count(n) } {
+            return false;
+        }
         match libr::send(chan, DISK_READ, self.handle as u64, lba) {
             Ok(rep) => {
                 if rep.w0 == ERR {
                     return false;
                 }
-                let ok = unsafe { Self::frame_read(buf) };
+                let ok = unsafe { Self::frame_read(out, n * 512) };
                 if !ok {
                 }
                 ok
@@ -229,36 +242,61 @@ impl IpcDisk {
         }
     }
 
-    /// Scrive un frame di write `[512:8][settore]` nel DISK_REQ ring (Fase 20).
-    /// Ritorna false se non c'e' spazio (disciplina sync + reset a ogni
-    /// connessione: non dovrebbe mai accadere; il chiamante fallisce loud).
-    unsafe fn req_write_sector(data: &[u8; 512]) -> bool {
+    /// Scrive un frame di richiesta read `[count:8]` nel DISK_REQ ring
+    /// (P1.2). Ritorna false se non c'e' spazio (disciplina sync + reset a
+    /// ogni connessione: non dovrebbe mai accadere).
+    unsafe fn req_write_count(n: usize) -> bool {
         unsafe {
             let head = core::ptr::read_volatile((DISK_REQ_VA + RING_HEAD as u64) as *const u32);
             let tail = core::ptr::read_volatile((DISK_REQ_VA + RING_TAIL as u64) as *const u32);
             let used = (head.wrapping_sub(tail)) % RING_DATA_CAP as u32;
-            if RING_DATA_CAP as u32 - used < (8 + 512 + 1) as u32 {
+            if RING_DATA_CAP as u32 - used < (8 + 1) as u32 {
                 return false;
             }
             let dst = DISK_REQ_VA as *mut u8;
-            let len_b = (512u64).to_le_bytes();
-            for (i, byte) in len_b.iter().enumerate() {
+            let count_b = (n as u64).to_le_bytes();
+            for (i, byte) in count_b.iter().enumerate() {
                 core::ptr::write_volatile(dst.add(((head as usize) + i) % RING_DATA_CAP), *byte);
             }
-            for (i, byte) in data.iter().enumerate() {
-                core::ptr::write_volatile(dst.add(((head as usize) + 8 + i) % RING_DATA_CAP), *byte);
-            }
-            let new_head = ((head as usize) + 8 + 512) % RING_DATA_CAP;
+            let new_head = ((head as usize) + 8) % RING_DATA_CAP;
             core::ptr::write_volatile((DISK_REQ_VA + RING_HEAD as u64) as *mut u32, new_head as u32);
             true
         }
     }
 
-    /// Un tentativo di scrittura (Fase 20, nessun retry qui: lo fa il
+    /// Scrive un frame di write `[count:8][settori]` nel DISK_REQ ring
+    /// (P1.2, generalizza il vecchio `[512:8][settore]`). Ritorna false se
+    /// non c'e' spazio o count fuori bound.
+    unsafe fn req_write_sectors(n: usize, data: &[u8]) -> bool {
+        if n == 0 || n > DISK_MAX_SECTORS || data.len() < n * 512 {
+            return false;
+        }
+        unsafe {
+            let head = core::ptr::read_volatile((DISK_REQ_VA + RING_HEAD as u64) as *const u32);
+            let tail = core::ptr::read_volatile((DISK_REQ_VA + RING_TAIL as u64) as *const u32);
+            let used = (head.wrapping_sub(tail)) % RING_DATA_CAP as u32;
+            if RING_DATA_CAP as u32 - used < (8 + n * 512 + 1) as u32 {
+                return false;
+            }
+            let dst = DISK_REQ_VA as *mut u8;
+            let count_b = (n as u64).to_le_bytes();
+            for (i, byte) in count_b.iter().enumerate() {
+                core::ptr::write_volatile(dst.add(((head as usize) + i) % RING_DATA_CAP), *byte);
+            }
+            for (i, byte) in data[..n * 512].iter().enumerate() {
+                core::ptr::write_volatile(dst.add(((head as usize) + 8 + i) % RING_DATA_CAP), *byte);
+            }
+            let new_head = ((head as usize) + 8 + n * 512) % RING_DATA_CAP;
+            core::ptr::write_volatile((DISK_REQ_VA + RING_HEAD as u64) as *mut u32, new_head as u32);
+            true
+        }
+    }
+
+    /// Un tentativo di scrittura multi (P1.2, nessun retry qui: lo fa il
     /// chiamante). Reply senza frame: w0 = 0 ok, ERR fallito (canale intatto:
     /// niente retry). Send fallita = driver morto: invalida.
-    fn try_write(&self, chan: u64, lba: u64, data: &[u8; 512]) -> bool {
-        if !unsafe { Self::req_write_sector(data) } {
+    fn try_write_multi(&self, chan: u64, lba: u64, n: usize, data: &[u8]) -> bool {
+        if !unsafe { Self::req_write_sectors(n, data) } {
             return false;
         }
         match libr::send(chan, DISK_WRITE, self.handle as u64, lba) {
@@ -343,42 +381,80 @@ impl IpcDisk {
 
 impl BlockSource for IpcDisk {
     fn read_sector(&self, lba: u64, buf: &mut [u8; 512]) -> bool {
-        let chan = match self.ensure() {
-            Some(c) => c,
-            None => return false,
-        };
-        if self.try_read(chan, lba, buf) {
-            return true;
-        }
-        // Solo se il canale e' caduto (non su errore IO vero): riconnetti e
-        // ritenta UNA volta. La send fallita ha gia' invalidato il canale.
-        if self.chan.get().is_some() {
-            return false;
-        }
-        let chan = match self.ensure() {
-            Some(c) => c,
-            None => return false,
-        };
-        self.try_read(chan, lba, buf)
+        self.read_sectors(lba, 1, buf)
     }
 
     /// Scrive un settore via DISK_WRITE (Fase 20): stessa disciplina del read
     /// (un retry solo a canale caduto, mai su errore IO vero).
     fn write_sector(&self, lba: u64, data: &[u8; 512]) -> bool {
-        let chan = match self.ensure() {
-            Some(c) => c,
-            None => return false,
-        };
-        if self.try_write(chan, lba, data) {
-            return true;
-        }
-        if self.chan.get().is_some() {
+        self.write_sectors(lba, 1, data)
+    }
+
+    /// P1.2 — run di `n` settori in chunk da ≤7 IPC (stessa disciplina del
+    /// singolo: un retry solo a canale caduto). `out` lungo almeno `n*512`.
+    fn read_sectors(&self, lba: u64, n: usize, out: &mut [u8]) -> bool {
+        if out.len() < n * 512 {
             return false;
         }
-        let chan = match self.ensure() {
-            Some(c) => c,
-            None => return false,
-        };
-        self.try_write(chan, lba, data)
+        let mut done = 0usize;
+        while done < n {
+            let k = (n - done).min(DISK_MAX_SECTORS);
+            let chan = match self.ensure() {
+                Some(c) => c,
+                None => return false,
+            };
+            let ok = self.try_read_multi(chan, lba + done as u64, k, &mut out[done * 512..(done + k) * 512]);
+            if ok {
+                done += k;
+                continue;
+            }
+            // Solo se il canale e' caduto (non su errore IO vero): riconnetti
+            // e ritenta UNA volta. La send fallita ha gia' invalidato il canale.
+            if self.chan.get().is_some() {
+                return false;
+            }
+            let chan = match self.ensure() {
+                Some(c) => c,
+                None => return false,
+            };
+            if !self.try_read_multi(chan, lba + done as u64, k, &mut out[done * 512..(done + k) * 512]) {
+                return false;
+            }
+            done += k;
+        }
+        true
+    }
+
+    /// P1.2 — come `read_sectors` in scrittura (1 comando PIO + 1 flush per
+    /// chunk nel driver).
+    fn write_sectors(&self, lba: u64, n: usize, data: &[u8]) -> bool {
+        if data.len() < n * 512 {
+            return false;
+        }
+        let mut done = 0usize;
+        while done < n {
+            let k = (n - done).min(DISK_MAX_SECTORS);
+            let chan = match self.ensure() {
+                Some(c) => c,
+                None => return false,
+            };
+            let ok = self.try_write_multi(chan, lba + done as u64, k, &data[done * 512..(done + k) * 512]);
+            if ok {
+                done += k;
+                continue;
+            }
+            if self.chan.get().is_some() {
+                return false;
+            }
+            let chan = match self.ensure() {
+                Some(c) => c,
+                None => return false,
+            };
+            if !self.try_write_multi(chan, lba + done as u64, k, &data[done * 512..(done + k) * 512]) {
+                return false;
+            }
+            done += k;
+        }
+        true
     }
 }

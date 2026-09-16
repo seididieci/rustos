@@ -1273,17 +1273,24 @@ fn handle_read(
 
     let (path, kind, offset, mnt) = ftable.get(chan, fd)?;
 
-    let data: Vec<u8> = match kind {
+    // P1.2 — buffer di risposta sullo stack (count ≤ 4096 per il check in
+    // testa): niente `to_vec()`/`Vec` temporanei per-op (la free-list
+    // dell'heap di userfs cresceva di ~1 blocco a op FAT → scansioni O(n)
+    // su tutte le op successive; vedi read_dir in fat32.rs).
+    let mut buf_stack = [0u8; 4096];
+    let data: &[u8] = match kind {
         FsKind::Ram => {
             let d = match fs.find(path)? {
                 FsNode::File { data: d, .. } => d,
                 _ => return None,
             };
             if offset >= d.len() {
-                Vec::new()
+                &[]
             } else {
                 let end = (offset + count).min(d.len());
-                d[offset..end].to_vec()
+                let n = end - offset;
+                buf_stack[..n].copy_from_slice(&d[offset..end]);
+                &buf_stack[..n]
             }
         }
         FsKind::Fat => {
@@ -1297,10 +1304,8 @@ fn handle_read(
             let g = *fgen;
             let fat = mounts_fat.get(mi)?.fat()?;
             let info = fd_fat_info(ftable, fat, chan, fd, g)?;
-            let mut buf = vec![0u8; count];
-            let n = fat.read_file(&info, offset, count, &mut buf);
-            buf.truncate(n);
-            buf
+            let n = fat.read_file(&info, offset, count, &mut buf_stack[..count]);
+            &buf_stack[..n]
         }
     };
 
@@ -1716,6 +1721,8 @@ pub extern "C" fn _start() -> ! {
         }
     }
 
+    // P1.2-diagnosi: contatore rimosso (era temporaneo); heap_stats resta in
+    // libr per future diagnosi.
     loop {
         let msg = match libr::recv() {
             Ok(m) => m,
@@ -1827,6 +1834,7 @@ pub extern "C" fn _start() -> ! {
 
         // Ogni altra operazione deve essere un FS_NOTIFY.
         if tag != FS_NOTIFY {
+            // Tag ignoto: ERR come prima (nessun cambio semantico).
             let _ = libr::reply(0, ERR, 0);
             continue;
         }
