@@ -106,6 +106,7 @@ La numerazione e' definita nel dispatch di `syscall_handler` in `kernel/src/sysc
 | 35 | `kill(pid, code)` | termina un processo user (exit/kill kernel-side) → 0 o -1 (Fase 14, ADR-0010) |
 | 36 | `service_pid(service)` | pid dell'owner del servizio o -1 (supervisione/diagnostica, Fase 14) |
 | 37 | `ps_info(pid)` | snapshot `ps`: 0 + nome in rdi+rsi, packed stato/prio/parent/ipc in rdx, tick in r10; -1 se slot vuoto (Fase 19.1) |
+| 38 | `spawn_image(img, len, meta, metalen)` | come `spawn` ma il binario e' in memoria del chiamante (servizi da disco, Fase 21); `meta` = `SpawnMeta` 40 B (nome/prio/porte, porte solo init); ritorna il canale di nascita o -1 |
 
 > **Fase 9.6**: le syscall FS 3-7, 23, 24 sono state RIMOSSE dal percorso dati.
 > Ogni processo alloca la propria pagina di trasferimento (`fs_buf_alloc`, 26) e
@@ -183,6 +184,7 @@ extern "C" fn syscall_handler() -> i64 {
 | `ps_info` | 37 | snapshot `ps` di un processo: 0 o -1; nome (16 B) in rdi+rsi, `rdx` packed (stato/prio/parent+1/ipc), `r10` tick consumati (Fase 19.1) |
 | `kill` | 35 | termina un processo user (Fase 14, ADR-0010) |
 | `spawn` | 20 | Crea un processo dal binario embedded `name` e ritorna il **canale di nascita** verso il figlio |
+| `spawn_image` | 38 | Come `spawn` ma dal binario in memoria del chiamante (servizi da disco, Fase 21) |
 | `map_physical` | 21 | Mappa pagine fisiche nello spazio user (Fase 8.2) |
 | `get_ticks` | 22 | Ritorna il contatore PIT corrente (Fase 8.3) |
 
@@ -193,6 +195,16 @@ figlio (ADR-0008): il figlio lo eredita come canale 0 (= parent), il chiamante
 riceve il channel id come valore di ritorno. Ritorna il channel id, oppure `-1`
 se il nome non e' noto, se `name` non e' nello spazio user, o se la creazione
 fallisce.
+
+`spawn_image(img, len, meta, metalen)` (Fase 21) e' la primitiva generale di
+creazione (come fork+exec): il binario e' letto dalla memoria del chiamante
+(servizi da disco: `/bin` e `/test` su `/fat`) invece che dalla tabella
+embedded. `meta` e' uno `SpawnMeta` da 40 B (`repr(C)`, identico in `libr`):
+nome NUL-padded 16 B (non vuoto, stampabile), priorita' 1..31 (mai 0/idle),
+fino a 4 range di porte I/O. Le porte sono privilegio root: solo pid 1 (init)
+puo' chiederle, gli altri devono avere `io_count == 0`. Bound 256 KiB per
+singolo spawn. Ritorna il canale di nascita o -1. Il kernel embedda ormai solo
+lo storage-TCB (init/disk/fs); tutto il resto parte da disco via init.
 
 ### I/O
 
@@ -373,7 +385,8 @@ tutti i GPR sul kernel stack.
 implementa: `0=exit`, `2=write`, `8=getpid`, `16=send`, `17=recv`, `18=reply`,
 `20=spawn`, `21=map_physical`, `22=get_ticks`, `25=sbrk`, `26=fs_buf_alloc`,
 `27=map_in`, `28=cbs_create`, `29=cbs_attach`, `30=cbs_get_info`,
-`31=service_register`, `32=service_lookup`, `33=send_async`, `34=recv_nonblock`.
+`31=service_register`, `32=service_lookup`, `33=send_async`, `34=recv_nonblock`,
+`35=kill`, `36=service_pid`, `37=ps_info`, `38=spawn_image` (Fase 21).
 
 Le vecchie syscall 3-7/23-24 (FS relay) sono state rimosse con la Fase 9.6:
 le operazioni FS sono ora IPC dirette client→userfs.

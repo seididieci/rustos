@@ -7,7 +7,7 @@ Due boot completi con suite (RUN_TESTS=1):
 
 In entrambi asserisce dal log seriale:
   - t36 PASS (mount UUID=/LABEL= + by-path + listing),
-  - testfat PASS 6/6 (/fat montato per UUID=5253544F),
+  - testfat PASS 7/7 (/fat montato per UUID=5253544F),
   - la riga identita' di userdisk assegna uuid=C0FFEE01 alla lettera attesa
     (sdb nel run 1, sda nel run 2: le lettere cambiano, le chiavi no).
 
@@ -46,8 +46,8 @@ def check(name, log, letter):
     def has(pat):
         return re.search(pat, log) is not None
 
-    if not has(r"\[testfat\] PASS 6/6"):
-        print(f"[{name}] MANCA testfat PASS 6/6 (/fat per UUID)")
+    if not has(r"\[testfat\] PASS 7/7"):
+        print(f"[{name}] MANCA testfat PASS 7/7 (/fat per UUID)")
         ok = False
     if not has(r"t36 UUID/LABEL \+ discovery stabile: PASS"):
         print(f"[{name}] MANCA t36 PASS")

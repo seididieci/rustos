@@ -73,19 +73,20 @@ const KBD_PS2_RANGES: &[(u16, u16)] = &[(0x60, 0x64)];
 
 /// Legge un file intero in heap (bound 256 KiB = SPAWN_IMAGE_MAX kernel).
 /// None su qualunque errore (open/read/close): fail-loud al chiamante.
+/// Chunk da 4000 B (= RING_MAX_PAYLOAD libr, come `load_bin` di usertests).
 fn load_file(path: &str) -> Option<Vec<u8>> {
     let fd = libr::open(path, 0);
     if fd < 0 {
         return None;
     }
     let mut data = Vec::new();
-    let mut chunk = [0u8; 2048];
+    let mut chunk = [0u8; 4000];
     loop {
         if data.len() >= 256 * 1024 {
             let _ = libr::close(fd);
             return None; // troppo grosso: mai un binario valido
         }
-        let n = libr::read_fs(fd, &mut chunk, 2048);
+        let n = libr::read_fs(fd, &mut chunk, 4000);
         if n <= 0 {
             break;
         }
@@ -151,6 +152,7 @@ fn run_test(meta: &SvcMeta, supervised: &mut [Supervised]) {
         libr::exit(1);
     };
     loop {
+        drain_stray_deaths(supervised);
         match libr::recv() {
             Ok(m) if m.channel == chan as u64 && m.tag == TEST_DONE => {
                 let _ = libr::reply(TEST_DONE, 0, 0);
@@ -220,6 +222,10 @@ fn spin_ticks(n: i64) {
 /// figlio muore prima del READY (EXIT_NOTIFY sul suo stesso canale) o se
 /// scade il bound (500 tick ~ 5 s, restart atteso ~50): mai wedge il
 /// supervisore. La notifica di morte e' consumata qui, il chiamante riprova.
+/// Le EXIT_NOTIFY di ALTRI figli (una morte durante un restart) NON si
+/// scartano: vanno nello stash e il chiamante le processa (sotto). Scartarle
+/// perde restart (osservato t32: userdisk morto durante il restart di devfs
+/// → mai riavviato → cascata fino al panic di init).
 fn wait_ready(chan: i64) -> bool {
     let t0 = libr::get_ticks();
     loop {
@@ -230,11 +236,54 @@ fn wait_ready(chan: i64) -> bool {
             Ok(m) if m.channel == chan as u64 && m.tag == libr::EXIT_NOTIFY => {
                 return false;
             }
+            Ok(m) if m.tag == libr::EXIT_NOTIFY => {
+                stash_death(m.w1 as i64, m.w0 as i64);
+            }
             Ok(_) => {}
             Err(_) => {}
         }
         if libr::get_ticks() - t0 > 500 {
             return false;
+        }
+    }
+}
+
+/// Morti altrui viste dentro `wait_ready` (vedi sopra): init e' single-thread
+/// e single-loop, un array statico basta (cap 8 > 6 servizi supervisionati).
+/// Accesso via `addr_of_mut!` (edition 2024: niente `static_mut_refs`).
+static mut STRAY_DEATHS: [(i64, i64); STRAY_CAP] = [(0, 0); STRAY_CAP];
+static mut N_STRAY: usize = 0;
+const STRAY_CAP: usize = 8;
+
+fn stash_death(pid: i64, code: i64) {
+    unsafe {
+        let n = core::ptr::addr_of_mut!(N_STRAY).read();
+        if n < STRAY_CAP {
+            core::ptr::addr_of_mut!(STRAY_DEATHS).cast::<(i64, i64)>().add(n).write((pid, code));
+            core::ptr::addr_of_mut!(N_STRAY).write(n + 1);
+        } else {
+            println!("[init] supervisione: stash morti pieno, perdo pid={}", pid);
+        }
+    }
+}
+
+/// Processa le morti stashtate (restart/log come quelle viste in recv).
+/// Da chiamare nei loop di attesa (run_test + supervisore) cosi' nessuna
+/// morte va persa mentre un restart e' in corso.
+fn drain_stray_deaths(supervised: &mut [Supervised]) {
+    loop {
+        let next = unsafe {
+            let n = core::ptr::addr_of_mut!(N_STRAY).read();
+            if n == 0 {
+                None
+            } else {
+                core::ptr::addr_of_mut!(N_STRAY).write(n - 1);
+                Some(core::ptr::addr_of_mut!(STRAY_DEATHS).cast::<(i64, i64)>().add(n - 1).read())
+            }
+        };
+        match next {
+            Some((pid, code)) => handle_child_death(supervised, pid, code),
+            None => return,
         }
     }
 }
@@ -447,6 +496,7 @@ pub extern "C" fn _start() -> ! {
 
     println!("[init] supervisione attiva, hanging in recv");
     loop {
+        drain_stray_deaths(&mut supervised);
         match libr::recv() {
             Ok(m) if m.tag == libr::EXIT_NOTIFY => {
                 handle_child_death(&mut supervised, m.w1 as i64, m.w0 as i64);

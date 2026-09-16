@@ -885,6 +885,41 @@ rustos/
         rm ancora rifiutato, HELLO intatto). Verifica: gate 5/5 + 7/7 + 38/38,
         shell 30/30 in ~3:30 con KVM, `fsck.fat -n` pulito post-sessione
         (6 file, 9 cluster), `mdir`/`mcopy` coerenti.
+- [x] Fase 21: servizi da disco (via `spawn_image`, reload sempre da disco).
+  - [x] 21.0 `SYS_SPAWN_IMAGE` (38): spawn da byte user + `SpawnMeta` 40 B
+        (nome owned 16 B nel PCB, prio 1..31, porte solo init, resto
+        `io_count==0`), birth channel condiviso con spawn, bound 256 KiB.
+        (ADR-0017)
+  - [x] 21.1 init manifest + loader `/fat` (disk/fs embedded, resto da `/bin`,
+        test da `/test`; restart rileggono da disco, fail-loud a boot).
+  - [x] 21.2 `NAMED_BINARIES` = {init, disk, fs}; boot disk→fs→console (la
+        console non puo' piu' essere prima: da disco richiede Fs pronto).
+  - [x] 21.3 `scripts/inject-bins.sh` (8.3 senza prefisso `user`, single
+        source run.sh/test-shell.py) + Test 1 a 5 entry.
+  - [x] 21.4 usertests: helper da `/fat/test` via `spawn_image` + t39
+        (`/bin`+`/test` presenti e servizi up). Suite → 39/39.
+  - [x] 21.5 Stallo load risolto (t24 35 s, restart 10 s+timeout t27/t30/t32,
+        cascata fino al panic init): NON era starvation del pick (contatori
+        temporanei: pick equo ~500/testa) ma AMPLIFICAZIONE round-trip ×
+        quanti bruciati dagli spinner — un load da 30 KB costava ~480 round
+        trip DISK (OPEN per settore + find per read + chunk da 2 KB) e ogni
+        handoff attendeva i quanti degli spinner a pari prio. Fix:
+        helper sacrificali SRVDIE/KILLME in recv-block (stessi osservabili,
+        zero CPU), `spin_ticks` batch 512 in usertests, chunk load 4000 B
+        (= RING_MAX_PAYLOAD, init + usertests), cache FileInfo per-fd con
+        generazione (bump a ogni mutazione FAT; stat resta sempre fresca:
+        niente fd), `IpcDisk` OPEN-once per connessione (re-OPEN solo a
+        canale caduto), bound t27 Fase B/C a 2000 (restart-from-disk sotto
+        carico misurato ~730 tick). Bug vero trovato: `wait_ready` ingoiava
+        le EXIT_NOTIFY altrui → restart persi (userdisk morto durante il
+        restart di devfs) → ora stash + drain nei loop (run_test +
+        supervisore). "Panic" = solo `init terminato` a cascata (shell
+        illeggibile a disco morto), rientrato. Verifica: gate 5/5 + 7/7 +
+        39/39 (×2 run TCG completi + ×2 reorder fino a t36 e oltre), shell
+        30/30 KVM, reorder PASS, zero FAIL/PANIC.
+        Lezione: MAI spinner a pari prio dei server (neanche throttled se il
+        carico e' fatto di centinaia di round-trip); i costi si misurano in
+        round-trip, non in tick (i tick non sono confrontabili tra TCG/KVM).
 
 ## Important Notes
 
@@ -1049,9 +1084,9 @@ timeout 60 ./run.sh > /tmp/boot.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 7/7
-#   [usertests] PASS 38/38
+#   [usertests] PASS 39/39
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 38/38' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 39/39' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 

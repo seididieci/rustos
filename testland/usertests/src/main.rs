@@ -62,9 +62,14 @@ fn report(total: &mut u32, ok: &mut u32, name: &str, pass: bool) {
 }
 
 fn spin_ticks(n: i64) {
+    // Batch di spin puri tra due get_ticks (pattern utspin/robusto
+    // scheduler): una get_ticks per iterazione maschera IF=0 ad ogni syscall
+    // e brucia quanti che rallentano gli handoff IPC altrui.
     let t0 = libr::get_ticks();
     while libr::get_ticks() - t0 < n {
-        core::hint::spin_loop();
+        for _ in 0..512 {
+            core::hint::spin_loop();
+        }
     }
 }
 
@@ -81,21 +86,22 @@ fn spawn_cfg(path: &str, name: &str, prio: u8, mode: u64, param: u64) -> Option<
 }
 
 /// Legge un file intero in heap (bound 256 KiB). None su errore.
+/// Chunk da 4000 B (= RING_MAX_PAYLOAD libr): un round-trip per chunk invece
+/// di due col vecchio 2048 (ogni round-trip puo' attendere un quanto sotto
+/// carico: dimezzarli dimezza il tempo di load).
 fn load_bin(path: &str) -> Option<Vec<u8>> {
-    // DEBUG temporaneo (lentezza t24): dove va il tempo del load.
-    let t0 = libr::get_ticks();
     let fd = libr::open(path, 0);
     if fd < 0 {
         return None;
     }
     let mut data = Vec::new();
-    let mut chunk = [0u8; 2048];
+    let mut chunk = [0u8; 4000];
     loop {
         if data.len() >= 256 * 1024 {
             let _ = libr::close(fd);
             return None;
         }
-        let n = libr::read_fs(fd, &mut chunk, 2048);
+        let n = libr::read_fs(fd, &mut chunk, 4000);
         if n <= 0 {
             break;
         }
@@ -105,8 +111,6 @@ fn load_bin(path: &str) -> Option<Vec<u8>> {
     if data.is_empty() {
         return None;
     }
-    // DEBUG temporaneo.
-    println!("[usertests] DBG load {}B in {}t", data.len(), libr::get_ticks() - t0);
     Some(data)
 }
 
@@ -1240,9 +1244,12 @@ fn t_client_death_purge() -> bool {
 
 /// t27 — init-restart di devfs (Fase 14). Uccide devfs (pid via `service_pid`,
 /// non suo figlio) e attende che init lo riavvii: prima sparizione dallo slot,
-/// poi ricomparsa, poi /dev/null di nuovo operativo. Bound generosi (1000
-/// tick ~ 10 s contro restart atteso ~50 tick): o PASS o FAIL rumoroso, mai
-/// hang. userfs non viene mai toccato (il canale FS del test resta vivo).
+/// poi ricomparsa, poi /dev/null di nuovo operativo. Bound: la sparizione e'
+/// solo registry (1000 tick larghi); la ricomparsa include il RELOAD DA DISCO
+/// del binario (Fase 21: ~8 read FS × ~15 round-trip DISK l'uno, ognuno dei
+/// quali puo' attendere un quanto sotto carico — misurato ~730 tick con
+/// usertests che polla) → bound 2000, o PASS o FAIL rumoroso, mai hang.
+/// userfs non viene mai toccato (il canale FS del test resta vivo).
 /// NOTA: non confronta pid vecchio/nuovo (il riuso PID puo' ridare lo stesso
 /// numero); osserva sparizione → ricomparsa.
 fn t_devfs_restart() -> bool {
@@ -1273,7 +1280,8 @@ fn t_devfs_restart() -> bool {
         return false;
     }
     // Fase B: attendi ricomparsa (init ha riavviato + registrato).
-    let p2 = match libr::poll_value(1000, libr::POLL_PERIOD_TICKS, || {
+    // Bound 2000 (vedi sopra: include il reload da disco sotto carico).
+    let p2 = match libr::poll_value(2000, libr::POLL_PERIOD_TICKS, || {
         libr::service_pid(libr::Service::Devfs).ok()
     }) {
         Some(p) => p,
@@ -1283,11 +1291,12 @@ fn t_devfs_restart() -> bool {
         }
     };
     println!("[usertests] t27: devfs riavviato (pid {} -> {})", p1, p2);
-    // Fase C: operativita' — open finche' riesce (bound come sopra).
+    // Fase C: operativita' — open finche' riesce (bound come sopra: il driver
+    // puo' aver registrato lo slot ma non ancora i mount).
     // Throttled via `libr::open_wait` (igiene Livello 1, buon vicinato).
     // NOTA (esperimento B): t27 PASSA anche in busy-loop non throttled —
     // lo storm del test NON e' causale del vecchio FAIL (N=1, confound).
-    let fd2 = libr::open_wait("/dev/null", 0, 1000, libr::POLL_PERIOD_TICKS);
+    let fd2 = libr::open_wait("/dev/null", 0, 2000, libr::POLL_PERIOD_TICKS);
     if fd2 < 0 {
         println!("[usertests] t27: /dev/null mai tornato (timeout)");
         return false;

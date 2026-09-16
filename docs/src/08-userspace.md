@@ -285,6 +285,22 @@ fs, devfs, kbd e tty vengono riavviati alla morte (tabella bin/servizio/chan/pid
 `EXIT_NOTIFY`, condiviso con l'attesa dei test così i restart funzionano anche
 a suite in corso). Backoff anti spawn-storm (20 tick prima di ogni tentativo;
 oltre 3 restart in 300 tick → hold + log). Shell/uptime/test: log-only.
+L'attesa READY non scarta le morti altrui: le `EXIT_NOTIFY` viste durante
+`wait_ready` vanno in uno stash e vengono processate dai loop (altrimenti un
+restart perso a cascata uccide il sistema — osservato Fase 21 con userdisk).
+
+Dalla **Fase 21** i servizi partono **da disco** invece che embedded: il kernel
+embedda solo lo storage-TCB (init/disk/fs, caricati prima che il FS esista) e
+init legge il resto da `/bin` (`/test` per la suite, iniettati a build via
+`scripts/inject-bins.sh`) spawnandolo con `spawn_image` (38) da un manifest
+(path/prio/porte). I restart rileggono sempre da disco (niente cache binari).
+Ordine di boot: disk → fs → console (da disco: richiede Fs) → uptime/devfs →
+kbd → tty → test in sequenza → shell. Lezione Fase 21: il reload costa ~480
+round-trip DISK per un binario da 30 KB (OPEN per settore + find per read);
+sotto carico ogni handoff attende i quanti degli spinner a pari priorità —
+perciò gli helper sacrificali dormono in `recv` (mai spin), i load usano chunk
+da 4000 B e userfs cachera FileInfo per-fd + valida l'handle DISK una volta
+per connessione (vedi [File System](./09-filesystem.md)).
 
 ## Differenze Ring 0 vs Ring 3
 

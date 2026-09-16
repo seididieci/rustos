@@ -42,3 +42,4 @@
 - [ADR-0014: Diritti per-canale lato server](./adr/0014-channel-rights-serverside.md)
 - [ADR-0015: POSIX come API di libr](./adr/0015-posix-api-libr-protocollo-interno.md)
 - [ADR-0016: FAT32 scrivibile](./adr/0016-fat-writable.md)
+- [ADR-0017: Servizi caricati da disco](./adr/0017-servizi-da-disco.md)

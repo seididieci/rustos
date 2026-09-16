@@ -116,28 +116,29 @@ pub extern "C" fn _start() -> ! {
             libr::exit(if ok { 0 } else { 1 });
         }
         MODE_KILLME => {
-            // Lifecycle (Fase 14): busy-wait finche' il parent ci kill().
-            println!("[utcli] pid={} killme: spinning", my_pid);
+            // Lifecycle (Fase 14): dorme in recv finche' il parent lo kill().
+            // (Prima: busy-spin a pari priorita' — ogni round-trip FS degli
+            // altri processi aspettava i nostri quanti: load da 15t a 3500t
+            // in t24. Bloccato si kill() uguale, a costo zero.)
             loop {
-                for _ in 0..1024 {
-                    core::hint::spin_loop();
-                }
+                let _ = libr::recv();
             }
         }
         MODE_SRVDIE => {
             // Server sacrificale (t24, notifica unificata): registra `Test`
-            // e resta in busy-wait SENZA mai fare recv. Se la registrazione
-            // fallisce (slot occupato) esci subito: il test fallira' in modo
-            // rumoroso (kill su processo gia' morto), mai hang.
+            // e dorme in recv SENZA MAI RISPONDERE (i sender restano bloccati
+            // come col vecchio spin; i messaggi vengono consumati ma senza
+            // reply nessuno si sblocca). Se la registrazione fallisce (slot
+            // occupato) esci subito: il test fallira' in modo rumoroso (kill
+            // su processo gia' morto), mai hang.
+            // (Prima: busy-spin — vedi KILLME sopra.)
             if libr::service_register(libr::Service::Test).is_err() {
                 println!("[utcli] pid={} srvdie: register Test FAILED", my_pid);
                 libr::exit(1);
             }
-            println!("[utcli] pid={} srvdie: registered, spinning", my_pid);
+            println!("[utcli] pid={} srvdie: registered, parking in recv", my_pid);
             loop {
-                for _ in 0..1024 {
-                    core::hint::spin_loop();
-                }
+                let _ = libr::recv();
             }
         }
         MODE_SYNCWAIT => {
