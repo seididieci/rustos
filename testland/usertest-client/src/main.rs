@@ -44,10 +44,16 @@
 //!   - 11 FLOOD:    (t30, buon vicinato) client "cattivo vicino": martella
 //!                 open+write+close di /dev/null alla massima velocita',
 //!                 finche' il parent manda T_STOP (controllato ogni 64 op via
-//!                 recv_poll). Intenzionalmente SENZA throttling: riproduce la
+//!                 `recv_poll`). Intenzionalmente SENZA throttling: riproduce la
 //!                 tempesta di open che affamava la registrazione di devfs
 //!                 (lezione t27: /dev smontato → open veloci falliti in loop).
 //!                 Termina via T_STOP con T_DONE(w0=1, w1=ops).
+//!   - 12 NEST:     (Fase 22, t40) genitore intermedio: spawna due KILLME (uno
+//!                 detached via flag spawn, uno normale), li riporta al parent
+//!                 con T_READY(w0=pid_det, w1=pid_norm) e poi esce: la SUA morte
+//!                 fa scattare il caso (cascata sul normale, reparent a init
+//!                 del detached). Il parent osserva tutto via `ps` (non e'
+//!                 peer delle foglie: niente EXIT_NOTIFY diretta).
 //!
 //! In ogni caso termina con `send(T_DONE, ok, dettagli)` e `exit(0)`.
 //! Il processo e' sempre "garantito che risponde": l'orchestratore reply ad
@@ -68,6 +74,7 @@ const T_STOP: u64 = 104;
 const T_OPENED: u64 = 105;
 const T_GO: u64 = 106;
 const T_READY: u64 = 107;
+const T_CFG: u64 = 100;
 
 const MODE_ECHO: u64 = 0;
 const MODE_ZEROREAD: u64 = 1;
@@ -81,6 +88,7 @@ const MODE_MNTDIE: u64 = 8;
 const MODE_OPENDIE: u64 = 9;
 const MODE_MAPHAMMER: u64 = 10;
 const MODE_FLOOD: u64 = 11;
+const MODE_NEST: u64 = 12;
 
 // Tag DEV_* (driver IPC, speculari a userfs/devfs).
 const DEV_OPEN: u64 = 0x20;
@@ -120,6 +128,8 @@ pub extern "C" fn _start() -> ! {
             // (Prima: busy-spin a pari priorita' — ogni round-trip FS degli
             // altri processi aspettava i nostri quanti: load da 15t a 3500t
             // in t24. Bloccato si kill() uguale, a costo zero.)
+            // Usato anche come foglia parcheggiata per t40 (NEST): vivo ma
+            // idle, killabile, osservabile via `ps`.
             loop {
                 let _ = libr::recv();
             }
@@ -239,6 +249,30 @@ pub extern "C" fn _start() -> ! {
             }
             libr::exit(0);
         }
+        MODE_NEST => {
+            // Genitore intermedio (Fase 22, t40): spawna due KILLME parcheggiati
+            // (uno detached, uno normale), li riporta al parent e poi ESCE: la
+            // sua morte fa scattare il caso (cascata sul normale, reparent a
+            // init del detached). Qualunque spaw fallito: T_READY(w0=0) +
+            // exit(1), mai hang (il test fallisce rumoroso).
+            let det = match spawn_killme(true) {
+                Some(c) => c,
+                None => {
+                    let _ = libr::send(parent, T_READY, 0, 0);
+                    libr::exit(1);
+                }
+            };
+            let norm = match spawn_killme(false) {
+                Some(c) => c,
+                None => {
+                    let _ = libr::send(parent, T_READY, 0, 0);
+                    libr::exit(1);
+                }
+            };
+            println!("[utcli] pid={} nest: det={} norm={}", my_pid, det, norm);
+            let _ = libr::send(parent, T_READY, det, norm);
+            libr::exit(0);
+        }
         _ => {
             let (ok, detail) = match mode {
                 MODE_ECHO => run_echo(parent, rounds),
@@ -254,6 +288,47 @@ pub extern "C" fn _start() -> ! {
             libr::exit(0);
         }
     }
+}
+
+/// Legge un file intero in heap (bound 256 KiB, chunk 4000 = RING_MAX_PAYLOAD).
+/// Serve a NEST per spawnare le foglie da `/fat/test` (qualunque processo puo'
+/// usare `spawn_image` senza porte). None su errore.
+fn load_bin(path: &str) -> Option<alloc::vec::Vec<u8>> {
+    let fd = libr::open(path, 0);
+    if fd < 0 {
+        return None;
+    }
+    let mut data = alloc::vec::Vec::new();
+    let mut chunk = [0u8; 4000];
+    loop {
+        if data.len() >= 256 * 1024 {
+            let _ = libr::close(fd);
+            return None;
+        }
+        let n = libr::read_fs(fd, &mut chunk, 4000);
+        if n <= 0 {
+            break;
+        }
+        data.extend_from_slice(&chunk[..n as usize]);
+    }
+    let _ = libr::close(fd);
+    if data.is_empty() {
+        return None;
+    }
+    Some(data)
+}
+
+/// Spawna una foglia KILLME parcheggiata (Fase 22, NEST): come `spawn_cfg` di
+/// usertests ma eseguito da dentro l'helper (il MID e' parent delle foglie).
+/// `detached` = flag spawn (la foglia sopravvive alla morte del MID).
+/// Ritorna il pid della foglia (dall'ACK) o None.
+fn spawn_killme(detached: bool) -> Option<u64> {
+    let img = load_bin("/fat/test/testcli.bin")?;
+    let base = libr::SpawnMeta::new("utcli", 16, &[])?;
+    let meta = if detached { base.detached() } else { base };
+    let chan = libr::spawn_image(&img, &meta).ok()? as u64;
+    let ack = libr::send(chan, T_CFG, MODE_KILLME, 0).ok()?;
+    Some(ack.w0)
 }
 
 /// Materializza `kib` KiB di heap on-demand (sbrk + touch ogni pagina) e

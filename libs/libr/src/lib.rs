@@ -308,20 +308,23 @@ pub fn spawn(name: &[u8]) -> Result<i64, ()> {
 
 /// Metadati di `spawn_image` (Fase 21, servizi da disco): layout `repr(C)` da
 /// 40 B, identico allo `SpawnMeta` kernel (validato per size). Nome NUL-padded
-/// (non vuoto, stampabile); `prio` 1..31; fino a 4 range I/O (start <= end).
+/// (non vuoto, stampabile); `prio` 1..31; fino a 4 range I/O (start <= end);
+/// `flags` (Fase 22: solo `SPAWN_FLAG_DETACH`, resto riservato = 0).
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct SpawnMeta {
     pub name: [u8; 16],
     pub prio: u8,
     pub io_count: u8,
-    pub _pad: [u8; 6],
+    pub flags: u8,
+    pub _pad: [u8; 5],
     pub io_ranges: [(u16, u16); 4],
 }
 
 impl SpawnMeta {
     /// Costruisce i metadati da nome/priorita'/porte (tronca il nome a 16,
     /// NUL-padded; piu' di 4 range → i primi 4? No: troppi → None, fail-loud).
+    /// Flags a 0 (attached: cascata di morte normale).
     pub fn new(name: &str, prio: u8, io: &[(u16, u16)]) -> Option<Self> {
         if name.is_empty() || io.len() > 4 {
             return None;
@@ -330,7 +333,8 @@ impl SpawnMeta {
             name: [0u8; 16],
             prio,
             io_count: io.len() as u8,
-            _pad: [0u8; 6],
+            flags: 0,
+            _pad: [0u8; 5],
             io_ranges: [(0, 0); 4],
         };
         let bytes = name.as_bytes();
@@ -338,6 +342,14 @@ impl SpawnMeta {
         m.name[..n].copy_from_slice(&bytes[..n]);
         m.io_ranges[..io.len()].copy_from_slice(io);
         Some(m)
+    }
+
+    /// Marca il figlio come detached (Fase 22): alla morte del parent viene
+    /// ri-parentato a init invece di terminare in cascata. Scelta dello
+    /// spawner (builder: il figlio non puo' auto-staccarsi), irrevocabile.
+    pub fn detached(mut self) -> Self {
+        self.flags |= SPAWN_FLAG_DETACH;
+        self
     }
 }
 

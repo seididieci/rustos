@@ -920,6 +920,20 @@ rustos/
         Lezione: MAI spinner a pari prio dei server (neanche throttled se il
         carico e' fatto di centinaia di round-trip); i costi si misurano in
         round-trip, non in tick (i tick non sono confrontabili tra TCG/KVM).
+- [x] Fase 22: detach dalla cascata di morte (emendamento ADR-0010 §6).
+  - [x] 22.0 Flag `SPAWN_FLAG_DETACH` in `SpawnMeta` (1 byte del `_pad`, size
+        40 B invariata; bit riservati rifiutati) + `libr::SpawnMeta::detached()`
+        builder. Solo lo spawner decide (mai auto-detach, come i diritti che
+        si riducono solo); irrevocabile; inerte per i figli di init.
+  - [x] 22.1 Kernel: campo `detached` nel PCB; `terminate` salta i detached
+        nella cascata e li ri-parenta a init (`parent=1`, log dedicato).
+        `kill` invariato (singolo pid + cascata sui non-detached, come
+        kill POSIX vs gruppi espliciti): nessuna nuova syscall. Niente fresh
+        channel verso init (limite: servira' al protocollo launcher futuro).
+  - [x] 22.2 Helper NEST + t40 (MID con 2 KILLME, osservazione via `ps`:
+        normale sparita, detached viva parent==1, cleanup-kill). Suite → 40/40.
+        Rimandate: generazioni PID complete (cambio protocollo), kill
+        sottoalbero oltre la cascata. Verifica: gate 5/5 + 7/7 + 40/40 + shell.
 
 ## Important Notes
 
@@ -1084,9 +1098,9 @@ timeout 60 ./run.sh > /tmp/boot.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 7/7
-#   [usertests] PASS 39/39
+#   [usertests] PASS 40/40
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 39/39' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 40/40' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 
