@@ -29,7 +29,10 @@ stride 4 produce walk verso indirizzi fisici inesistenti.
 - QEMU lo carica direttamente con `-kernel` e trasferisce il controllo in
   **protected mode 32-bit flat** all'entry `_start` (0x100000).
 - `kernel/src/boot.asm` (NASM) fa da trampolino:
-  check CPUID → identity map dei primi 2 MiB (pagine 4 KiB) → PAE + LME +
+  check CPUID → identity map di boot da 8 MiB (PD[1..3] large page 2 MiB;
+  i 2 MiB originari non bastarono piu' dal Fase 17, quando il `.bss`
+  supero' il limite → triple fault pre-IDT; `BOOT_MAP_LIMIT` + guard
+  fail-loud a inizio `rust_main`) → PAE + LME +
   PG → far jump in 64-bit → `call rust_main`.
 - Le tabelle vive in memoria convenzionale (`0x90000-0x93FFF`), fuori dalla
   zona del kernel.

@@ -86,8 +86,13 @@ Anche i microkernel di produzione hanno console di debug pre-IPC.
 
 > Nota storica: la tabella riflette la roadmap al momento dell'ADR (Fase 2).
 > La numerazione effettiva delle fasi e' poi cresciuta e stata riordinata fino
-> alla Fase 14 (IPC per nome = 12, IPC async = 13, Shell + utility = 14):
-> vedi l'elenco corrente in `AGENTS.md` e la [tabella in 00-introduzione](./00-introduzione.md).
+> alla Fase 22 (IPC per nome = 12, IPC async = 13, cleanup = 14, tastiera/tty =
+> 15, disk driver = 16, diritti = 17, shell = 18, introspezione = 19, FAT
+> scrivibile = 20, servizi da disco = 21, detach = 22): vedi l'elenco corrente
+> in `AGENTS.md` e la [tabella in 00-introduzione](./00-introduzione.md). Le
+> decisioni piu' recenti sono negli ADR [0012](../adr/0012-userspace-disk-driver.md),
+> [0013](../adr/0013-mount-syscall.md), [0014](../adr/0014-channel-rights-serverside.md),
+> [0016](../adr/0016-fat-writable.md), [0017](../adr/0017-servizi-da-disco.md).
 
 ## References
 

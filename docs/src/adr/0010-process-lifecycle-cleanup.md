@@ -76,7 +76,7 @@ kernel sa gia' tutto (canali, servizi, CBS) e nessuno fa wait/reap esplicito.
    cascata evita orfani vivi con canali verso un morto. Morte di `init` →
    panic documentato (il root dei servizi non deve morire).
 
-4. **KILL**. Nuova syscall `kill(pid)`: termina un processo per la stessa via
+4. **KILL**. Nuova syscall `kill(pid, code)`: termina un processo per la stessa via
    di `exit` (cleanup + cascata + notifica). Il kill esplicito dell'intero
    sottoalbero e' rimandato alla fase "detach".
 
@@ -112,7 +112,7 @@ kernel sa gia' tutto (canali, servizi, CBS) e nessuno fa wait/reap esplicito.
   `HEAP_BRK`/`RING_PHYS`, slot canale.
 - Nuova syscall `kill`; notifica exit unificata kernel→peer (EXIT_NOTIFY su
   ogni canale del morto, dopo il teardown); `libr` mantiene `exit` invariata
-  e aggiunge `kill(pid)`, `wait_reply` con `WaitReplyError` (`ServerDied`) e
+  e aggiunge `kill(pid, code)`, `wait_reply` con `WaitReplyError` (`ServerDied`) e
   `wait_reply_chan` per il filtro canale; nuovo servizio test-only
   `Service::Test` (slot usa-e-getta per i test di morte).
 - Strutture toccate: `process.rs` (exit code/waiting_pid/tss_slot/die_peers),
@@ -137,8 +137,9 @@ kernel sa gia' tutto (canali, servizi, CBS) e nessuno fa wait/reap esplicito.
     hold oltre 3 restart/300 tick. `service_pid` (36) per supervisione;
     retry libr uniform-retry-once con re-lookup bounded (~200 tick), caveat
     write at-least-once. Test: t27 (kill devfs → sparizione → ricomparsa →
-    operativo). Rimandati: t28 (restart userfs: re-register driver +
-    re-handshake client + reopen shell), generazioni PID.
+    operativo) e t28 (restart userfs end-to-end: re-register driver +
+    re-handshake client + reopen shell — realizzato). Restano rimandate le
+    generazioni PID complete (cambio protocollo).
   - Detach (Fase 22, emendamento §6): campo `detached` nel PCB (da flag spawn,
     validato: bit riservati rifiutati), `terminate` salta i detached nella
     cascata e li riparenta a init con log `[proc] ... detached`; `ps` mostra

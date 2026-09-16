@@ -76,6 +76,12 @@ kbd/tty come gli altri servizi (restart/backoff Fase 14).
   ripetuti non bruciano piu' il pool da 128 (panic osservata). `spawn` non
   fa piu' panic a pool esaurito (ritorna -1).
 - Nuovo tag `KBD_NOTIFY` (0x40, fire-and-forget senza reply) da kbd a tty.
-- Test t31 (presenza Kbd/Tty + open device); `test-shell.py` 3/3 prova il
+- Nuovo tag `IRQ_NOTIFY_KBD` (0x41, kernel→userkbd): il bridge interrupt→IPC.
+  L'handler IRQ1 del kernel risolve l'owner `Kbd` per nome e gli accoda una
+  notify; senza un messaggio in coda, un driver che dorme in `recv()` a coda
+  vuota tornerebbe Ready e si ri-bloccherebbe senza mai leggere la porta
+  0x60 (l'hardware resterebbe non drenato). Due tag distinti: 0x40 e' il
+  flusso applicativo kbd→tty, 0x41 il risveglio kernel→kbd.
+- Test t31 (presenza Kbd/Tty + open device); `test-shell.py` ~30/30 prova il
   percorso completo QMP-sendkey → userkbd → tty → shell → VGA.
 - Log seriali con timestamp `[s.cs]` stile dmesg (debug facility, seriale only).

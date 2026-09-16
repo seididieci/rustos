@@ -1,7 +1,7 @@
 # ADR-0017: Servizi caricati da disco (via `spawn_image`)
 
 Data: 2026-09-16
-Stato: accettato (Fase 21)
+Stato: accettato (Fase 21), emended Fase 22 (flag detach in `SpawnMeta`)
 
 ## Contesto
 
@@ -17,8 +17,10 @@ Primitiva generale di creazione + storage-TCB minimo:
 
 - **`SYS_SPAWN_IMAGE` (38)**: come `spawn` ma il binario e' letto dalla
   memoria del chiamante (come fork+exec). `SpawnMeta` 40 B `repr(C)`
-  (identico in `libr`): nome NUL-padded 16 B (non vuoto, stampabile), prio
-  1..31 (mai 0/idle), fino a 4 range I/O. Il kernel valida tutto (fail-loud,
+  (identico in `libr`): `name[16]` NUL-padded (non vuoto, stampabile),
+  `prio` 1..31 (mai 0/idle), `io_count` (0..4), `flags` (Fase 22: solo
+  `SPAWN_FLAG_DETACH`, bit riservati rifiutati), `_pad[5]`,
+  `io_ranges: [(u16,u16); 4]`. Il kernel valida tutto (fail-loud,
   mai UB), copia in frame privati con coda azzerata (igiene .bss), bound
   256 KiB per singolo spawn. Le **porte I/O sono privilegio root**: solo pid 1
   (init) puo' chiederle, gli altri con `io_count == 0`. Nome display owned nel
@@ -32,7 +34,15 @@ Primitiva generale di creazione + storage-TCB minimo:
   shell. **Restart rileggono sempre da disco** (niente cache binari:
   freschezza garantita), fail-loud a boot.
 - Suite: helper via `spawn_image` da `/fat/test`, nuovo t39 (`/bin`+`/test`
-  presenti e servizi up). Suite → 39/39.
+  presenti e servizi up). Suite → 39/39 (40/40 dalla Fase 22, t40 detach).
+
+## Emendamento Fase 22 (detach)
+
+Il campo `flags` di `SpawnMeta` (byte sottratto al `_pad`, size 40 B
+invariata) e' stato attivato con `SPAWN_FLAG_DETACH` (0x01): il figlio non
+partecipa alla cascata di morte del parent e viene ri-parentato a init
+(emendamento ADR-0010 §6). Builder `libr::SpawnMeta::detached()`. Bit
+riservati rifiutati dal kernel (fail-loud). Test t40.
 
 ## Conseguenze
 
@@ -48,7 +58,7 @@ Primitiva generale di creazione + storage-TCB minimo:
 - Bug trovato: `wait_ready` ingoiava le EXIT_NOTIFY altrui → restart persi
   (userdisk morto durante il restart di devfs) → stash + drain nei loop.
 - Validazione: gate 5/5 + 7/7 + 39/39 (×2 TCG + ×2 reorder), shell 30/30 KVM,
-  reorder UUID PASS, zero FAIL/PANIC.
+  reorder UUID PASS, zero FAIL/PANIC. (Gate corrente: 40/40 dalla Fase 22.)
 
 ## Alternative scartate
 

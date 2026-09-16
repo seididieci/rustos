@@ -55,7 +55,8 @@ questione del porting di rust `std` su `libr`.
 
 - Niente `errno`: solo -1 generico (primo candidato a colmare il gap, vedi
   sopra).
-- Niente flag `O_CREAT`/`O_RDWR`, niente `lseek`/`stat`, niente symlink.
+- `O_CREAT` implementato (Fase 18.2) e `stat` implementata (Fase 19.2,
+  `R_STAT` senza open); restano fuori `O_RDWR`, `lseek`, symlink.
 - Gli fd vivono nel server, non nel client: chiudere/duplicare/ereditarli
   segue le regole dei canali (ADR-0008/0010), non quelle di `fork`.
 - Permessi Strato 0: campi `mode`/`opts` placeholder, zero enforcement

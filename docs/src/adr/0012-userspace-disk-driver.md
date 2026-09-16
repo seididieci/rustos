@@ -123,6 +123,7 @@ ricevere forward deve completare la registrazione in un'unica chiamata.
 - Test t32 (raw `/dev/sda` + kill/restart + smoke `/fat` via riconnessione);
   `testfat` 6/6 invariata; suite 31/31 → 32/32.
 - Verificato multi-disco (secondo `-drive if=ide`: `sdb` + `sdb1` da MBR).
-- Limiti noti (fasi future): syscall `mount` esplicita (16b, subito dopo),
-  ATAPI/ISO9660, catene extended, scritture disco, caching, DMA+IRQ (li'
-  l'async userfs avra' senso: col PIO polling nessuno overlap esiste).
+- Limiti noti (fasi future): ATAPI/ISO9660, catene extended, caching,
+  DMA+IRQ (li' l'async userfs avra' senso: col PIO polling nessuno overlap
+  esiste). Realizzati dopo: mount espliciti in userspace (16b, ADR-0013) e
+  scritture disco (Fase 20, ADR-0016: `DISK_WRITE` 0x55 + write PIO).

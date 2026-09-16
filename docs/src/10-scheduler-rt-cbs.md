@@ -84,10 +84,9 @@ sorgente (es. `Priority::High` in `user_binary.rs`) usa le costanti alias.
 | Processo | Priorita' RT |
 |----------|--------------|
 | `idle` | 0 |
-| `userdemo`, `useruptime`, `usertestspin`, demo | 1 |
-| test/demo | 2-5 |
-| servizi Normal (console, fs, devfs, shell, usertests) | 16-20 |
-| `utspin_high`, `keyboard`, urgenti futuri | 31 |
+| `useruptime` (solo informativo) | 1 |
+| servizi e test (console, fs, devfs, shell, usertests, init, helper) | 16 |
+| urgente (es. spin a 31 nei test di priorita' t17) | 31 |
 
 Quantum invariato: **2 tick** (20 ms).
 
@@ -260,20 +259,14 @@ Oltre il cap la richiesta viene **rifiutata** (syscall ritorna -1).
 |--------|---------|-----------|
 | 28 | `cbs_create(budget, period)` | crea un server CBS → id o -1 (admission control) |
 | 29 | `cbs_attach(server_id)` | lega il server al processo corrente |
-| 30 | `cbs_get_info()` | budget/period/remaining/bandwidth correnti (debug/test) |
-
-| Numero | Syscall | Semantica |
-|--------|---------|-----------|
-| 28 | `cbs_create(budget, period)` | crea un server CBS → id o -1 (admission control) |
-| 29 | `cbs_attach(server_id)` | lega il server al processo corrente |
-| 30 | `cbs_get_info()` | budget/period/remaining/bandwidth correnti (debug/test) |
+| 30 | `cbs_get_info(server_id)` | budget/period/remaining/bandwidth del server (debug/test) |
 
 Wrapper in `libr` (`libs/libr/src/lib.rs`):
 
 ```rust
 pub fn cbs_create(budget_ticks: u32, period_ticks: u32) -> Result<i64, ()>;
 pub fn cbs_attach(server_id: i64) -> Result<(), ()>;
-pub fn cbs_get_info() -> Option<CbsInfo>;   // budget/period/remaining/bw
+pub fn cbs_get_info(server_id: i64) -> Option<CbsInfo>;   // budget/period/remaining/bw
 ```
 
 ### Uso tipico (processo "audio")
@@ -293,14 +286,14 @@ loop {
 
 **Stato attuale**: CBS implementato nel kernel (`cbs.rs` + integrazione
 `on_tick`), syscall 28-30 e wrappers libr completi, test specifici CBS (t18
-admission + t19 bandwidth) implementati e verdi. La suite esistente (19/19)
-continua a passare con entrambi gli scheduler — il CBS non interferisce con i
-processi che non lo usano.
+admission + t19 bandwidth) implementati e verdi. Lo scheduler RT e' l'unico
+scheduler (il classico a 3 priorita' e' stato rimosso dopo la validazione) —
+il CBS non interferisce con i processi che non lo usano.
 
 ### Test bandwidth (11.5.1) — PASS
 
-Task "audio" (`utcbstest`) con CBS (Q=3, P=10 → 30%) + task hog (`utspin_norm`,
-senza CBS, budget 300 tick) che satura la CPU. L'audio deve completare
+Task "audio" (`utcbstest`) con CBS (Q=3, P=10 → 30%) + task hog (`testspin`
+a prio Normal, senza CBS, budget 300 tick) che satura la CPU. L'audio deve completare
 **sempre** i suoi ~3 tick ogni 10 (nessun sample perso).
 
 Misura: l'audio e l'hog **contano ciascuno i tick PIT osservati** durante il
@@ -320,16 +313,12 @@ Una richiesta con `Σ bandwidth > cap` (~70%) deve essere rifiutata (-1):
 
 ### Validazione (11.5.3) — PASS
 
-La suite completa deve essere verde con lo scheduler RT (unico):
+Gate corrente (unico scheduler):
 
 ```
-boot pulito + [testfs] PASS 5/5 + [testfat] PASS 6/6
-            + [usertests] PASS 21/21 + test-shell.py 3/3
+boot pulito + [testfs] PASS 5/5 + [testfat] PASS 7/7
+            + [usertests] PASS 40/40 + test-shell.py ~30/30
 ```
-
-(validazione iniziale su 3 ripetizioni RT quando era ancora il secondo
-scheduler dietro feature flag; da Fase 13/14 lo scheduler classico e' stato
-rimosso).
 
 ### Fix CBS importanti emersi dalla validazione
 

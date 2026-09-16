@@ -4,7 +4,8 @@
 
 Velordor è un **microkernel** (ADR-0005): il kernel contiene solo scheduling,
 IPC, gestione della memoria e routing degli interrupt. Tutti i servizi —
-driver inclusi — sono processi userspace che comunicano via IPC sincrona.
+driver inclusi — sono processi userspace che comunicano via IPC (sincrona +
+async su canali per-nome, con bulk dati su ring SPSC).
 
 ```
 ┌──────────────────────────────────────────────────┐
@@ -12,21 +13,22 @@ driver inclusi — sono processi userspace che comunicano via IPC sincrona.
 │                                                  │
 │  ┌───────┐   ┌─────────────────┐  ┌───────────┐  │
 │  │ init  │◄─►│ console server  │◄─►│ fs server │  │
-│  └───┬───┘   │ (VGA + kbd drv) │  │ (ramfs/   │  │
+│  └───┬───┘   │ (VGA rendering) │  │ (ramfs/   │  │
 │      │       └────────┬────────┘  │  FAT32)   │  │
 │      │                │           └─────┬─────┘  │
 │  ┌───┴────────────────┴─────────────────┴─────┐  │
 │  │            shell · ls · cat · echo         │  │
 │  └────────────────────┬───────────────────────┘  │
 └───────────────────────┼──────────────────────────┘
-                        │ IPC sincrona (send/recv)
+                        │ IPC (send/recv/async
+                        │ + ring zero-copy)
                         │ + syscall d'ingresso
 ┌───────────────────────▼──────────────────────────┐
 │                  KERNEL (Ring 0)                 │
 │                                                  │
 │  ┌──────────┐ ┌──────────┐ ┌──────────────────┐  │
 │  │Scheduler │ │    IPC   │ │ Address spaces   │  │
-│  │(RR su PIT│ │send/recv │ │ frame alloc +    │  │
+│  │(RT+CBS 32│ │send/recv │ │ frame alloc +    │  │
 │  └────┬─────┘ └────┬─────┘ │ paging per-proc  │  │
 │       │            │       └──────────────────┘  │
 │  ┌────┴────────────┴──────────────┐               │
@@ -38,9 +40,9 @@ driver inclusi — sono processi userspace che comunicano via IPC sincrona.
 └──────────────────────────────────────────────────┘
 ```
 
-**Stato attuale** (Fase 8.x completata): la seriale e' l'unica debug console
-in-kernel; il console server userspace gestisce VGA + decodifica tastiera
-tramite IPC-inject dal kernel.
+**Stato attuale**: la seriale e' l'unica debug console in-kernel; il console
+server userspace fa rendering VGA, la tastiera vive in `userkbd`/`usertty`
+(Fase 15, niente piu' ponti kernel oltre routing+EOI dell'IRQ1).
 
 ## Scelte progettuali del kernel
 
@@ -86,9 +88,10 @@ grandi spezzati in piu' round-trip dal client.
 ### TSS per-processo con I/O bitmap
 
 Ogni processo ha il proprio TSS con RSP0 e **I/O bitmap** (ADR-0006): i driver
-userspace dichiarano in `io_ranges` le porte consentite a ring 3 (es. userfs →
-porte ATA) e non possono toccare altre porte. Conseguenze: driver I/O reali in
-userspace con minimo privilegio.
+userspace dichiarano in `io_ranges` le porte consentite a ring 3 (es. userdisk →
+porte ATA su entrambi i canali, userkbd → 0x60-0x64, console → CRTC VGA) e non
+possono toccare altre porte (userfs: `&[]`, qualunque `in/out` e' #GP).
+Conseguenze: driver I/O reali in userspace con minimo privilegio.
 
 ### Boot PVH custom
 

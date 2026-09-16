@@ -27,11 +27,11 @@ A livello di meccanismo:
 
 - IRQ timer (PIT, 100 Hz) richiama `sched::on_tick()`, che forza lo switch a
   fine quantum (2 tick = 20 ms) e contabilizza il budget CBS
-- IRQ keyboard mette i scancode in una coda (`kbd_events`) e risveglia il
-  keyboard process (`wake`)
-- il `keyboard process` (priorita' **High** = 31) consuma la coda e invia i
-  scancode via IPC al console server userspace; quando la coda e' vuota si
-  **blocca** (`block_current`)
+- IRQ keyboard (Fase 15): il kernel fa solo routing + EOI e sveglia il driver
+  userspace `userkbd` via `IRQ_NOTIFY_KBD` (messaggio in coda — senza, un
+  driver in `recv()` a coda vuota si ri-bloccherebbe senza mai leggere
+  l'hardware); `userkbd` (ring 3, porte 0x60-0x64) drena l'i8042 e pubblica
+  gli scancode su `/dev/kbd`, `usertty` li decodifica (v. ADR-0011)
 - l'`idle process` (priorita' **Idle** = 0) esegue `hlt` quando nulla e' pronto
 - scheduling **solo timer-driven**: nessuno switch volontario; la priorita'
   seleziona il prossimo processo, lo switch e' un meccanismo separato
@@ -158,9 +158,11 @@ Da ADR-0010, la morte di un processo (exit volontaria o `kill`) e' gestita in
     in `send` sincrono verso il morente** (campo `waiting_pid` → tornano con
     errore e possono rifare un `service_lookup`), enumera le coppie
     `(peer, channel)` da notificare (salvate nel PCB in `die_peers`, max 31
-    peer distinti), termina **tutta la discendenza** (cascata) e accoda il PID
+    peer distinti), termina la discendenza non-detached in cascata e
+    ri-parenta a init i figli detached (flag spawn, Fase 22), e accoda il PID
     alla coda di reclaim. `init` (pid 1) non deve mai morire (panic
-    documentato). Mai init/kernel processi killabili.
+    documentato). Killabile: qualunque processo user tranne init, i processi
+    kernel e se stesso.
  2. **Teardown fisico differito** (`Scheduler::drain_reclaim`, a inizio
     `on_tick`): libera i frame dello stack kernel, lo slot TSS (pool riusabile),
     l'address space user (walk delle page table dal CR3: foglie marcate `owned`
@@ -176,8 +178,10 @@ Da ADR-0010, la morte di un processo (exit volontaria o `kill`) e' gestita in
 
  Conseguenze: il limite dei 32 PID e' ora di **concorrenza**, non cumulativo dal
  boot (i PID vengono riusati); TSS, canali e server CBS sono pool riusabili;
- chi attende un servizio (es. init) puo' osservarne la caduta via `EXIT_NOTIFY`
- e riavviarlo (restart effettivo: lavoro futuro). Riferimento: ADR-0010.
+  chi attende un servizio (es. init) puo' osservarne la caduta via `EXIT_NOTIFY`
+  e riavviarlo (init-restart con respawn + attesa SVC_READY, backoff e hold:
+  Fase 14.12, t27/t28/t32). Generazioni PID complete: rimandate (serve un
+  cambio di protocollo). Riferimento: ADR-0010 (emendato Fase 22 per il detach).
 
 ## Riferimenti
 

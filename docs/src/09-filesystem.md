@@ -7,10 +7,11 @@ con gli altri processi tramite IPC. Il kernel non gestisce i file --
 delega tutto al FS server.
 
 ```
-Processi userspace:
-  userfs    (PID 4) -- ramfs + FAT32 (scrivibile dalla Fase 20) + mount table
-  userdevfs (PID 6) -- /dev/null, /dev/zero
-  init      (PID 1) -- spawna userfs, devfs, console, shell
+Processi userspace (PID instabili per riuso: i peer si indirizzano per nome/canale):
+  userfs    -- ramfs + FAT32 (scrivibile dalla Fase 20) + mount table
+  userdevfs -- /dev/null, /dev/zero
+  userdisk  -- driver ATA + nodi /dev/sdX + alias by-uuid/by-label (Fase 16)
+  init      -- spawna disk/fs da embedded, il resto da /fat (Fase 21)
   shell     -- usa libr wrappers per accedere ai file
 ```
 
@@ -26,8 +27,9 @@ senza copie ne' race, ogni processo ha una coppia di **ring SPSC** dedicati.
    e `USER_RESP_RING` (response, = 0x4000_0021_0000) nello spazio del
    chiamante e ritorna i due indirizzi fisici via IpcResult.
 2. **Registra presso userfs** (`FS_BUF_REG`, tag 0x31): il client invia i
-   due phys a userfs (PID 4). userfs memorizza `pid → (req, resp)` e mappa
-   il ring del client nella propria finestra quando serve.
+   due phys a userfs (risolto per nome, servizio `Fs`). userfs memorizza
+   `chan → (req, resp)` e mappa il ring del client nella propria finestra
+   quando serve.
 3. **Operazioni FS su ring**: ogni operazione = 1 frame nel request ring
    `[tag:4][w0:8][w1:8][payload]` + `send(FS_NOTIFY)` (tag 0x32). userfs
    consuma SEMPRE l'intero frame e scrive 1 response frame
@@ -77,22 +79,22 @@ senza copie ne' race, ogni processo ha una coppia di **ring SPSC** dedicati.
               |  IPC(FS_NOTIFY)  →  userfs
               v
          +------------------------------------------+
-         |         userfs (PID 4)                    |
+         |         userfs (servizio `Fs`, peer per nome)   |
          |  finestra: ring del client a              |
          |           USER_FS_BUFFER + USER_RESP_RING |
-         |  Mount table:                             |
-         |    "/"   → ramfs                          |
-         |    "/fat" → FAT32 (scrivibile, Fase 20)     |
-         |    "/dev" → userdevfs (PID 6)             |
+         |  Mount table (`Vec<FsMount>`, longest prefix, lazy):  |
+         |    "fat" → FAT32 via UUID (Fase 16d, scrivibile Fase 20)  |
+         |    + mount dinamici R_MOUNT/R_UMOUNT (Fase 16b)           |
          |  ramfs: BTreeMap<String, Node>            |
-         |  FAT32: BPB + cluster chain               |
+         |  FAT32: BPB + cluster chain (FileInfo per-fd + OPEN-once,
+         |        Fase 21)                           |
          +------------------------------------------+
               |                    |
               |  ramfs/fat:        |  map_in + IPC(DEV_*)
               |  read/write       |  verso driver
               |  sui ring         v
               |  del client  +------------------------+
-              |               |  userdevfs (PID 6)    |
+              |               |  driver per nome      |
               |               |  /dev/null → read=0   |
               |               |  /dev/zero → read=0s  |
               |               +------------------------+
@@ -101,6 +103,10 @@ senza copie ne' race, ogni processo ha una coppia di **ring SPSC** dedicati.
 ```
 
 ## Sub-fasi
+
+> I "Checkpoint" sotto sono i risultati **all'epoca** di ciascuna sotto-fase
+> (non il gate corrente). Gate corrente: `[testfs] PASS 5/5` + `[testfat] PASS
+> 7/7` + `[usertests] PASS 40/40` + `test-shell.py` ~30/30, zero FAIL/PANIC.
 
 ### 9.1 -- Shared buffer + ramfs server (originale, sostituita da 9.6)
 
@@ -114,10 +120,10 @@ verification).
 
 ### 9.2 -- FAT32 read-only (poi scrivibile in Fase 20)
 
-Driver ATA PIO e parser FAT32 nel processo userspace userfs, abilitato
+Driver ATA PIO e parser FAT32 nel processo userspace userfs, allora abilitato
 alle porte 0x1F0-0x1F7 via **TSS per-processo** (ADR-0006).
 
-**Checkpoint:** FAT32 read funziona (usertestfat PASS 6/6).
+**Checkpoint (all'epoca):** FAT32 read funziona (usertestfat PASS 6/6).
 
 > Fase 16: il driver ATA e' migrato in `userdisk` (entrambi i canali,
 > enumerazione IDENTIFY, `/dev/sdX`, [ADR-0012](../adr/0012-userspace-disk-driver.md));
@@ -140,15 +146,17 @@ alle porte 0x1F0-0x1F7 via **TSS per-processo** (ADR-0006).
 Device file server (`/dev/null`, `/dev/zero`) registrato presso userfs
 tramite `FS_REGISTER`. Mount table dinamica con prefix-based resolution.
 
-**Checkpoint:** /dev/null e /dev/zero funzionano (usertestfat PASS 6/6).
+**Checkpoint (all'epoca):** /dev/null e /dev/zero funzionano (usertestfat PASS 6/6).
 
 ### 9.4 -- Shell integration
 
 La shell (`usershell`) usa `libr` wrappers per leggere/scrivere file:
-ls, cat, touch, mkdir, help, exit. Il console server gestisce la VGA e
-la tastiera; la shell opera sullo stesso fd del device `/dev/input`.
+ls, cat, touch, mkdir, help, exit. Il console server gestiva la VGA e
+(all'epoca) la tastiera; la shell opera sullo stesso fd del device
+`/dev/input`. (Dalla Fase 15: console solo rendering `/dev/console`,
+tastiera in `userkbd`/`usertty`; comandi estesi in Fase 18.)
 
-**Checkpoint:** test-shell.py PASS 3/3.
+**Checkpoint (all'epoca):** test-shell.py PASS 3/3.
 
 ### 9.5 -- Split layout + suite di regressione
 
@@ -158,12 +166,12 @@ regressione 17 test con riga riepilogo `[usertests] PASS 17/17`.
 ### 9.6 -- Buffer per-processo + zero-copy IPC (sostituita da 10.2)
 
 Rimozione della shared buffer page unica e delle syscall kernel 3-7/23-24.
-Ogni processo alloca la propria pagina (`fs_buf_alloc`, syscall 26) e
-la registra presso userfs (`FS_BUF_REG`). Operazioni FS = IPC dirette
-client→userfs. Per i device remoti, userfs mappa la pagina del client
-nel driver (`map_in`, syscall 27).
+Ogni processo alloca la propria pagina e la registra presso userfs
+(`FS_BUF_REG`). Operazioni FS = IPC dirette client→userfs. Per i device
+remoti, userfs mappa la pagina del client nel driver (`map_in`, syscall 27).
+(Dalla 10.2: DUE ring SPSC per processo via `ring_alloc`, syscall 26.)
 
-**Checkpoint:** testfs 5/5, testfat 6/6 (incl. /dev/null + /dev/zero),
+**Checkpoint (all'epoca):** testfs 5/5, testfat 6/6 (incl. /dev/null + /dev/zero),
 usertests 17/17 (incl. churn devfs concorrente), shell 3/3.
 
 ### 10.2 -- Ring SPSC per-processo (sostituisce 9.6)
@@ -182,7 +190,7 @@ entrambi i ring del client nel driver via `map_in` (27) — il driver
 scrive/legge direttamente (zero copie). Libr splitta payload > ~4000 B
 in piu' round trip (chunking multi-frame, Fase 10.2.4).
 
-**Checkpoint:** testfs 5/5, testfat 6/6 (incl. /dev/null + /dev/zero),
+**Checkpoint (all'epoca):** testfs 5/5, testfat 6/6 (incl. /dev/null + /dev/zero),
 usertests 17/17, shell 3/3.
 
 ## Ordine di implementazione
@@ -217,7 +225,7 @@ usertests 17/17, shell 3/3.
 | `userland/fs/src/ipc_disk.rs` | client `DISK_*` verso userdisk (`BlockSource`, riconnessione lazy, Fase 16; resolve nome→handle + map di entrambi i ring, Fase 16c; OPEN-once per connessione, Fase 21) |
 | `userland/disk/src/main.rs` | userdisk: detect+part, `/dev/sdX`, protocolli `DISK_*`+`DEV_*` (Fase 16; `DISK_RESOLVE` single-source-of-truth, Fase 16c) |
 | `userland/devfs/src/main.rs` | devfs: `/dev/null`, `/dev/zero` |
-| `userland/console/src/main.rs` | console: `/dev/input/keyboard`, VGA |
+| `userland/console/src/main.rs` | console: rendering `/dev/console` su VGA (tastiera in `userkbd`/`usertty` dalla Fase 15) |
 | `userland/init/src/main.rs` | init: spawn servizi + test in sequenza |
 | `syscall-numbers/src/lib.rs` | Costanti `SYS_RING_ALLOC=26`, `SYS_MAP_IN=27` |
 

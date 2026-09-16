@@ -21,12 +21,14 @@ La "syscall" mount e' API `libr` su IPC esistente (come `open`/`read`):
 - userfs tiene `Vec<FsMount>` (binding target → sorgente + istanza) con
   longest-prefix match e attivazione lazy: mount inattivo (disco assente) =
   errore agli accessi, mai shadow in ramfs (stesso contratto di prima).
-- Boot dalle spec statiche (`/dev/sda→/fat`) con lo stesso codice dei mount
+- Boot dalle spec statiche (`UUID=4F4C4556→fat`, Fase 16d: mai per lettera)
+  con lo stesso codice dei mount
   dinamici (dogfood); restart userfs = tabella ricostruita dalle statiche,
   dinamici persi (stato runtime, come fd: i client ristabiliscono — stesso
   spirito del re-handshake `FS_BUF_REG`).
 - Regole: target assoluto normalizzato (rifiuta root, `.`/`..`, vuoti),
-  source solo `/dev/sdX[N]` (handle dal nome, validato dal driver), niente
+  source `/dev/sdX[N]` oppure `UUID=<hex8>`/`LABEL=<nome>` (Fase 16d; handle
+  risolto dal driver), niente
   doppi mount (replace idempotente), `umount` rifiutato con fd aperti
   (EBUSY via scan `FileTable`), `/` non smontabile, fstype per sniffing
   (solo FAT32: BPB invalida = errore).

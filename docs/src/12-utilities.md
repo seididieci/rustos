@@ -52,10 +52,11 @@ linea in `usertty`: conta i digitati, ingoia il resto — Fase 18.0).
 - **Write su `/fat`, si** (Fase 20, scrivibile write-through): `cp` verso
   `/fat` crea/scrive con persistenza al reboot (ramfs resta volatile). Resta
   rifiutato: `rm`/`rmdir`/`mkdir` su `/fat` (niente unlink, fuori scope).
-- **Niente `argv` per binari separati**: i comandi sono builtin; `spawn`
-  passa solo il nome (gli helper di test usano il canale di nascita come
-  argv). Lo split in binari separati arrivera' con l'avvio servizi da disco
-  (ogni `.bin` embedded ingrossa oggi il kernel).
+- **Niente `argv` per binari separati**: i comandi sono builtin; `spawn`/
+  `spawn_image` passano solo il nome (gli helper di test usano il canale di
+  nascita come argv). Lo split in binari separati potra' appoggiarsi
+  all'avvio servizi da disco (Fase 21: `spawn_image` da `/bin`+`/test`, solo
+  lo storage-TCB e' embedded).
 - **`ls -l` minimale**: 1 round trip `R_STAT` per entry (ok per dir piccole);
   niente owner/mtime (`Stat` non li ha); entry sparita tra `readdir` e `stat`
   → riga `? nome`, mai abortito.
@@ -63,18 +64,20 @@ linea in `usertty`: conta i digitati, ingoia il resto — Fase 18.0).
   non crea (POSIX, 18.2).
 
 La shell NON mappa la VGA: tutti i passaggi di input/output avvengono
-tramite il device `/dev/input/keyboard`, gestito dal console server
-(registrato come servizio `Console`, raggiunto per nome — Fase 12/ADR-0008).
+tramite il device `/dev/input/keyboard`, servito dal terminal server
+`usertty` (la console `userconsole` fa solo rendering `/dev/console` — Fase 15).
 
 ### init
 
 Processo radice (PID 1). Spawna i servizi in ordine e poi esegue i test
 in sequenza prima di lanciare la shell (i PID sono indicativi: i peer si
-raggiungono per nome/canale, non per PID):
+raggiungono per nome/canale, non per PID). Dalla Fase 21 solo disk/fs sono
+embedded; gli altri partono da `/fat/bin` via `spawn_image`:
 
-1. `userconsole` — driver VGA + tastiera (servizio `Console`)
-2. `userdisk` — disk driver ATA (servizio `Disk`, Fase 16)
-3. `userfs` — file system server (ramfs + FAT32 via userdisk, servizio `Fs`)
+1. `userdisk` — disk driver ATA embedded (servizio `Disk`, Fase 16)
+2. `userfs` — file system server embedded (ramfs + FAT32 via userdisk, servizio `Fs`)
+3. `userconsole` — rendering VGA da disco (servizio `Console`; da disco non
+   puo' essere prima: il load richiede userfs pronto)
 4. `useruptime` — contatore PIT
 5. `userdevfs` — `/dev/null`, `/dev/zero` (servizio `Devfs`)
 6. `userkbd`/`usertty` — tastiera + terminale (servizi `Kbd`/`Tty`, Fase 15)
@@ -87,7 +90,7 @@ Rendering VGA in userspace. Gestisce:
 - Scrittura VGA (testo, cursore hardware CRTC)
 - Registrazione device `/dev/console` presso userfs via `FS_REGISTER`
 
-La tastiera è gestita da `userkbd`/`usertty` (Fase 15): input da `/dev/input/keyboard`, echo al shell tramite device path DEV.
+La tastiera è gestita da `userkbd`/`usertty` (Fase 15): input da `/dev/input/keyboard`, echo alla shell tramite device path DEV.
 
 ### FS server (userfs)
 

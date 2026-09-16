@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted (emended: ownership del VGA migrato a userspace, Fase 9.4/15)
 
 ## Context
 
@@ -58,6 +58,15 @@ const VGA_BUFFER: *mut Buffer = 0xB8000 as *mut Buffer;
 - Il buffer VGA è volatile (il compiler non deve ottimizzare gli accessi)
 - Richiede un Mutex per l'accesso concorrente
 - È il primo passo verso driver più complessi (framebuffer)
+
+## Emendamento (Fase 9.4/15): VGA in userspace
+
+La decisione originaria valeva per il bring-up. Dalla Fase 9.4 il VGA e' di
+proprieta' del **console server userspace** (`userconsole`), che lo mappa via
+`map_physical` e ne e' l'unico writer (rendering + cursore hardware CRTC
+0x3D4/0x3D5, ADR-0006). Dalla Fase 15 la tastiera e' in `userkbd`/`usertty`.
+`kernel/src/vga.rs` resta solo come **debug facility in-kernel** (stampa
+precoce su VGA prima che i servizi partano).
 
 ## Alternatives Considered
 
