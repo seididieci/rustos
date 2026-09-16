@@ -25,3 +25,4 @@ build_one testland/usertests testland/usertests/src/usertests.ld usertests.bin u
 build_one testland/usertest-client testland/usertest-client/src/client.ld usertestcli.bin usertestcli
 build_one testland/usertest-spin testland/usertest-spin/src/spin.ld usertestspin.bin usertestspin
 build_one testland/utcbstest testland/utcbstest/src/utcbstest.ld utcbstest.bin utcbstest
+build_one testland/bench testland/bench/src/bench.ld userbench.bin userbench

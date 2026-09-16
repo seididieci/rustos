@@ -27,4 +27,5 @@ mcopy -i "$IMG" testland/build/utcbstest.bin    ::/test/cbstest.bin  || exit 1
 mcopy -i "$IMG" testland/build/userhogheap.bin  ::/test/hogheap.bin  || exit 1
 mcopy -i "$IMG" testland/build/userdevreader.bin ::/test/devreadr.bin || exit 1
 mcopy -i "$IMG" testland/build/userdemo.bin     ::/test/demo.bin     || exit 1
+mcopy -i "$IMG" testland/build/userbench.bin    ::/test/bench.bin    || exit 1
 echo "[inject] servizi in /bin + /test su $IMG"

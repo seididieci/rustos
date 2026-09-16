@@ -367,6 +367,11 @@ const SVC_SHELL: SvcMeta = SvcMeta {
 const TEST_FS: SvcMeta = SvcMeta { bin: b"usertestfs", path: Some("/fat/test/testfs.bin"), prio: 16, io: &[] };
 const TEST_FAT: SvcMeta = SvcMeta { bin: b"usertestfat", path: Some("/fat/test/testfat.bin"), prio: 16, io: &[] };
 const TESTS: SvcMeta = SvcMeta { bin: b"usertests", path: Some("/fat/test/tests.bin"), prio: 16, io: &[] };
+/// Bench throughput (Fase P0): `/test` su /fat, solo con feature `bench`
+/// (scripts/bench.sh). Ortogonale alla suite: gira anche in produzione
+/// (skip_tests attivo), mai nel gate di regressione.
+#[cfg(feature = "bench")]
+const TEST_BENCH: SvcMeta = SvcMeta { bin: b"userbench", path: Some("/fat/test/bench.bin"), prio: 16, io: &[] };
 
 /// Spawna dal manifest e attende SVC_READY se richiesto. A boot il fallimento
 /// e' FAIL LOUD (panic via exit: senza servizi il sistema e' inutilizzabile e
@@ -443,9 +448,9 @@ pub extern "C" fn _start() -> ! {
     // disk vengono riavviati alla morte (dalla loro sorgente: embedded per
     // disk/fs, disco per gli altri — Fase 21); gli altri figli solo loggati.
     // Costruita prima dei test cosi' anche run_test supervisiona (t27 uccide
-    // devfs a suite in corso). NOTA: un restart di userfs qui wiperebbe la
-    // ramfs (fixture dei test) — in suite nessuno lo uccide; t28 futuro
-    // affrontera' il tema.
+    // devfs a suite in corso). NOTA: un restart di userfs wipa la ramfs
+    // (fixture dei test) — in suite solo t28 lo uccide (Fase 14.12) e
+    // ricostruisce la fixture al restart.
     //
     // Disk/fs embedded: manifest inline (path=None) con gli stessi nomi: il
     // restart riusa `spawn_child` come a boot.
@@ -475,6 +480,14 @@ pub extern "C" fn _start() -> ! {
         run_test(&TEST_FS, &mut supervised);
         run_test(&TEST_FAT, &mut supervised);
         run_test(&TESTS, &mut supervised);
+    }
+
+    // Bench throughput (Fase P0, feature `bench`): dopo l'eventuale suite,
+    // prima della shell. Mai nel gate (rumore di timing + log dedicato).
+    #[cfg(feature = "bench")]
+    {
+        println!("[init] avvio bench");
+        run_test(&TEST_BENCH, &mut supervised);
     }
 
     if boot_svc(&SVC_SHELL, false).is_none() {

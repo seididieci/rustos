@@ -46,7 +46,7 @@ build_one() {
     local ld="$2"               # linker script del binario
     local out_name="$3"         # nome del .bin prodotto
     local elfname="$4"          # nome del binario ELF (dal Cargo.toml)
-    local extra_flags="${5:-}"  # flag cargo extra opzionali (es. --no-default-features)
+    local extra_flags="${*:5}"  # flag cargo extra opzionali (es. --no-default-features)
 
     local LD_ABS="$(pwd)/$ld"
     export CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="\
