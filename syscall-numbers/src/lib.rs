@@ -133,7 +133,7 @@ pub const R_MOUNT: u32 = 0x16;
 /// Smonta un target: payload "target".
 pub const R_UMOUNT: u32 = 0x17;
 /// Cancella un file o una directory VUOTA: payload = path (Fase 18.2).
-/// Solo ramfs (FAT read-only e device remoti rifiutano con ERR).
+/// Solo ramfs (su FAT manca l'unlink e i device remoti rifiutano con ERR).
 pub const R_DELETE: u32 = 0x1A;
 /// Metadati del path (Fase 19.2, zero kernel): payload = path; risposta
 /// self-written `[size:8][kind:8]`, payload vuoto. Nessun fd coinvolto.

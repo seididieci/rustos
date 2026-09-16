@@ -831,7 +831,8 @@ rustos/
         protocollo (async gia' compatibile). Test di contratto in t6 (read
         oltre EOF ⇒ 0). Verifica: gate 36/36 + `test-shell.py` 24/24.
   - [x] 18.3 Docs + regressione: capitolo `12-utilities.md` (tabella comandi,
-        limiti onesti: no write `/fat`, no argv), estensione `test-shell.py`,
+        limiti onesti dell'epoca: no write `/fat` — poi ribaltato dalla Fase
+        20; no argv), estensione `test-shell.py`,
         gate invariato 36/36 + shell verde.
 - [x] Fase 19: introspezione + metadati (ps/stat).
   - [x] 19.1 `ps` tabellare stile Linux: syscall `SYS_PS_INFO` (37, pattern
@@ -847,8 +848,8 @@ rustos/
         `test-shell.py` 30/30, zero FAIL/PANIC/FAULT.
   - [x] 19.2 `stat` lato userfs (zero kernel): frame `R_STAT` (0x1B) con risposta
         self-written `[size:8][kind:8]` (kind=file/dir/device + flag readonly;
-        ramfs=len reale, FAT=size da dir entry sempre readonly, device=size 0
-        readonly 0 senza interrogare il driver) + `libr::stat`/`Stat` +
+        ramfs=len reale, FAT=size da dir entry, **mai readonly** dalla Fase 20,
+        device=size 0 readonly 0 senza interrogare il driver) + `libr::stat`/`Stat` +
         check ops+subtree nel choke point Fase 17 (bit `RIGHTS_READDIR`) +
         t38 (ramfs/FAT/device/padri sintetizzati/error paths) + stretch
         `ls -l` minimale (Fase 18 chiusa: `ls [-l]`, riga `tipo size nome[ (ro)]`

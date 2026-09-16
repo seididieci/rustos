@@ -3,9 +3,10 @@
 //! Riceve IPC dai processi client (open/read/write/close/readdir/mkdir) e
 //! gestisce:
 //!   - ramfs in memoria sul mount point `/` (scrivibile, Fase 9.1)
-//!   - FAT32 read-only dal disco via `userdisk` sul mount point `/fat`
-//!     (Fase 9.2 su ATA locale, Fase 16 via IPC `DISK_*`, Fase 16c con
-//!     resolve nome→handle lato driver: userfs chiede, non indovina)
+//!   - FAT32 dal disco via `userdisk` sul mount point `/fat` (Fase 9.2 su
+//!     ATA locale; Fase 16 via IPC `DISK_*`; Fase 16c resolve nome→handle
+//!     lato driver; **scrivibile dalla Fase 20**: overwrite/crescita/`O_CREAT`,
+//!     niente unlink)
 //!   - devfs/console remoti via IPC per device `/dev/*` (Fase 9.3)
 //!
 //! Trasferimento dati (Fase 10.2): ogni client ha DUE pagine ring SPSC
@@ -578,7 +579,7 @@ enum FsNode {
 /// Mode Unix di default (placeholder Strato 0, Fase 16b): conservati, MAI
 /// enforcement (nessun uid nel sistema; i check R/W/X arrivano col login
 /// boundary, futuro). FAT e' mappata fissa a mount (file 0o444, dir 0o555:
-/// tanto e' read-only).
+/// placeholder, l'enforcement non esiste; FAT e' scrivibile dalla Fase 20).
 pub const MODE_FILE_DEF: u32 = 0o666;
 pub const MODE_DIR_DEF: u32 = 0o777;
 pub const MODE_FAT_FILE: u32 = 0o444;
@@ -1565,7 +1566,7 @@ fn handle_mkdir(fs: &mut RamFs, mounts: &[FsMount], path: &str) -> Option<u64> {
     if path.is_empty() || path.len() > MAX_PATH {
         return None;
     }
-    // mkdir solo su ramfs (i mount sono read-only o remoti).
+    // mkdir solo su ramfs (i mount FAT/remoti non hanno mkdir).
     match resolve_local(mounts, path)? {
         FsKind::Ram => {
             fs.mkdir(path)?;
@@ -1576,7 +1577,8 @@ fn handle_mkdir(fs: &mut RamFs, mounts: &[FsMount], path: &str) -> Option<u64> {
 }
 
 /// Cancella un file o una directory VUOTA (Fase 18.2, `R_DELETE`).
-/// Solo ramfs: FAT e' read-only, i device remoti non sono file cancellabili
+/// Solo ramfs: su FAT manca l'unlink (e' scrivibile dalla Fase 20, ma non
+/// cancellabile) e i device remoti non sono file cancellabili
 /// (e un mount point non si rimuove: si smonta). Ritorna Some(0) o None.
 fn handle_delete(
     fs: &mut RamFs,
@@ -1591,7 +1593,7 @@ fn handle_delete(
     if resolve_mount(path, mounts).is_some() {
         return None;
     }
-    // …e mai su mount FAT (read-only): solo ramfs.
+    // …e mai su mount FAT (unlink non implementato): solo ramfs.
     match resolve_local(mounts_fat, path)? {
         FsKind::Ram => {
             fs.remove(path)?;

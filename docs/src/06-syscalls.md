@@ -80,11 +80,7 @@ La numerazione e' definita nel dispatch di `syscall_handler` in `kernel/src/sysc
 |-----|---------|------|
 | 0 | `exit(code)` | termina il processo corrente (`sched::exit_current`) |
 | 2 | `write(fd, buf, count)` | fd 1/2 → seriale; altri fd → `-1` |
-| 3 | `open(path_len, flags)` | apre un file via IPC al FS server (Fase 9.1) |
-| 4 | `read(fd, count)` | legge dati dal file via IPC al FS server (Fase 9.1) |
-| 5 | `write_fs(fd, count)` | scrive dati sul file via IPC al FS server (Fase 9.1) |
-| 6 | `close(fd)` | chiude un file descriptor (Fase 9.1) |
-| 7 | `readdir(path_len)` | legge le entry di una directory via IPC (Fase 9.1) |
+| 3-7 | (ritirate) | erano `open/read/write_fs/close/readdir` kernel-side; dalla Fase 9.6 sono IPC dirette client→userfs (wrapper `libr` su ring, Fase 10.2) |
 | 8 | `getpid()` | id del processo corrente |
 | 16 | `send(channel, tag, w0, w1)` | IPC per canale (0 = parent), Fase 7+13 |
 | 17 | `recv()` | IPC per canale: ritorna (channel, tag, w0, w1), Fase 7+13 |
@@ -95,10 +91,10 @@ La numerazione e' definita nel dispatch di `syscall_handler` in `kernel/src/sysc
 | 23-24 | (ritirate) | erano `mkdir`/`fs_register`; dal Fase 9.6 le operazioni FS sono IPC dirette a userfs |
 | 25 | `sbrk(inc)` | estende l'heap (solo VA; pagine lazy demand-zero) |
 | 26 | `ring_alloc()` | alloca/mappa le DUE pagine ring per-processo (request+response, Fase 10.2) |
-| 27 | `map_in(channel, phys, virt, count)` | mappa una pagina FS nota nel peer del canale (Fase 9.6+13) |
+| 27 | `map_in(channel, phys, virt, count)` | mapper generico cross-process: inietta pagine note nello spazio del peer (Fase 9.6+10.2) |
 | 28 | `cbs_create(budget, period)` | crea un server CBS → id o -1 (admission control) |
 | 29 | `cbs_attach(server_id)` | lega il server CBS al processo corrente → 0 o -1 |
-| 30 | `cbs_get_info(server_id)` | info CBS: rax=budget, rdi=period, rsi=remaining |
+| 30 | `cbs_get_info(server_id)` | info CBS del server: rax=budget, rdi=period, rsi=remaining |
 | 31 | `service_register(service)` | occupa lo slot del servizio (ADR-0008, Fase 12) |
 | 32 | `service_lookup(service)` | risolve il servizio in un canale verso l'owner (ADR-0008, Fase 12) |
 | 33 | `send_async(channel, tag, w0, w1)` | IPC async: come `send` ma **non blocca**; ritorna il `req_id` (>= 1) o -1 (Fase 13) |
@@ -108,13 +104,16 @@ La numerazione e' definita nel dispatch di `syscall_handler` in `kernel/src/sysc
 | 37 | `ps_info(pid)` | snapshot `ps`: 0 + nome in rdi+rsi, packed stato/prio/parent/ipc in rdx, tick in r10; -1 se slot vuoto (Fase 19.1) |
 | 38 | `spawn_image(img, len, meta, metalen)` | come `spawn` ma il binario e' in memoria del chiamante (servizi da disco, Fase 21); `meta` = `SpawnMeta` 40 B (nome/prio/porte, porte solo init); ritorna il canale di nascita o -1 |
 
-> **Fase 9.6**: le syscall FS 3-7, 23, 24 sono state RIMOSSE dal percorso dati.
-> Ogni processo alloca la propria pagina di trasferimento (`fs_buf_alloc`, 26) e
-> la registra presso userfs con una IPC register-only (`FS_BUF_REG`, tag `0x31`);
-> le operazioni open/read/write/close/readdir/mkdir/fs_register sono IPC
-> dirette client→userfs e i dati viaggiano nella pagina del chiamante (zero
-> copie). Restano syscall `getpid`, `write` (stdout seriale), `spawn`,
-> `send/recv/reply`, `map_physical`/`map_in`, `get_ticks`, `sbrk`, `exit`.
+> **Fase 9.6** (sostituita da 10.2): le syscall FS 3-7, 23, 24 sono state RIMOSSE
+> dal percorso dati. Ogni processo alloca DUE pagine ring (`ring_alloc`, 26:
+> request a `USER_FS_BUFFER`, response a `USER_RESP_RING`) e le registra presso
+> userfs con una IPC register-only (`FS_BUF_REG`, tag `0x31`); le operazioni
+> open/read/write/close/readdir/mkdir/fs_register sono IPC dirette client→userfs
+> (1 frame `[tag][w0][w1][payload]` + `send(FS_NOTIFY)`, risposta come frame
+> `[result][w1][payload]`). Il kernel non e' piu' nel percorso dati. Restano
+> syscall `getpid`, `write` (stdout seriale), `spawn`/`spawn_image`,
+> `send/recv/reply` (+ varianti async), `map_physical`/`map_in`, `get_ticks`,
+> `sbrk`, `exit`.
 
 > **Fase 12 (ADR-0008)**: `send`/`recv`/`reply` indirizzano per **channel**,
 > non per PID; `spawn` ritorna il canale di nascita. I servizi si registrano
@@ -131,9 +130,10 @@ La numerazione e' definita nel dispatch di `syscall_handler` in `kernel/src/sysc
 > parent e' un peer come gli altri). I client async ricevono
 > `Err(ServerDied)` da `wait_reply` invece di attendere per sempre.
 
-Le syscall classiche (read/open/close/fork/exec/wait/brk/mmap/readdir…) sono
-**pianificate** per le fasi successive (console server, filesystem, shell) e NON sono
-implementate in questa fase.
+Le syscall classiche `fork`/`wait`/`brk`/`mmap` non sono implementate.
+`read`/`open`/`close`/`readdir`/`mkdir`/`stat` esistono come **wrapper `libr`**
+(IPC dirette client→userfs sui ring, zero copie — v. [File System](./09-filesystem.md)),
+non come syscall kernel: i numeri 3-7/23-24 sono ritirati.
 
 ## Dispatch (handler)
 
@@ -148,11 +148,6 @@ extern "C" fn syscall_handler() -> i64 {
     match (*p).number {
         0  => sys_exit((*p).arg1 as i64),
         2  => sys_write((*p).arg1, (*p).arg2 as *const u8, (*p).arg3 as usize),
-        3  => sys_open((*p).arg1, (*p).arg2 as usize, (*p).arg3),
-        4  => sys_read_fs((*p).arg1, (*p).arg2 as usize),
-        5  => sys_write_fs((*p).arg1, (*p).arg2 as usize),
-        6  => sys_close((*p).arg1),
-        7  => sys_readdir((*p).arg1, (*p).arg2 as usize),
         8  => sys_getpid(),
         16 => sys_send((*p).arg1 as usize, (*p).arg2, (*p).arg3, (*p).arg4),
         17 => sys_recv(),
@@ -160,6 +155,20 @@ extern "C" fn syscall_handler() -> i64 {
         20 => sys_spawn((*p).arg1, (*p).arg2 as usize),
         21 => sys_map_physical((*p).arg1, (*p).arg2, (*p).arg3 as usize),
         22 => sys_get_ticks(),
+        25 => sys_sbrk((*p).arg1),
+        26 => sys_ring_alloc(),
+        27 => sys_map_in((*p).arg1 as usize, (*p).arg2, (*p).arg3, (*p).arg4 as usize),
+        28 => sys_cbs_create((*p).arg1, (*p).arg2),
+        29 => sys_cbs_attach(),
+        30 => sys_cbs_get_info((*p).arg1),
+        31 => sys_service_register((*p).arg1),
+        32 => sys_service_lookup((*p).arg1),
+        33 => sys_send_async((*p).arg1 as usize, (*p).arg2, (*p).arg3, (*p).arg4),
+        34 => sys_recv_nonblock(),
+        35 => sys_kill((*p).arg1, (*p).arg2 as i64),
+        36 => sys_service_pid((*p).arg1),
+        37 => sys_ps_info((*p).arg1 as usize),
+        38 => sys_spawn_image((*p).arg1, (*p).arg2 as usize, (*p).arg3, (*p).arg4 as usize),
         _  => -1,
     }
 }
@@ -383,7 +392,7 @@ tutti i GPR sul kernel stack.
 
 `set_current(id, rsp0, cr3)` viene chiamato dal context switch. Il dispatch (`number`)
 implementa: `0=exit`, `2=write`, `8=getpid`, `16=send`, `17=recv`, `18=reply`,
-`20=spawn`, `21=map_physical`, `22=get_ticks`, `25=sbrk`, `26=fs_buf_alloc`,
+`20=spawn`, `21=map_physical`, `22=get_ticks`, `25=sbrk`, `26=ring_alloc`,
 `27=map_in`, `28=cbs_create`, `29=cbs_attach`, `30=cbs_get_info`,
 `31=service_register`, `32=service_lookup`, `33=send_async`, `34=recv_nonblock`,
 `35=kill`, `36=service_pid`, `37=ps_info`, `38=spawn_image` (Fase 21).
@@ -395,7 +404,7 @@ le operazioni FS sono ora IPC dirette client→userfs.
 
 ### Libreria C minimale
 
-La libreria è `userland/libr/src/lib.rs`. ABI: `rax`=numero, `rdi/rsi/rdx/r10`=arg1-4,
+La libreria è `libs/libr/src/lib.rs` (`libr`, condivisa userland+testland). ABI: `rax`=numero, `rdi/rsi/rdx/r10`=arg1-4,
 ritorno in `rax`. Espone `syscall4` (ritorno in `rax`) e `syscall4_out` (cattura anche
 `rdi/rsi/rdx/r10` di ritorno, per l'IPC multi-parola).
 

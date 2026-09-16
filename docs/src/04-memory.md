@@ -84,9 +84,9 @@ let b = alloc::boxed::Box::new(42); // funziona!
 ## Layout fisico (post-Fase 4)
 
 ```
-0x00000 ─ 0x08FFF   riservato (BIOS/IVT)
-0x09000 ─ 0x093FF   page tables boot (PML4/PDPT/PD/PT)
-0x09400 ─ 0x100000  PD aggiuntive dinamiche (108 × 4 KiB)
+0x00000 ─ 0x8FFFF   riservato (BIOS/IVT)
+0x90000 ─ 0x93FFF   page tables boot (PML4/PDPT/PD/PT)
+0x94000 ─ 0xFFFFF   PD aggiuntive dinamiche (108 × 4 KiB)
 0x100000 ─ ─ ─ ─    kernel (text/rodata/data/bss)
 0x100000+   bitmap frame allocator (dim. variabile)
 +          kernel heap (4 MiB)

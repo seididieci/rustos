@@ -91,19 +91,23 @@ Il crate `pc-keyboard` gestisce la decodifica:
 scancode set 1 → evento tasto → decodifica layout → carattere Unicode.
 
 ```rust
+// Fase 15: niente piu' decodifica nel kernel e niente accessi alle porte.
+// L'handler risolve l'owner per nome (restart-safe), gli accoda una notify
+// (bridge interrupt→IPC: un wake senza messaggio non farebbe mai ritorno
+// da `recv()`) e manda EOI in ogni caso.
 extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame) {
-    let scancode: u8 = unsafe { Port::new(0x60).read() };
-    crate::kbd_events::push(scancode);
-    // Risveglia il keyboard process, che decodifica e invia al console server.
-    crate::kbd_process::notify();
+    if let Some(owner) = crate::channels::lookup(syscall_numbers::Service::Kbd) {
+        crate::sched::notify_irq(owner, syscall_numbers::IRQ_NOTIFY_KBD);
+    }
     unsafe { crate::pic::end_of_interrupt(0x21) };
 }
 ```
 
-**Fase 8.2 completata**: il keyboard handler inserisce lo scancode in una coda
-(`kbd_events`), poi il `keyboard process` (kernel thread) lo decodifica e lo
-inoltra via IPC al *console server* userspace (`userconsole`). Se il server
-non e' pronto, lo scancode viene stampato su seriale come fallback.
+**Fase 15 completata**: tastiera interamente in userspace. Il driver PS/2
+`userkbd` (ring 3, porte 0x60-0x64) drena l'i8042, pubblica gli scancode su
+`/dev/kbd` e il terminal server `usertty` li decodifica (layout US) su
+`/dev/input/keyboard` (v. ADR-0011). Se i servizi non sono pronti, lo scancode
+va perso (fire-and-forget a coda piena: il drain successivo recupera).
 
 ## Ordine di inizializzazione
 

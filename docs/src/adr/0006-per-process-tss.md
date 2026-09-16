@@ -39,9 +39,13 @@ Il context switch carica il TSS del processo con `ltr` (`load_process_tss`).
   i descriptor GDT (32 system segment) sono pre-costruibili con
   `Descriptor::tss_segment_with_iomap` del crate `x86_64` (GDT a 69 entry).
 - Slot 0 = TSS di boot/kernel (RSP0 = DF stack); i processi partono da slot 1.
-- `NamedBinary` in `user_binary.rs` porta `io_ranges`: `userfs` →
-  `[(0x1F0,0x1F7),(0x3F6,0x3F7)]`; futuri driver (es. `userconsole` VGA/CRTC)
-  dichiareranno i propri range, senza toccare il kernel.
+- `NamedBinary`/manifest porta `io_ranges` per processo: `userdisk` →
+  ATA PIO primario+secondario `[(0x1F0,0x1F7),(0x3F6,0x3F7),(0x170,0x177),
+  (0x376,0x377)]`; `userkbd` → `[(0x60,0x64)]`; `userconsole` → CRTC cursore
+  `[(0x3D4,0x3D5)]`; `userfs` → `&[]` (nessuna porta: qualunque `in/out` e'
+  #GP, dalla Fase 16 il driver ATA vive in `userdisk`). I range dei servizi
+  da disco sono dichiarati dallo spawner via `SpawnMeta` (Fase 21), senza
+  toccare il kernel.
 - **Bit busy**: `ltr` rifiuta un TSS gia' marcato busy (la CPU setta bit 41 del
   descriptor al primo load). Prima di ogni `ltr` il kernel azzera il bit busy
   del descriptor (via base GDT cacheata da `sgdt`).

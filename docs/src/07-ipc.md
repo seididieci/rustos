@@ -1,8 +1,9 @@
 # IPC (Inter-Process Communication)
 
 > ⭐ **Capitolo centrale dell'architettura microkernel** (ADR-0005).
-> Fase 7 — **implementata e verificata**. Aggiornato in **Fase 12** (ADR-0008):
-> IPC per nome con **registry + channel nel kernel** (vedi sezione in fondo).
+> Fase 7 — **implementata e verificata**. Aggiornato in **Fase 12** (ADR-0008,
+> canali), **Fase 13** (ADR-0009, async) e **Fase 14** (ADR-0010, notifica morte):
+> vedi sezioni in fondo.
 
 ## Panoramica
 
@@ -33,7 +34,7 @@ messaggio = registri CPU, semantica call/reply naturale per client/server (RPC).
 
 | Primitive | Numero | Semantica |
 |-----------|--------|-----------|
-| `send(dest, tag, w0, w1)` | 16 | consegna il messaggio a `dest` e **blocca** finché `dest` non fa `reply` |
+| `send(channel, tag, w0, w1)` | 16 | consegna il messaggio sul canale e **blocca** finché il server non fa `reply` |
 | `recv()` | 17 | **blocca** finché non arriva un messaggio, poi lo restituisce |
 | `reply(tag, w0, w1)` | 18 | risponde al mittente in attesa e lo **sblocca** |
 | `send_async(channel, tag, w0, w1)` | 33 | come `send` ma **non blocca**: ritorna il `req_id` (>= 1) o -1 (Fase 13) |
@@ -65,19 +66,26 @@ multi-register via `ipc_override`: a `sysret`, se `ipc_override != 0`, svuota
 Tutto lo stato IPC vive nel **PCB** del processo (`kernel/src/process.rs`), *non* in
 `PERCPU` (zona transitoria single-slot condivisa):
 
-- `PendingMsg { sender, tag, w0, w1 }` → coda `msg_queue` del ricevente.
+- `PendingMsg { channel, req_id, tag, w0, w1 }` → coda `msg_queue` del ricevente
+  (cap 8, ring; piena → backpressure: `try_push` fallisce, `push` scarta).
 - `PendingReply { tag, w0, w1 }` → `reply_slot` del mittente in attesa.
-- `waiting_sender: Option<usize>` → a chi il processo "deve" la reply.
+- `reply_chan`/`reply_req` → canale + req_id del messaggio correntemente
+  elaborato (fissati da `recv`): la `reply` e' implicita al messaggio corrente.
+- `req_next` → contatore req_id del mittente (Fase 13, signed: >= 0 richiesta,
+  < 0 risposta async).
+- `waiting_pid` → peer su cui un `BlockedOnReply` attende (sblocco alla morte).
+- `die_peers`/`die_peer_count` → coppie (peer, channel) da notificare DOPO il
+  teardown (Fase 14, max 31).
 - `IpcState { None, BlockedOnRecv, BlockedOnReply }` → perché il processo è bloccato.
 
 ### send
 
 ```rust
-pub fn ipc_send(dest: usize, tag: u64, w0: u64, w1: u64) -> IpcResult {
-    // 1. accoda PendingMsg{sender=cur, tag, w0, w1} a dest.msg_queue
-    // 2. se dest era in BlockedOnRecv → ipc_state=None, state=Ready (sveglia)
-    // 3. segna dest.waiting_sender = Some(cur)
-    // 4. blocca cur (BlockedOnReply)
+pub fn ipc_send(channel: usize, tag: u64, w0: u64, w1: u64) -> IpcResult {
+    // 1. peer = channels::peer(channel, cur); req_id = next_req_id(cur)
+    // 2. accoda PendingMsg{channel, req_id, tag, w0, w1} al peer
+    // 3. se peer era in BlockedOnRecv → ipc_state=None, state=Ready (sveglia)
+    // 4. segna cur.waiting_pid = Some(peer); blocca cur (BlockedOnReply)
     // 5. switch al prossimo pronto; al risveglio legge cur.reply_slot
 }
 ```
@@ -86,7 +94,9 @@ pub fn ipc_send(dest: usize, tag: u64, w0: u64, w1: u64) -> IpcResult {
 
 ```rust
 pub fn ipc_recv() -> IpcResult {
-    // 1. se msg_queue non vuota → return subito (sender, tag, w0, w1)
+    // 1. se msg_queue non vuota → pop: richieste (req_id >= 0) fissano
+    //    reply_chan/reply_req ed espongono il channel; risposte async
+    //    espongono il req_id negativo. Ritorna subito.
     // 2. altrimenti blocca (BlockedOnRecv); al risveglio loop (→ 1)
 }
 ```
@@ -95,9 +105,10 @@ pub fn ipc_recv() -> IpcResult {
 
 ```rust
 pub fn ipc_reply(tag: u64, w0: u64, w1: u64) -> IpcResult {
-    // 1. target = cur.waiting_sender (None → -1)
-    // 2. target.reply_slot = Some(PendingReply{tag, w0, w1})
-    // 3. target: ipc_state=None, state=Ready (sveglia il mittente)
+    // 1. se target (peer di reply_chan) e' BlockedOnReply → reply_slot
+    //    (percorso sincrono); altrimenti accoda risposta async con
+    //    req_id = -reply_req e sveglia solo se era BlockedOnRecv
+    // 2. target: ipc_state=None, state=Ready (sveglia il mittente)
 }
 ```
 
@@ -133,9 +144,10 @@ L'IPC sincrono per PID (sopra) accoppiava i peer al numero di processo. Dalla
 Fase 12 il kernel espone un **registry di servizi** e indirizza i messaggi per
 **channel**:
 
-- **`enum Service`** nel crate `syscall-numbers` (`Fs`, `Console`, `Devfs`,
-  `Init`): ogni servizio di sistema occupa uno slot (tabella nel kernel,
-  `channels.rs`). `service_register(service)` (31) lo occupa;
+- **`enum Service`** nel crate `syscall-numbers` (`Console=0`, `Fs=1`,
+  `Devfs=2`, `Init=3`, `Test=4`, `Kbd=5`, `Tty=6`, `Disk=7`): ogni servizio di
+  sistema occupa uno slot (tabella nel kernel, `channels.rs`).
+  `service_register(service)` (31) lo occupa;
   `service_lookup(service)` (32) risolve il nome in un canale verso l'owner.
 - **`Channel`**: coppia bidirezionale tra due processi. `spawn` crea il
   **canale di nascita** (il figlio lo ha come canale 0 = parent, il parent
@@ -148,9 +160,10 @@ Fase 12 il kernel espone un **registry di servizi** e indirizza i messaggi per
   (fix 9.2.2 generalizzato). Niente request-id esplicito lato server in Fase 12
   (ABI a 6 registri non inlinabile): la Fase 13 lo introduce come campo interno
   del messaggio, senza toccare i registri di ritorno.
-- **Migrazione**: fs/console/devfs si registrano per nome; `libr` risolve `Fs`
-  per nome (`fs_chan`); kbd (kernel) risolve `Console` per nome; init
-  sincronizza il boot attendendo l'ACK "Fs pronto" da userfs. Le demo storiche
+- **Migrazione**: fs/console/devfs/disk/kbd/tty si registrano per nome;
+  `libr` risolve `Fs` per nome (`fs_chan` con retry bounded); il driver
+  userspace `userkbd` risolve `Console` per nome; init sincronizza il boot
+  attendendo l'ACK "Fs pronto" da userfs. Le demo storiche
   srv/cli (basate su PID dedotto) sono state rimosse dal catalogo binari.
 
 Vedi [ADR-0008](./adr/0008-ipc-by-name-channels.md) per la decisione completa.
@@ -239,8 +252,8 @@ bound provabile); `reclaim_one` le notifica DOPO il teardown fisico.
 - **Semantica "UN peer e' morto"**: il parent riceve le notifiche di TUTTI i
   figli, anche tardive (il reclaim gira al tick successivo). Una notifica
   stale non riguarda necessariamente il server atteso: confrontare `pid` (o
-  canale) prima di concludere. Retry automatico e restart dei server
-  (init-restart) sono lavoro futuro documentato.
+  canale) prima di concludere. Retry automatico (`fs_send` uniform-retry-once)
+  e restart dei server (init-restart, Fase 14.12) implementati.
 - **Mai rispondere a `EXIT_NOTIFY`** (`drain_stray` la scarta senza reply):
   il mittente e' morto e non c'e' nessuno a leggere la risposta.
 - **Retry client su server morto** (Fase 14, init-restart): `libr::fs_send`
@@ -259,6 +272,21 @@ bound provabile); `reclaim_one` le notifica DOPO il teardown fisico.
   multiplexato dall'unico canale userfs↔driver) → skip esplicito senza reply.
   Se in futuro un driver avrà peer diretti con stato per-client, ricavarne
   la tabella per `(chan, fd)` e purgarla come userfs.
+
+## Tag di protocollo (single source in `syscall-numbers`)
+
+| Tag | Valore | Uso |
+|-----|--------|-----|
+| `FS_REGISTER` | 0x30 | handshake registrazione driver presso userfs |
+| `FS_BUF_REG` | 0x31 | handshake ring client presso userfs |
+| `FS_NOTIFY` | 0x32 | notifica operazione FS nel request ring |
+| `R_*` | 0x10-0x1B | op FS nei frame (`OPEN/READ/WRITE/CLOSE/READDIR/MKDIR/MOUNT/UMOUNT/DELETE/STAT/RIGHTS_*`) |
+| `DISK_*` | 0x50-0x55 | data-plane userfs↔userdisk (`HELLO/OPEN/READ/CLOSE/RESOLVE/WRITE`) |
+| `SVC_READY` | 0x7D | servizio pronto (fire-and-forget a init sul canale di nascita) |
+| `TEST_DONE` | 0x7E | fine test (sul canale di nascita verso init) |
+| `KBD_NOTIFY` | 0x40 | scancode pronti (userkbd→usertty) |
+| `IRQ_NOTIFY_KBD` | 0x41 | bridge interrupt→IPC (kernel→userkbd) |
+| `CHANNEL_PARENT` | 0 | alias canale di nascita verso il parent |
 
 ## Riferimenti
 

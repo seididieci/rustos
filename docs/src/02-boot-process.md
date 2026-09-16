@@ -10,7 +10,8 @@ di ingresso in protected mode a 32 bit. Niente GRUB, niente crate bootloader:
 ```
 1. QEMU (loader PVH) carica i segmenti ELF in RAM
 2. trasferisce il controllo a 0x100000 in PM 32-bit flat
-3. boot.asm: attiva long mode (identity map 2 MiB)
+3. boot.asm: attiva long mode (identity map 8 MiB: PD[1..3] large page —
+   servono dal Fase 17, quando il .bss supero' i 2 MiB originari)
 4. call rust_main() — da qui in poi siamo in Rust 64-bit
 ```
 

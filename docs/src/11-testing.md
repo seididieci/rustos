@@ -1,5 +1,9 @@
 # Test Suite (Fase 9.5)
 
+> I conteggi di suite citati negli ADR e nelle sotto-fasi del libro sono
+> **snapshot all'epoca** di ciascuna fase (es. 17/17, 21/21, 32/32). Il gate
+> corrente e' quello qui sotto (5/5 + 7/7 + 40/40 + shell) e in `AGENTS.md`.
+
 La regressione automatica del sistema gira **dentro QEMU** a ogni boot: i
 binari di test sono processi user reali, spawnati da `init` in sequenza prima
 della shell.
@@ -7,21 +11,24 @@ della shell.
 ## Layout
 
 ```
-userland/   SOLO binari "ad uso utente": init, console, fs, devfs, shell, uptime
+userland/   SOLO binari "ad uso utente": init, console, fs, devfs, shell, uptime,
+            kbd, tty, disk (Fase 15/16)
 libs/libr   libreria di sistema condivisa (runtime + allocatore)
 testland/   test suite + repro + demo storiche
   testfs        usertestfs   — ramfs (read/write/mkdir/errori)   → PASS 5/5
   testfat       usertestfat  — FAT32 scrivibile (Fase 20) + /dev/null, /dev/zero → PASS 7/7
-  usertests     usertests    — suite completa (38 test)          → PASS 38/38
-  usertest-client usertestcli  — helper a modalita' (ECHO/ZEROREAD/NULLW/SRV)
-  usertest-spin  usertestspin  — busy-loop a budget di tick (priorita')
+  usertests     usertests    — suite completa (40 test)          → PASS 40/40
+  usertest-client usertestcli  — helper a modalita' (ECHO/ZEROREAD/NULLW/SRV/CHURN/KILLME/SRVDIE/SYNCWAIT/MNTDIE/OPENDIE/MAPHAMMER/FLOOD/NEST)
+  usertest-spin  usertestspin  — busy-loop a budget di tick (batch 512 spin puri, priorita' via SpawnMeta)
   utcbstest     utcbstest    — helper CBS: crea server e si attacha (Fase 11.5)
   hogheap / devreader         — stress/repro standalone
   demo                        — demo storica Fase 7
 ```
 
-I `.bin` vengono inclusi nel kernel via `include_bytes!`
-(`kernel/src/user_binary.rs`) e sono spawabili per nome.
+I `.bin` dei servizi/test da disco (`/bin`, `/test` su `/fat`, Fase 21) sono
+iniettati a build (`scripts/inject-bins.sh`) e spawnati via `spawn_image`
+(38); solo lo storage-TCB (init/disk/fs) resta embedded nel kernel via
+`include_bytes!` (`kernel/src/user_binary.rs`).
 
 ## Esecuzione
 
@@ -35,8 +42,7 @@ usabile in ~2 s); con `RUN_TESTS=1` (`./run-tests.sh`) init spawa i test in
 SEQUENZA, aspettando un IPC `TEST_DONE` (tag `0x7E`)
 da ciascuno prima dello spawn successivo: i tre binari condividono la ramfs di
 userfs (path e file di lavoro) e la sequenza rende output e PID deterministici
-(dal buffer FS per-processo, Fase 9.6, la vecchia race sulla shared buffer
-page non esiste piu').
+(con i ring SPSC per-processo, Fase 10.2, nessuna race da buffer condivisi).
 La shell e' spawnata per ultima.
 
 Righe di gate:
@@ -44,10 +50,11 @@ Righe di gate:
 ```
 [testfs] PASS 5/5
 [testfat] PASS 7/7
-[usertests] PASS 38/38
+[usertests] PASS 40/40
 ```
 
-## Cosa copre `usertests` (38 test)
+## Cosa copre `usertests` (40 test; t34 per ultimo: i drop dei diritti sono
+irrevocabili sul canale della suite)
 
 | Test | Cosa verifica |
 |------|----------------|
@@ -81,7 +88,7 @@ Righe di gate:
 | t28 | restart di userfs end-to-end (Fase 14): kill via `service_pid` → fixture fresh (mkdir/write/read), hello.txt ricreato, probe ramfs sparito (wipe via readdir), /fat leggibile (persistente), /dev/null operativo (driver re-registrati) |
 | t29 | map-flap isolation (diagnosi t28): martella `map_physical` su una VA verificando marker, da solo poi con helper sulla stessa VA (altre tabelle/frame) → niente cross-talk |
 | t30 | fairness scheduler sotto carico IPC: helper FLOOD (open+write+close /dev/null a regime dopo warm-up) + kill devfs + latenza mount (bound 300 tick, osservato 0–1) → becca regressioni di rotazione/starvation (es. bug di parita' round-robin). NON misura saturazione userfs: con client sync (≤1 in volo) la coda non si riempie mai |
-| t31 | presenza keyboard stack userspace (Fase 15): servizi `Kbd`/`Tty` registrati + open `/dev/kbd/kbd` e `/dev/input/keyboard` (path DEV del tty). Niente digitazione reale (serve QMP/sendkey: coperta da `test-shell.py` 3/3) |
+| t31 | presenza keyboard stack userspace (Fase 15): servizi `Kbd`/`Tty` registrati + open `/dev/kbd/kbd` e `/dev/input/keyboard` (path DEV del tty). Niente digitazione reale (serve QMP/sendkey: coperta da `test-shell.py` ~30/30) |
 | t32 | disk driver in userspace (Fase 16): open raw `/dev/sda` + settore 0 con firma boot 0x55AA; kill userdisk via `service_pid` → sparizione/ricomparsa (init-restart) → raw di nuovo operativo + `/fat/HELLO.TXT` leggibile via riconnessione lazy di userfs |
 | t33 | mount/umount espliciti (Fase 16b): mkdir ramfs + mount `/dev/sda`→`/mnt` + contenuto FAT + re-mount idempotente + umount busy rifiutato + umount ok (`/mnt` torna ramfs) + error paths (sorgente/target invalidi, doppio umount, umount `/`) |
 | t35 | resolve nome→handle lato driver (Fase 16c): nomi ignoti senza stato (niente spec fantasma), bad-replace innocuo, mount valido operativo |
@@ -103,16 +110,18 @@ Righe di gate:
 
 - **Modalita' helper**: `usertestcli` sceglie la modalita' dal primo messaggio
   CFG dell'orchestratore. In `ZEROREAD` i client concorrenti aprono e leggono
-  `/dev/zero` in parallelo (nessuna race: ogni client ha la propria pagina FS,
-  Fase 9.6); l'handshake `OPENED` + `GO` resta come semplice barriera di
+  `/dev/zero` in parallelo (nessuna race: ogni client ha i propri ring SPSC,
+  Fase 10.2); l'handshake `OPENED` + `GO` resta come semplice barriera di
   coordinamento.
 - **Priorita'**: il test t17 usa High vs Normal. I server Normal idle
   (fs/shell) girano in recv-loop sempre-`Ready` (fix anti-deadlock), quindi una
   fascia `Low` non e' schedulabile finche' girano: Low resta usato solo da
   `useruptime` nel boot reale.
-- **Stessa bin, piu' priorita'**: `usertestspin` e' esposto a piu' priorita'
-  tramite piu' righe in `NAMED_BINARIES` (`usertestspin` Low, `utspin_norm`,
-  `utspin_high`) che condividono phys/frames dello stesso binario.
+- **Stesso binario, piu' priorita'**: `usertestspin` gira a priorita' diverse
+  via flag `prio` in `SpawnMeta` (Fase 21: t17 lo spawna a 31, gli altri usi a
+  16/1). Prima della Fase 21 erano righe diverse in `NAMED_BINARIES`
+  (`usertestspin`/`utspin_norm`/`utspin_high`) sullo stesso binario embedded;
+  oggi solo init/disk/fs restano embedded.
 - **Polling throttled nei test di restart (t27/t28)**: le attese di
   operativita' riprovano ogni ~20 tick via `libr::poll_wait`/`open_wait`,
   MAI in busy-loop su syscall FS. Igiene da buon vicinato (Livello 1):

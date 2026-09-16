@@ -265,15 +265,19 @@ pub fn spawn_init() -> usize {
 }
 ```
 
-Il binario di init è **embedded nel kernel** via `include_bytes!` come gli altri
-processi user — il filesystem arriverà solo in Fase 9.
+Il kernel embedda via `include_bytes!` solo lo storage-TCB (Fase 21):
+init/disk/fs, caricati prima che il filesystem esista. Tutto il resto vive
+in `/bin` e `/test` su `/fat` e parte via `spawn_image` (38).
 
 `init` è l'**unico** processo che spawna i servizi user. Usa la syscall
 `spawn(name)` (numero 20) per creare i servizi come suoi figli. Dalla **Fase 12**
 (ADR-0008) `spawn` crea il **canale di nascita** tra init e il figlio (il figlio
-lo usa come canale 0 = parent) e ritorna il channel id. L'ordine di spawn resta
-importante: `userconsole` per primo (+ attesa READY), poi `userdisk` (+ attesa
-READY, Fase 16), poi `userfs` (+ attesa READY), poi uptime, `userdevfs`
+lo usa come canale 0 = parent) e ritorna il channel id. Dalla **Fase 21** i
+servizi non-TCB partono da disco via `spawn_image` (38) da manifest
+(path/prio/porte). L'ordine di boot resta importante: `userdisk` embedded
+(+ attesa READY), poi `userfs` embedded (+ attesa READY), poi `userconsole`
+da disco (+ attesa READY: richiede Fs pronto), uptime, `userdevfs`
+(+ attesa READY), `userkbd` (+ attesa READY, Fase 15), `usertty`
 (+ attesa READY), i test in sequenza e la shell
 per ultima. I READY sono fire-and-forget via `send_async` (consumati senza
 reply): una `send` sync resterebbe bloccata perché a boot init non aspetta
@@ -317,10 +321,10 @@ per connessione (vedi [File System](./09-filesystem.md)).
 | MSR | Tutti | Solo quelli concessi |
 | Interrupt | Tutti | Gestiti dal kernel (IDT) |
 
-## Prossime evoluzioni (Fasi 14-17)
+## Evoluzioni successive (Fasi 14-22, consuntivo)
 
-Il modello "processi userspace + IPC per nome + TSS con I/O bitmap" si estende
-in tre direzioni pianificate (vedi `AGENTS.md`):
+Il modello "processi userspace + IPC per nome + TSS con I/O bitmap" si e'
+esteso cosi' (dettagli in `AGENTS.md` e ADR):
 
 - **Fase 14 — Cleanup processi** ([ADR-0010](./adr/0010-process-lifecycle-cleanup.md)):
   `exit`/`kill` kernel-side con cleanup differito (stack/TSS/CR3/page table/
@@ -346,7 +350,19 @@ in tre direzioni pianificate (vedi `AGENTS.md`):
   Fase 16d: identità stabile `UUID=`/`LABEL=` (seriale/label FAT) + nodi
   `/dev/disk/by-*` + listing dei padri sintetizzato dai prefix + registrazione
   multi-prefix atomica (`fs_register_multi`, evita il deadlock register/forward).
-- **Fase 17 — Shell + utility utente** (slittata in coda).
+- **Fase 17 — Diritti per-canale lato server** ([ADR-0014](./adr/0014-channel-rights-serverside.md)):
+  tabella `chan → {ops, subtree}` in userfs, solo riduzione (DROP shrink-only,
+  mai widen), fd come capability pure, diritti effimeri (purge alla morte).
+- **Fase 18 — Shell + utility utente** (builtin: ls/cat/touch/mkdir/echo/clear/
+  wc/hexdump/kill/cd/pwd/cp/mv/rm/rmdir/mount/umount/ps, v. [Utilities](./12-utilities.md)).
+- **Fase 19 — Introspezione + metadati**: `ps` tabellare via syscall 37,
+  `stat` lato userfs (frame `R_STAT`, zero kernel).
+- **Fase 20 — FAT32 scrivibile** ([ADR-0016](./adr/0016-fat-writable.md)):
+  `DISK_WRITE`, overwrite + crescita con allocazione, `O_CREAT` su /fat.
+- **Fase 21 — Servizi da disco** ([ADR-0017](./adr/0017-servizi-da-disco.md)):
+  `spawn_image` (38), solo init/disk/fs embedded, resto da `/bin`+`/test`.
+- **Fase 22 — Detach dalla cascata** (emendamento ADR-0010 §6): flag
+  `SPAWN_FLAG_DETACH` allo spawn, ri-parent a init alla morte del parent.
 
 ## Riferimenti
 

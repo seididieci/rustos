@@ -57,15 +57,16 @@ costante sul percorso dati, che **non dipenda dal PID** per indirizzare i peer.
    (`/dev/...`) sono una convenzione di userfs sopra l'IPC, non un motivo per
    fondere i due namespace.
 
-7. **kbd resta driver kernel** per ora (opzione a): il kernel risolve
-   `Console` per nome e inietta i scancode sul canale. Il passaggio a un
-   driver tastiera userspace (opzione c) e' rimandato: il modello a canali lo
-   supporta senza ristrutturare.
+7. **kbd come driver userspace** (opzione c, realizzata in Fase 15,
+   ADR-0011): `userkbd` (porte PS/2) + `usertty` (decode/echo); il kernel fa
+   solo routing + EOI dell'IRQ1 e sveglia l'owner per nome. La decisione
+   originaria (opzione a, driver kernel) e' superata.
 
 8. **Binari per stringa**: `spawn` continua a prendere il nome del binario
    embedded per stringa (catalogo di binari), separato dal servizio-enum. In
    futuro i binari potranno essere esternati su disco e init reso
-   configurabile.
+   configurabile. (Realizzato in Fase 21, ADR-0017: `spawn_image` da
+   `/bin`+`/test`, solo init/disk/fs embedded.)
 
 ## Conseguenze
 

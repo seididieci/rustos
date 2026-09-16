@@ -112,8 +112,12 @@ rustos/
 | 14 | Cleanup processi: exit/kill, notifica al parent, slot a generazioni (ADR-0010) | ✅ Completata |
 | 15 | Keyboard + Terminal server in userspace (sgancio tastiera/VGA) | ✅ Completata |
 | 16 | Disk/ATA driver server in userspace (sgancio ATA/FS) | ✅ Completata |
-| 17 | Diritti per-canale lato server (capability su IPC) | ⏳ Piano |
-| 18 | Shell + utility utente | ⏳ Pianificata |
+| 17 | Diritti per-canale lato server (capability su IPC) | ✅ Completata |
+| 18 | Shell + utility utente | ✅ Completata |
+| 19 | Introspezione (`ps`) + metadati (`stat`) | ✅ Completata |
+| 20 | FAT32 scrivibile (persistenza, ADR-0016) | ✅ Completata |
+| 21 | Servizi caricati da disco via `spawn_image` (ADR-0017) | ✅ Completata |
+| 22 | Detach dalla cascata di morte (emendamento ADR-0010 §6) | ✅ Completata |
 
 ## Risorse
 
