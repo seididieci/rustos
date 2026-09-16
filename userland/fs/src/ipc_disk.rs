@@ -51,11 +51,24 @@ pub struct IpcDisk {
     handle: u32,
     /// Canale diretto verso userdisk (None = da riconnettere).
     chan: Cell<Option<u64>>,
+    /// Nodo validato con DISK_OPEN sulla connessione corrente (Fase 21: prima
+    /// si faceva OPEN a OGNI settore — 2 round-trip per settore invece di 1.
+    /// L'OPEN ora e' una tantum per connessione: la tabella nodi del driver e'
+    /// statica a driver vivo, e a morte driver il canale cade (qui sotto) e
+    /// la riconnessione rivalida. Mai stale silenzioso.)
+    open_ok: Cell<bool>,
 }
 
 impl IpcDisk {
     pub fn new(handle: u32) -> Self {
-        Self { handle, chan: Cell::new(None) }
+        Self { handle, chan: Cell::new(None), open_ok: Cell::new(false) }
+    }
+
+    /// Dimentica la connessione (canale caduto o epoca cambiata): il prossimo
+    /// uso riconnette e rivalida (OPEN) da zero.
+    fn drop_conn(&self) {
+        self.chan.set(None);
+        self.open_ok.set(false);
     }
 
     /// Segnala la morte di un peer (EXIT_NOTIFY): se e' userdisk, invalida il
@@ -65,7 +78,7 @@ impl IpcDisk {
     /// accesso, Fase 16c).
     pub fn note_peer_death(&self, dead_chan: u64) -> bool {
         if self.chan.get() == Some(dead_chan) {
-            self.chan.set(None);
+            self.drop_conn();
             true
         } else {
             false
@@ -166,20 +179,30 @@ impl IpcDisk {
     }
 
     /// Assicura connessione + nodo validato (lookup + HELLO + OPEN, bound).
-    /// Fast path: canale cachato + una send. L'OPEN e' deterministico
-    /// (`locate` su tabelle statiche): un solo tentativo per connessione —
-    /// fallisce solo a handle stale (re-resolve del chiamante) o morte del
-    /// driver durante la send (una riconnessione e un retry, come i read).
+    /// Fast path: canale cachato e nodo gia' validato (una Cell-lettura: niente
+    /// IPC). L'OPEN e' deterministico (`locate` su tabelle statiche): un solo
+    /// tentativo per connessione — fallisce solo a handle stale (re-resolve
+    /// del chiamante) o morte del driver durante la send (una riconnessione e
+    /// un retry, come i read).
     fn ensure(&self) -> Option<u64> {
         let cu = self.connect()?;
+        if self.open_ok.get() {
+            return Some(cu);
+        }
         match libr::send(cu, DISK_OPEN, self.handle as u64, 0) {
-            Ok(rep) if rep.w0 != ERR => Some(cu),
+            Ok(rep) if rep.w0 != ERR => {
+                self.open_ok.set(true);
+                Some(cu)
+            }
             Ok(_) => None, // handle stale: il chiamante re-risolve per nome
             Err(_) => {
-                self.chan.set(None);
+                self.drop_conn();
                 let cu = self.connect()?;
                 match libr::send(cu, DISK_OPEN, self.handle as u64, 0) {
-                    Ok(rep) if rep.w0 != ERR => Some(cu),
+                    Ok(rep) if rep.w0 != ERR => {
+                        self.open_ok.set(true);
+                        Some(cu)
+                    }
                     _ => None,
                 }
             }
@@ -200,7 +223,7 @@ impl IpcDisk {
             }
             Err(_) => {
                 // userdisk morto durante la send: invalida, il chiamante ritenta.
-                self.chan.set(None);
+                self.drop_conn();
                 false
             }
         }
@@ -241,7 +264,7 @@ impl IpcDisk {
         match libr::send(chan, DISK_WRITE, self.handle as u64, lba) {
             Ok(rep) => rep.w0 != ERR,
             Err(_) => {
-                self.chan.set(None);
+                self.drop_conn();
                 false
             }
         }
@@ -290,7 +313,7 @@ impl IpcDisk {
                 }
             }
             Err(_) => {
-                self.chan.set(None);
+                self.drop_conn();
                 None
             }
         }

@@ -29,7 +29,7 @@ use libr;
 mod fat32;
 mod ipc_disk;
 
-use fat32::Fat32;
+use fat32::{Fat32, FileInfo};
 use ipc_disk::IpcDisk;
 use libr::println;
 
@@ -452,7 +452,9 @@ fn apply_mount_spec(
 /// Riattiva un mount inattivo (Fase 16c): re-resolve del nome presso userdisk
 /// (gli handle possono cambiare dopo un restart del driver) + remount.
 /// Fast path: mount gia' attivo → true senza IPC. Ritorna true se attivo.
-fn reactivate_mount(mounts: &mut Vec<FsMount>, mi: usize) -> bool {
+/// A remount riuscito bumpa `gen` (l'istanza parser e' nuova: le cache
+/// FileInfo per-fd vanno rifatte).
+fn reactivate_mount(mounts: &mut Vec<FsMount>, mi: usize, fgen: &mut u64) -> bool {
     if mounts.get(mi).map_or(false, |m| m.is_active()) {
         return true;
     }
@@ -468,7 +470,11 @@ fn reactivate_mount(mounts: &mut Vec<FsMount>, mi: usize) -> bool {
         Some(m) => {
             m.handle = handle;
             m.fs = MountedFs::Fat(Fat32::mount(IpcDisk::new(handle)));
-            m.is_active()
+            let ok = m.is_active();
+            if ok {
+                *fgen = fgen.wrapping_add(1);
+            }
+            ok
         }
         None => false,
     }
@@ -490,12 +496,16 @@ impl FsMount {
     /// possono cambiare dopo un restart del driver (Fase 16c) e un handle
     /// stale leggerebbe il disco sbagliato in silenzio — il prossimo accesso
     /// re-risolve per nome e rimonta (fail-loud, mai shadow ramfs).
-    fn note_peer_death(&mut self, dead_chan: u64) {
+    /// Ritorna true se l'istanza e' stata droppata (il chiamante bumpa la
+    /// generazione delle cache FileInfo).
+    fn note_peer_death(&mut self, dead_chan: u64) -> bool {
         if let MountedFs::Fat(Some(f)) = &self.fs {
             if f.disk().note_peer_death(dead_chan) {
                 self.fs = MountedFs::Fat(None);
+                return true;
             }
         }
+        false
     }
 
     /// true se il mount e' attivo (istanza viva).
@@ -523,7 +533,7 @@ fn target_match(mounts: &[FsMount], path: &str) -> bool {
 /// inattivo (re-resolve per nome + remount via `reactivate_mount`; solo
 /// variante Fat: le future varianti aggiungono il loro ramo qui).
 /// Ritorna (indice mount, rel).
-fn resolve_fsmount<'a>(mounts: &mut Vec<FsMount>, path: &'a str) -> Option<(usize, &'a str)> {
+fn resolve_fsmount<'a>(mounts: &mut Vec<FsMount>, path: &'a str, fgen: &mut u64) -> Option<(usize, &'a str)> {
     let t = path.trim_start_matches('/');
     let mut best: Option<(usize, &str)> = None;
     for (i, m) in mounts.iter().enumerate() {
@@ -542,7 +552,7 @@ fn resolve_fsmount<'a>(mounts: &mut Vec<FsMount>, path: &'a str) -> Option<(usiz
         }
     }
     let (i, rel) = best?;
-    if !reactivate_mount(mounts, i) {
+    if !reactivate_mount(mounts, i, fgen) {
         return None;
     }
     Some((i, rel))
@@ -711,7 +721,14 @@ enum FileEntry {
     /// File locale: `path` e' relativo al suo filesystem (ramfs: path assoluto
     /// senza slash iniziale; FAT: relativo al mount). `mnt` = indice in
     /// `mounts_fat` per i file FAT, None per ramfs (radice sempre locale).
-    Local { path: String, kind: FsKind, offset: usize, mnt: Option<usize> },
+    /// `fat_info`/`fat_gen`: FileInfo in cache per i file FAT (solo FAT: il
+    /// find in ramfs e' in-memoria e costa zero). La cache evita il dir-walk
+    /// (root + dir: ~4-10 round-trip DISK) a OGNI read/write su fd aperti: il
+    /// load di un binario da 30 KB faceva ~15 find × walk. Validita': la
+    /// generazione globale `fat_gen` viene bumpata a OGNI mutazione FAT
+    /// (write/create/mount/umount/remount/drop d'epoca); a mismatch si rifa
+    /// `find` e si riaggiorna. Mai stale oltre l'op corrente (single-thread).
+    Local { path: String, kind: FsKind, offset: usize, mnt: Option<usize>, fat_info: Option<FileInfo>, fat_gen: u64 },
     Remote { server_chan: u64, remote_fd: u32 },
 }
 
@@ -742,6 +759,23 @@ impl FileTable {
             kind,
             offset: 0,
             mnt,
+            fat_info: None,
+            fat_gen: 0,
+        });
+        fd as u64
+    }
+
+    /// Come `open` ma con FileInfo FAT gia' risolto (evita un find al primo
+    /// uso): `gen` e' la generazione corrente (la cache nasce valida).
+    fn open_fat(&mut self, chan: u64, path: &str, mnt: usize, info: FileInfo, fgen: u64) -> u64 {
+        let fd = self.alloc_fd(chan);
+        self.files.insert((chan, fd), FileEntry::Local {
+            path: String::from(path),
+            kind: FsKind::Fat,
+            offset: 0,
+            mnt: Some(mnt),
+            fat_info: Some(info),
+            fat_gen: fgen,
         });
         fd as u64
     }
@@ -783,7 +817,7 @@ impl FileTable {
 
     fn get(&self, chan: u64, fd: u32) -> Option<(&str, FsKind, usize, Option<usize>)> {
         match self.files.get(&(chan, fd))? {
-            FileEntry::Local { path, kind, offset, mnt } => {
+            FileEntry::Local { path, kind, offset, mnt, .. } => {
                 Some((path.as_str(), *kind, *offset, *mnt))
             }
             FileEntry::Remote { .. } => None,
@@ -802,6 +836,48 @@ impl FileTable {
             *o = offset;
         }
     }
+
+    /// Aggiorna la cache FileInfo del fd (dopo una scrittura che puo' aver
+    /// cambiato size/first_cluster): `None` se l'entry non e' un file FAT.
+    fn refresh_fat_info(&mut self, chan: u64, fd: u32, info: Option<FileInfo>, fgen: u64) {
+        if let Some(FileEntry::Local { kind: FsKind::Fat, fat_info, fat_gen, .. }) =
+            self.files.get_mut(&(chan, fd))
+        {
+            *fat_info = info;
+            *fat_gen = fgen;
+        }
+    }
+}
+
+/// FileInfo del fd (solo file FAT): cache per-fd con generazione (vedi
+/// `FileEntry`). A mismatch di generazione o cache assente rifa `find` sul
+/// mount (gia' riattivato dal chiamante) e aggiorna la cache. Ritorna None se
+/// il fd non e' un file FAT o il file non esiste piu'.
+fn fd_fat_info(
+    ftable: &mut FileTable,
+    fat: &Fat32<IpcDisk>,
+    chan: u64,
+    fd: u32,
+    fgen: u64,
+) -> Option<FileInfo> {
+    let rel_owned = {
+        let e = ftable.files.get(&(chan, fd))?;
+        match e {
+            FileEntry::Local { fat_info: Some(info), fat_gen: g, kind: FsKind::Fat, .. }
+                if *g == fgen =>
+            {
+                return Some(*info)
+            }
+            FileEntry::Local { path, kind: FsKind::Fat, .. } => path.clone(),
+            _ => return None,
+        }
+    };
+    let info = fat.find(&rel_owned)?;
+    if let Some(FileEntry::Local { fat_info, fat_gen: g, .. }) = ftable.files.get_mut(&(chan, fd)) {
+        *fat_info = Some(info);
+        *g = fgen;
+    }
+    Some(info)
 }
 
 // ── Diritti per-canale (Fase 17, self-restriction only) ─────────────
@@ -1069,6 +1145,7 @@ fn handle_open(
     chan: u64,
     flags: u64,
     path: &str,
+    fgen: &mut u64,
 ) -> Option<u64> {
     if path.is_empty() || path.len() > MAX_PATH {
         return None;
@@ -1129,19 +1206,22 @@ fn handle_open(
     // Filesystem locali: prima i mount FAT (con attivazione lazy), poi ramfs.
     // resolve_local copre ramfs + il caso "mount noto ma inattivo" (→ None,
     // mai shadow in ramfs: stesso contratto di prima).
-    if let Some((mi, rel)) = resolve_fsmount(mounts_fat, path) {
+    if let Some((mi, rel)) = resolve_fsmount(mounts_fat, path, fgen) {
         // POSIX come ramfs (20.4): con O_CREAT crea l'entry 8.3 se manca
         // (no LFN, mkdir-su-FAT fuori scope); senza, il file deve esistere.
+        // La creazione muta la directory: bumpa la generazione (invalida le
+        // cache FileInfo: la nuova entry cambia il layout dir).
         if flags as u32 & libr::O_CREAT != 0 {
             if let Some(fat) = mounts_fat.get(mi).and_then(|m| m.fat()) {
                 if fat.find(rel).is_none() {
                     let _ = fat.create_file(rel);
+                    *fgen = fgen.wrapping_add(1);
                 }
             }
         }
         let fat = mounts_fat[mi].fat()?;
-        fat.find(rel)?;
-        return Some(ftable.open(chan, rel, FsKind::Fat, Some(mi)));
+        let info = fat.find(rel)?;
+        return Some(ftable.open_fat(chan, rel, mi, info, *fgen));
     }
     match resolve_local(mounts_fat, path)? {
         FsKind::Fat => None, // mount inattivo: errore, mai shadow ramfs
@@ -1167,6 +1247,7 @@ fn handle_read(
     chan: u64,
     fd: u32,
     count: usize,
+    fgen: &mut u64,
 ) -> Option<u64> {
     if count > 4096 {
         return None;
@@ -1209,11 +1290,12 @@ fn handle_read(
             // Il mount puo' essere caduto inattivo alla morte di userdisk
             // (drop d'epoca in `note_peer_death`): riattiva per nome qui, come
             // `resolve_fsmount` fa per open/readdir (fail-loud, mai shadow).
-            if !reactivate_mount(mounts_fat, mi) {
+            if !reactivate_mount(mounts_fat, mi, fgen) {
                 return None;
             }
+            let g = *fgen;
             let fat = mounts_fat.get(mi)?.fat()?;
-            let info = fat.find(path)?;
+            let info = fd_fat_info(ftable, fat, chan, fd, g)?;
             let mut buf = vec![0u8; count];
             let n = fat.read_file(&info, offset, count, &mut buf);
             buf.truncate(n);
@@ -1271,22 +1353,37 @@ fn handle_write_local(
     fd: u32,
     count: usize,
     payload: &[u8],
+    fgen: &mut u64,
 ) -> Option<u64> {
     let (path, kind, offset, mnt) = ftable.get(chan, fd)?;
     if kind == FsKind::Fat {
         // Scrittura FAT (Fase 20): overwrite + crescita con allocazione
-        // (write-through, niente cache). Ritorna i byte scritti; parziale =
-        // disco pieno o errore IO (il chiamante vede count corto).
+        // (write-through, niente cache FileInfo: la scrittura puo' cambiare
+        // size/first_cluster, quindi dopo si bumpa la generazione e si
+        // riaggiorna la cache con un find fresco — un find per write, rumore
+        // contro le centinaia di round-trip DISK della scrittura stessa).
         let mi = mnt?;
-        if !reactivate_mount(mounts_fat, mi) {
+        if !reactivate_mount(mounts_fat, mi, fgen) {
             return None;
         }
+        let g = *fgen;
         let fat = mounts_fat.get(mi)?.fat()?;
-        let info = fat.find(path)?;
+        let info = fd_fat_info(ftable, fat, chan, fd, g)?;
         if info.is_dir {
             return None;
         }
         let n = fat.write_grow(&info, offset, &payload[..count.min(payload.len())]);
+        *fgen = fgen.wrapping_add(1);
+        let g2 = *fgen;
+        // Rileggi l'entry dopo la mutazione (size/first_cluster possono aver
+        // cambiato valore): la cache resta valida alla nuova generazione.
+        let fat = mounts_fat.get(mi)?.fat()?;
+        let rel: String = match ftable.files.get(&(chan, fd)) {
+            Some(FileEntry::Local { path, kind: FsKind::Fat, .. }) => path.clone(),
+            _ => return Some(n as u64),
+        };
+        let fresh = fat.find(&rel);
+        ftable.refresh_fat_info(chan, fd, fresh, g2);
         ftable.set_offset(chan, fd, offset + n);
         return Some(n as u64);
     }
@@ -1319,6 +1416,7 @@ fn handle_readdir(
     rings: &BTreeMap<u64, (u64, u64)>,
     chan: u64,
     path: &str,
+    fgen: &mut u64,
 ) -> Option<u64> {
     // Directory remota (device): inoltro al driver, che scrive le entry nella
     // response ring del client (mappata li' da map_in).
@@ -1330,7 +1428,7 @@ fn handle_readdir(
         return Some(reply.w0);
     }
 
-    if let Some((mi, rel)) = resolve_fsmount(mounts_fat, path) {
+    if let Some((mi, rel)) = resolve_fsmount(mounts_fat, path, fgen) {
         let fat = mounts_fat[mi].fat()?;
         let entries: Vec<String> =
             fat.list_dir(rel).into_iter().map(|d| d.name).collect();
@@ -1414,6 +1512,7 @@ fn handle_stat(
     rings: &BTreeMap<u64, (u64, u64)>,
     chan: u64,
     path: &str,
+    fgen: &mut u64,
 ) -> Option<u64> {
     if path.is_empty() || path.len() > MAX_PATH {
         return None;
@@ -1431,7 +1530,9 @@ fn handle_stat(
         return None;
     }
     // FAT con attivazione lazy; mount noto ma inattivo = errore, mai shadow.
-    if let Some((mi, rel)) = resolve_fsmount(mounts_fat, path) {
+    // (find fresco a ogni stat: niente fd, niente cache — i metadati non
+    // devono mai essere stale.)
+    if let Some((mi, rel)) = resolve_fsmount(mounts_fat, path, fgen) {
         let fat = mounts_fat[mi].fat()?;
         if rel.is_empty() {
             return Some(stat_reply(rings, chan, 0, libr::STAT_DIR));
@@ -1505,7 +1606,7 @@ fn handle_delete(
 /// (sorgente/target invalidi, nome ignoto, driver irraggiungibile) nessun
 /// cambio di stato; a BPB illeggibile la spec resta registrata INATTIVA e
 /// ritenta lazy (mai shadow ramfs).
-fn handle_mount(mounts: &mut Vec<FsMount>, payload: &str) -> Option<u64> {
+fn handle_mount(mounts: &mut Vec<FsMount>, payload: &str, fgen: &mut u64) -> Option<u64> {
     let mut parts = payload.split('\0');
     let source = parts.next()?;
     let target = parts.next()?;
@@ -1513,6 +1614,8 @@ fn handle_mount(mounts: &mut Vec<FsMount>, payload: &str) -> Option<u64> {
         return None;
     }
     if apply_mount_spec(mounts, source, target, "") {
+        // La tabella e' cambiata (spec nuova/sostituita): invalida le cache.
+        *fgen = fgen.wrapping_add(1);
         Some(0)
     } else {
         None
@@ -1521,10 +1624,13 @@ fn handle_mount(mounts: &mut Vec<FsMount>, payload: &str) -> Option<u64> {
 
 /// Smonta un target (Fase 16b). Rifiutato se ci sono fd aperti sotto il mount
 /// (EBUSY); la radice ramfs non e' smontabile (non e' in tabella).
+/// A rimozione riuscita bumpa `gen` (gli indici mount degli fd restanti non
+/// cambiano per EBUSY, ma le istanze vanno comunque ricontrollate).
 fn handle_umount(
     mounts: &mut Vec<FsMount>,
     ftable: &FileTable,
     target: &str,
+    fgen: &mut u64,
 ) -> Option<u64> {
     let norm = normalize_target(target)?;
     let idx = mounts.iter().position(|m| m.target == norm)?;
@@ -1532,6 +1638,7 @@ fn handle_umount(
         return None;
     }
     mounts.remove(idx);
+    *fgen = fgen.wrapping_add(1);
     Some(0)
 }
 
@@ -1572,6 +1679,10 @@ pub extern "C" fn _start() -> ! {
     let mut fs = RamFs::new();
     let mut ftable = FileTable::new();
     let mut mounts: Vec<Mount> = Vec::new();
+    // Generazione delle cache FileInfo per-fd (vedi `FileEntry`): bumpata a
+    // ogni mutazione FAT (write/create/mount/umount/remount/drop d'epoca).
+    // Parte da 1 (0 = mai usato, come le entry appena create per ramfs).
+    let mut fat_gen: u64 = 1;
 
     // Client registrati: pid → (req_ring_phys, resp_ring_phys).
     let mut rings: BTreeMap<u64, (u64, u64)> = BTreeMap::new();
@@ -1699,8 +1810,15 @@ pub extern "C" fn _start() -> ! {
             // Se il morto era userdisk, invalida i client disco di tutti i
             // mount (Fase 16c: drop d'epoca — il prossimo accesso re-risolve
             // per nome e rimonta, t32). Veloce: solo compare dentro IpcDisk.
+            // Le istanze cambiano: bumpa la generazione delle cache FileInfo.
+            let mut epoch_dropped = false;
             for m in fat_mounts.iter_mut() {
-                m.note_peer_death(chan);
+                if m.note_peer_death(chan) {
+                    epoch_dropped = true;
+                }
+            }
+            if epoch_dropped {
+                fat_gen = fat_gen.wrapping_add(1);
             }
             continue;
         }
@@ -1833,17 +1951,17 @@ pub extern "C" fn _start() -> ! {
                 match core::str::from_utf8(&payload) {
                     // w1 del frame R_OPEN = flags (O_CREAT, w0 = len path):
                     // il server li ignorava (creava sempre) — ora POSIX.
-                    Ok(path) => handle_open(&mut fs, &mut ftable, &mut fat_mounts, &mounts, chan, w1, path),
+                    Ok(path) => handle_open(&mut fs, &mut ftable, &mut fat_mounts, &mounts, chan, w1, path, &mut fat_gen),
                     Err(_) => None,
                 }
             }
 
             R_READ => {
-                handle_read(&fs, &mut ftable, &mut fat_mounts, &rings, chan, w0 as u32, w1 as usize)
+                handle_read(&fs, &mut ftable, &mut fat_mounts, &rings, chan, w0 as u32, w1 as usize, &mut fat_gen)
             }
 
             R_WRITE => {
-                handle_write_local(&mut fs, &mut ftable, &mut fat_mounts, chan, w0 as u32, w1 as usize, &payload)
+                handle_write_local(&mut fs, &mut ftable, &mut fat_mounts, chan, w0 as u32, w1 as usize, &payload, &mut fat_gen)
             }
 
             R_CLOSE => {
@@ -1852,8 +1970,8 @@ pub extern "C" fn _start() -> ! {
 
             R_READDIR => {
                 match core::str::from_utf8(&payload) {
-                    Ok("") | Ok("/") => handle_readdir(&fs, &mut fat_mounts, &mounts, &rings, chan, "/"),
-                    Ok(path) => handle_readdir(&fs, &mut fat_mounts, &mounts, &rings, chan, path),
+                    Ok("") | Ok("/") => handle_readdir(&fs, &mut fat_mounts, &mounts, &rings, chan, "/", &mut fat_gen),
+                    Ok(path) => handle_readdir(&fs, &mut fat_mounts, &mounts, &rings, chan, path, &mut fat_gen),
                     Err(_) => None,
                 }
             }
@@ -1867,14 +1985,14 @@ pub extern "C" fn _start() -> ! {
 
             R_MOUNT => {
                 match core::str::from_utf8(&payload) {
-                    Ok(spec) => handle_mount(&mut fat_mounts, spec),
+                    Ok(spec) => handle_mount(&mut fat_mounts, spec, &mut fat_gen),
                     Err(_) => None,
                 }
             }
 
             R_UMOUNT => {
                 match core::str::from_utf8(&payload) {
-                    Ok(target) => handle_umount(&mut fat_mounts, &ftable, target),
+                    Ok(target) => handle_umount(&mut fat_mounts, &ftable, target, &mut fat_gen),
                     Err(_) => None,
                 }
             }
@@ -1888,8 +2006,8 @@ pub extern "C" fn _start() -> ! {
 
             R_STAT => {
                 match core::str::from_utf8(&payload) {
-                    Ok("") | Ok("/") => handle_stat(&fs, &mut fat_mounts, &mounts, &rings, chan, "/"),
-                    Ok(path) => handle_stat(&fs, &mut fat_mounts, &mounts, &rings, chan, path),
+                    Ok("") | Ok("/") => handle_stat(&fs, &mut fat_mounts, &mounts, &rings, chan, "/", &mut fat_gen),
+                    Ok(path) => handle_stat(&fs, &mut fat_mounts, &mounts, &rings, chan, path, &mut fat_gen),
                     Err(_) => None,
                 }
             }

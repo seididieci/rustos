@@ -36,6 +36,7 @@ pub struct DirEntry {
     pub entry_off: usize,
 }
 
+#[derive(Clone, Copy)]
 pub struct FileInfo {
     pub first_cluster: u32,
     pub size: u32,
