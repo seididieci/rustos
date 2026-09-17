@@ -12,6 +12,9 @@
 //!
 //! Algoritmo: free-list first-fit con split e coalescenza dei blocchi
 //! fisicamente adiacenti (una volta liberati non tornano al kernel).
+//! La lista e' ORDINATA per indirizzo (`push_free` inserisce al posto giusto
+//! e fonde solo coi vicini): free O(n), mai O(n²) — il cliff P1.2 (coalesce
+//! totale a ogni free) e' eliminato senza cambiare semantica di allocazione.
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
@@ -75,63 +78,44 @@ unsafe fn first_fit(need: usize) -> Option<*mut u8> {
     }
 }
 
-/// Aggiunge un blocco (indirizzo `addr`, dimensione `len`) in testa alla
-/// free-list e lancia la coalescenza.
+/// Aggiunge un blocco (indirizzo `addr`, dimensione `len`) alla free-list
+/// MANTENENDOLA ORDINATA per indirizzo, e fonde solo coi vicini fisici
+/// (predecessore/successore). La lista resta sempre totalmente coalescente —
+/// stesso invariante di prima, ma free O(n) invece di O(n²): la vecchia
+/// `coalesce()` riscansionava tutto a OGNI free (il cliff P1.2: +1 blocco a op
+/// FAT → O(n²) su tutte le op successive). Nessun cambio di semantica per
+/// `first_fit` (che resta first-fit O(n) sulla lista ordinata).
 unsafe fn push_free(addr: usize, len: usize) {
     unsafe {
+        // Trova il punto di inserzione (prev < addr < cur).
+        let head_slot = ptr::addr_of_mut!(FREE_HEAD);
+        let mut prev: *mut Header = ptr::null_mut();
+        let mut cur = *head_slot;
+        while !cur.is_null() && (cur as usize) < addr {
+            prev = cur;
+            cur = (*cur).next;
+        }
+        // Inserisci tra prev e cur.
         let b = addr as *mut Header;
         (*b).size = len;
-        (*b).next = *ptr::addr_of!(FREE_HEAD);
-        *ptr::addr_of_mut!(FREE_HEAD) = b;
-        coalesce();
-    }
-}
-
-/// Fonde i blocchi liberi fisicamente adiacenti (O(n^2), n piccolo).
-unsafe fn coalesce() {
-    unsafe {
-        let head = ptr::addr_of_mut!(FREE_HEAD);
-        loop {
-            let mut cur = *head;
-            let mut merged = false;
-            while !cur.is_null() {
-                // Prossimo blocco libero fisicamente adiacente a `cur`?
-                let next_phys = (cur as usize + (*cur).size) as *mut Header;
-                let mut scan = *head;
-                let mut found = false;
-                while !scan.is_null() {
-                    if scan as usize == next_phys as usize {
-                        found = true;
-                        break;
-                    }
-                    scan = (*scan).next;
-                }
-                if found {
-                    // Assorbi next_phys in cur e rimuovilo dalla lista.
-                    (*cur).size += (*next_phys).size;
-                    let mut p2: *mut Header = ptr::null_mut();
-                    let mut c2 = *head;
-                    while !c2.is_null() {
-                        if c2 as usize == next_phys as usize {
-                            if p2.is_null() {
-                                *head = (*c2).next;
-                            } else {
-                                (*p2).next = (*c2).next;
-                            }
-                            break;
-                        }
-                        p2 = c2;
-                        c2 = (*c2).next;
-                    }
-                    merged = true;
-                    // Ricomincia da capo (cur e' cresciuto).
-                    break;
-                }
-                cur = (*cur).next;
-            }
-            if !merged {
-                break;
-            }
+        (*b).next = cur;
+        if prev.is_null() {
+            *head_slot = b;
+        } else {
+            (*prev).next = b;
+        }
+        // Fondi col predecessore se fisicamente adiacente.
+        let mut node = b;
+        if !prev.is_null() && (prev as usize) + (*prev).size == addr {
+            (*prev).size += len;
+            (*prev).next = cur;
+            node = prev;
+        }
+        // Fondi col successore se fisicamente adiacente.
+        let node_end = (node as usize) + (*node).size;
+        if !cur.is_null() && node_end == cur as usize {
+            (*node).size += (*cur).size;
+            (*node).next = (*cur).next;
         }
     }
 }
