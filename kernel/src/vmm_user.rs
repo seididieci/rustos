@@ -134,8 +134,8 @@ pub fn alloc_ring_pages(pid: usize) -> Option<(u64, u64)> {
         let req = crate::phys_mem::alloc()?;
         let resp = crate::phys_mem::alloc()?;
         unsafe {
-            core::ptr::write_bytes(req as *mut u8, 0, 4096);
-            core::ptr::write_bytes(resp as *mut u8, 0, 4096);
+            core::ptr::write_bytes(crate::addr::phys_to_virt(req) as *mut u8, 0, 4096);
+            core::ptr::write_bytes(crate::addr::phys_to_virt(resp) as *mut u8, 0, 4096);
         }
         return Some((req, resp));
     }
@@ -153,8 +153,8 @@ pub fn alloc_ring_pages(pid: usize) -> Option<(u64, u64)> {
     let req = crate::phys_mem::alloc()?;
     let resp = crate::phys_mem::alloc()?;
     unsafe {
-        core::ptr::write_bytes(req as *mut u8, 0, 4096);
-        core::ptr::write_bytes(resp as *mut u8, 0, 4096);
+        core::ptr::write_bytes(crate::addr::phys_to_virt(req) as *mut u8, 0, 4096);
+        core::ptr::write_bytes(crate::addr::phys_to_virt(resp) as *mut u8, 0, 4096);
         *core::ptr::addr_of_mut!(RING_PHYS[base + i * 2]) = req;
         *core::ptr::addr_of_mut!(RING_PHYS[base + i * 2 + 1]) = resp;
     }
@@ -207,21 +207,22 @@ pub fn kernel_cr3() -> u64 {
 }
 
 /// Legge una entry della page table a un dato indirizzo fisico di livello.
+/// `table_phys` e' fisico: l'accesso passa dalla direct map (`addr.rs`, H0).
 unsafe fn entry_at(table_phys: u64, idx: usize) -> u64 {
-    let ptr = (table_phys + (idx as u64) * 8) as *const u64;
+    let ptr = (crate::addr::phys_to_virt(table_phys) + (idx as u64) * 8) as *const u64;
     unsafe { (*ptr) & !0xFFF }
 }
 
 /// Imposta una entry e ritorna l'indirizzo fisico del livello puntato.
 unsafe fn set_entry(table_phys: u64, idx: usize, value: u64) {
-    let ptr = (table_phys + (idx as u64) * 8) as *mut u64;
+    let ptr = (crate::addr::phys_to_virt(table_phys) + (idx as u64) * 8) as *mut u64;
     // Conserva i flag esistenti se la voce e' gia' presente? No: sovrascrive.
     unsafe { core::ptr::write_volatile(ptr, value); }
 }
 
 /// Zera un frame (512 entry) appena allocato.
 unsafe fn zero_frame(phys: u64) {
-    unsafe { core::ptr::write_bytes(phys as *mut u8, 0, 4096); }
+    unsafe { core::ptr::write_bytes(crate::addr::phys_to_virt(phys) as *mut u8, 0, 4096); }
 }
 
 /// Crea un nuovo address space per un processo user.
@@ -237,8 +238,8 @@ pub fn new_address_space() -> Option<u64> {
     unsafe {
         zero_frame(pm);
         core::ptr::copy_nonoverlapping(
-            kernel_pml4 as *const u64,
-            pm as *mut u64,
+            crate::addr::phys_to_virt(kernel_pml4) as *const u64,
+            crate::addr::phys_to_virt(pm) as *mut u64,
             512,
         );
     }
@@ -379,7 +380,7 @@ const PTE_PRESENT: u64 = 0x1;
 
 /// Legge una entry di page table grezza (con i flag).
 unsafe fn raw_entry(table_phys: u64, idx: usize) -> u64 {
-    unsafe { core::ptr::read_volatile((table_phys + (idx as u64) * 8) as *const u64) }
+    unsafe { core::ptr::read_volatile((crate::addr::phys_to_virt(table_phys) + (idx as u64) * 8) as *const u64) }
 }
 
 /// Libera le PTE foglia sotto una tabella di livello 3 (PT): solo quelle

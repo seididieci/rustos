@@ -44,9 +44,14 @@ fn mark_free(frame: usize) {
 
 pub fn init(
     memmap: &[crate::boot_info::HvmMemmapEntry],
-    kernel_start: u64,
-    kernel_end: u64,
+    kernel_start_virt: u64,
+    kernel_end_virt: u64,
 ) {
+    use crate::addr::{kern_virt_to_phys, phys_to_virt};
+    // I bound dell'immagine arrivano come VIRT (linker); la contabilita'
+    // frame e' in PHYS (H0: identici; H1: scarto KERNEL_OFFSET).
+    let kernel_start = kern_virt_to_phys(kernel_start_virt);
+    let kernel_end = kern_virt_to_phys(kernel_end_virt);
     // 1. Trova l'indirizzo fisico più alto dalla memory map.
     let max_addr = memmap
         .iter()
@@ -60,11 +65,13 @@ pub fn init(
 
     let bitmap_bytes = ((total as usize) + 7) / 8;
 
-    // 2. Piazza la bitmap subito dopo _kernel_end (page-aligned).
-    let bitmap_start = align_up(kernel_end, FRAME_SIZE);
+    // 2. Piazza la bitmap subito dopo _kernel_end (page-aligned). La bitmap
+    // vive in RAM generica: indirizzo PHYS per la contabilita', VIRT
+    // (direct map) per accedervi. `bitmap_end` resta VIRT (base heap).
+    let bitmap_phys = align_up(kernel_end, FRAME_SIZE);
 
     unsafe {
-        BITMAP_PTR = bitmap_start as *mut u8;
+        BITMAP_PTR = phys_to_virt(bitmap_phys) as *mut u8;
         BITMAP_BYTES = bitmap_bytes;
 
         // 3. Fill 0xFF = tutti usati.
@@ -105,9 +112,9 @@ pub fn init(
         }
     }
 
-    // Bitmap stessa
-    let bfn = (bitmap_start / FRAME_SIZE) as usize;
-    let bfe = (align_up(bitmap_start + bitmap_bytes as u64, FRAME_SIZE) / FRAME_SIZE) as usize;
+    // Bitmap stessa (contabilita' in PHYS)
+    let bfn = (bitmap_phys / FRAME_SIZE) as usize;
+    let bfe = (align_up(bitmap_phys + bitmap_bytes as u64, FRAME_SIZE) / FRAME_SIZE) as usize;
     for f in bfn..bfe {
         if !is_used(f) {
             mark_used(f);
