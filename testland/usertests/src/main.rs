@@ -260,7 +260,8 @@ fn t_ramfs_write_chunk() -> bool {
     if fd < 0 {
         return false;
     }
-    // 3 chunk da 3000 (9 KiB totali > 1 shared page): multi-call write.
+    // 3 chunk da 3000 (9 KiB totali > 1 pagina ring da 4088 B): multi-call
+    // write con chunking client (Fase 10.2).
     for c in 0..3u32 {
         let chunk: Vec<u8> = (0..3000).map(|i| (((c as usize) * 7 + i) % 251) as u8).collect();
         if libr::write_fs(fd, &chunk, 3000) != 3000 {

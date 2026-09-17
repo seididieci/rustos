@@ -153,7 +153,8 @@ unsafe fn heap_free(ptr: *mut u8) {
     }
 }
 
-/// P1.2-diagnosi (temporaneo): (blocchi liberi, byte liberi) nella free-list.
+/// Diagnostica heap (introdotta per P1.2, mantenuta): (blocchi liberi, byte
+/// liberi) nella free-list.
 pub fn heap_stats() -> (usize, usize) {
     unsafe {
         let mut n = 0usize;

@@ -1,4 +1,5 @@
-/* linker script del processo init (Fase 8.1): carica a USER_CODE come demo/srv.
+/* linker script del processo init (Fase 8.1): carica a USER_CODE (servizi
+   storage-TCB e da disco partono tutti qui, Fase 21).
    Niente entry (lo spawn set RIP = USER_CODE); _start deve restare in cima. */
 
 OUTPUT_FORMAT(elf64-x86-64)

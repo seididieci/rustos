@@ -402,8 +402,9 @@ pub fn on_tick() {
         }
     }
 
-    // DEBUG temporaneo (deadlock t24): chi e' Blocked e su cosa, a ogni
-    // 100 tick incondizionato (il ramo no-switch campiona male sotto churn).
+    // Diagnostica sched_debug (introdotta per il deadlock t24, mantenuta):
+    // chi e' Blocked e su cosa, a ogni 100 tick incondizionato (il ramo
+    // no-switch campiona male sotto churn).
     #[cfg(feature = "sched_debug")]
     if tn % 100 == 0 {
         for (pid, p) in sched.processes.iter().enumerate() {
@@ -420,7 +421,7 @@ pub fn on_tick() {
             crate::serial_println!("[sched] tick={} cur={:?} mask={:#x} l16={:#x} heap_out={} heap_n={}",
                 tn, sched.current, sched.ready_prio_mask, sched.ready_by_prio[16],
                 crate::heap::outstanding(), crate::heap::allocs_total());
-            // DEBUG temporaneo (deadlock t24): chi e' Blocked e su cosa.
+            // Diagnostica sched_debug (vedi sopra): chi e' Blocked e su cosa.
             for (pid, p) in sched.processes.iter().enumerate() {
                 if p.state == State::Blocked {
                     crate::serial_println!("[blkdbg] pid={} '{}' ipc={:?} wait={:?}",

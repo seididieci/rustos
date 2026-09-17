@@ -547,7 +547,8 @@ fn sys_spawn_image(img_ptr: u64, img_len: usize, meta_ptr: u64, meta_len: usize)
     }
     let detached = meta.flags & syscall_numbers::SPAWN_FLAG_DETACH != 0;
     // Porte I/O: solo init (pid 1). Gli altri processi girano senza porte
-    // (come tutti i binari embedded tranne disk/kbd/console): chiederle = -1.
+    // (solo init/disk/fs sono embedded, Fase 21: gli altri partono da disco
+    // con le porte del manifest): chiederle = -1.
     let is_init = current_id() == 1;
     if !is_init && meta.io_count != 0 {
         return -1;
@@ -619,8 +620,9 @@ fn sys_write(fd: u64, buf: *const u8, count: usize) -> i64 {
 
 /// map_physical(phys_addr, virt_addr, count): mappa `count` pagine fisiche
 /// a partire da `phys_addr` all'indirizzo virtuale `virt_addr` nello spazio
-/// del chiamante. Usato dal console server (VGA), da userfs (finestra FS di
-/// un client) e dalla test suite (pagina scratch MAP_TEST_PHYS).
+/// del chiamante. Usato dal console server (VGA), da userfs (ring req/resp
+/// di un client, dai phys registrati via `FS_BUF_REG`) e dalla test suite
+/// (pagina scratch MAP_TEST_PHYS).
 fn sys_map_physical(phys_addr: u64, virt_addr: u64, count: usize) -> i64 {
     const PAGE_SIZE: u64 = 0x1000;
     const MAX_PAGES: usize = 256;
@@ -685,16 +687,16 @@ fn sys_sbrk(inc: u64) -> i64 {
 
 // ── Ring buffer SPSC per-processo (Fase 10.2) ─────────────────────
 //
-// Ogni processo ha una Coppia di pagine ring (request + response) allocata
-// dalla syscall `SYS_RING_ALLOC` e mappata a `USER_FS_BUFFER` (request) e
-// `USER_FS_BUFFER+0x1000` (response). Il chiamante registra entrambi gli
-// indirizzi fisici presso userfs con una IPC `FS_BUF_REG`. Le operazioni FS
-// sono IPC dirette client→userfs con trasferimento dati via ring buffer.
+// Ogni processo alloca COPPIE fresche di pagine ring (request + response)
+// via `SYS_RING_ALLOC` (Fase 16: multi-coppia, es. userdisk FS+DISK),
+// mappate a `USER_FS_BUFFER` (request) e `USER_RESP_RING` (response).
+// Il chiamante registra entrambi gli indirizzi fisici presso userfs con
+// una IPC `FS_BUF_REG`. Le operazioni FS sono IPC dirette client→userfs
+// con trasferimento dati via ring buffer.
 
 /// ring_alloc(): alloca due pagine ring (request + response) per il processo
-/// corrente, le mappa a `USER_FS_BUFFER` e `USER_FS_BUFFER+0x1000`, e
-/// ritorna gli indirizzi fisici via IpcResult (req_phys in rax, resp_phys
-/// in rdi). -1 su OOM o errore.
+/// corrente, le mappa a `USER_FS_BUFFER` e `USER_RESP_RING`, e ritorna gli
+/// indirizzi fisici via IpcResult (req_phys in rax, resp_phys in rdi). -1 su OOM o errore.
 /// Ogni chiamata da' pagine FRESCHE (Fase 16: un processo puo' allocare piu'
 /// coppie, es. userdisk FS+DISK). Il mapping e' NON-owned: il free avviene via
 /// record a teardown (`free_ring_pages`), mai double-free col walk owned.

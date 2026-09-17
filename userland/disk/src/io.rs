@@ -2,8 +2,9 @@
 //!
 //! Il processo `userdisk` puo' usare queste istruzioni solo sulle porte
 //! abilitate dalla sua I/O bitmap nel TSS per-processo (ADR-0006): ATA
-//! primario 0x1F0-0x1F7, 0x3F6-0x3F7 + secondario 0x170-0x177, 0x376-0x377
-//! (Fase 16, enumerazione). Ogni altra porta genera #GP.
+//! primario 0x1F0-0x1F7, 0x3F6-0x3F7 (Fase 16). Il secondario
+//! (0x170-0x177, 0x376-0x377) e' probato da `detect.rs` ma NON concesso:
+//! ogni accesso genera #GP. Ogni altra porta genera #GP.
 
 #![allow(dead_code)]
 

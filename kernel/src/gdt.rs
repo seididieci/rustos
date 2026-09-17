@@ -8,7 +8,7 @@
 //! (ogni processo ha il suo TSS, non serve piu' aggiornarlo a ogni switch).
 //!
 //! La bitmap e' per-processo: default tutte le porte bloccate (`0xFF`); i
-//! driver userspace (es. `userfs` per ATA 0x1F0-0x1F7) abilitano solo le loro
+//! driver userspace (es. `userdisk` per ATA 0x1F0-0x1F7) abilitano solo le loro
 //! porte tramite `io_ranges` alla creazione. Nessun IOPL ne' CLI/STI concesso.
 
 use core::arch::asm;

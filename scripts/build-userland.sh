@@ -6,7 +6,8 @@
 # (testland/) sono compilati da scripts/build-tests.sh.
 #
 # Prodotto: userland/build/*.bin, codice raw caricato a USER_CODE dai processi
-# user e incluso nel kernel via `include_bytes!` (user_binary.rs).
+# user; solo init/disk/fs sono embedded nel kernel, il resto va in /fat/bin
+# via inject-bins.sh (servizi da disco, Fase 21).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/build_common.sh

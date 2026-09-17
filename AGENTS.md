@@ -1119,6 +1119,13 @@ rustos/
 - **Testare sempre** con QEMU prima di commit
 - **Documentare** ogni decisione architetturale in ADR
 - **Aggiornare** questo file quando si aggiungono nuove fasi
+- **Checklist di fine fase (docs anti-marcio)**: nello stesso commit della
+  fase aggiornare `docs/src/11-testing.md` (gate corrente + riga test se la
+  suite cresce), `docs/src/06-syscalls.md` (tabella numeri + wrapper se ci
+  sono nuove syscall), `docs/src/SUMMARY.md` (se ADR/capitoli nuovi),
+  `run-tests.sh` (commento gate) e i conteggi qui in AGENTS; i gate delle
+  fasi passate restano snapshot storici (mai "corretti" al nuovo totale).
+  Un solo gate corrente: `11-testing.md` + AGENTS Testing + `run-tests.sh`.
 - **Crate consentite**: solo `no_std`-compatible
 - **Kernel higher-half: FATTO (ADR-0020, Fase HH)** — kernel a `-2G+1M`
   (`0xFFFF_FFFF_8010_0000`, LMA 1M) + direct map `[0,64G)` a pagine 2M a
