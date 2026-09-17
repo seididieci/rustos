@@ -96,6 +96,27 @@ extern "x86-interrupt" fn page_fault_handler(
         }
     }
 
+    // mmap anonimo (Fase M0): fault dentro una VMA viva del basso canonico
+    // (senza protection-violation: pagina mai materializzata, non un abuso)
+    // → demand-zero owned come l'heap (il teardown esistente la libera).
+    if !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
+        && fault_addr >= crate::vmm_user::MMAP_BASE
+        && fault_addr < crate::vmm_user::MMAP_END
+    {
+        if crate::vmm_user::vma_lookup(pid, fault_addr).is_some() {
+            let page = fault_addr & !0xfff;
+            if let Some(frame) = crate::phys_mem::alloc() {
+                unsafe { core::ptr::write_bytes(crate::addr::phys_to_virt(frame) as *mut u8, 0, 4096); }
+                let cr3 = crate::vmm_user::active_cr3();
+                unsafe { crate::vmm_user::map_user_region_owned(cr3, page, frame, 1); }
+                unsafe { flush_page(page) };
+                return;
+            }
+            crate::serial_println!("[int ] mmap demand-zero: OOM @ {:#x}", fault_addr);
+            halt();
+        }
+    }
+
     crate::serial_println!(
         "[int ] #PAGE FAULT @ {:#x}, err={:?}",
         fault_addr,

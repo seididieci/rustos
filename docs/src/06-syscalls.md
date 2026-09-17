@@ -103,6 +103,8 @@ La numerazione e' definita nel dispatch di `syscall_handler` in `kernel/src/sysc
 | 36 | `service_pid(service)` | pid dell'owner del servizio o -1 (supervisione/diagnostica, Fase 14) |
 | 37 | `ps_info(pid)` | snapshot `ps`: 0 + nome in rdi+rsi, packed stato/prio/parent/ipc in rdx, tick in r10; -1 se slot vuoto (Fase 19.1) |
 | 38 | `spawn_image(img, len, meta, metalen)` | come `spawn` ma il binario e' in memoria del chiamante (servizi da disco, Fase 21); `meta` = `SpawnMeta` 40 B (nome/prio/porte, porte solo init); ritorna il canale di nascita o -1 |
+| 39 | `mmap(hint, len, prot, flags)` | mappa anonima privata RW nel basso canonico (Fase M0): VA subito, frame zero al primo fault; `hint` 0 = scelta kernel, `MMAP_FIXED` = piazza o fallisci; solo `prot` RW in M0; ritorna la base o -1 |
+| 40 | `munmap(addr, len)` | smappa VMA intere (Fase M0, niente split: parziali = -1 senza stato) → 0 o -1 |
 
 > **Fase 9.6** (sostituita da 10.2): le syscall FS 3-7, 23, 24 sono state RIMOSSE
 > dal percorso dati. Ogni processo alloca DUE pagine ring (`ring_alloc`, 26:

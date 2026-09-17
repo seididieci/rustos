@@ -124,6 +124,22 @@ Nota storica: era rimandato dalla Fase 6 (costo alto, benefici prematuri);
 la condizione ("processi user che richiedono spazio basso pulito") e' maturata
 con i servizi da disco e gli helper `spawn_image` (Fase 21).
 
+## mmap anonimo nel basso canonico (Fase M0)
+
+Il payoff dell'higher-half: il basso canonico (`[0x10_0000, 0x4000_0000)`,
+1M–1G; i primi 64K mai assegnati → NULL faulta) ospita mappe anonime private
+con zero-fill lazy (stesso contratto di `sbrk`: VA subito, frame al fault).
+
+- Tabella VMA per-pid (16 record statici, mai heap — anche il fault handler
+  fa lookup qui); overlap-check totale (zona/heap/stack/ring/altre VMA).
+- Pagine materializzate `OWNED` → il teardown esistente le libera gratis;
+  `munmap` solo su VMA intere (two-phase: valida tutto, poi muta).
+- `is_user_range` esteso alle VMA vive: ogni syscall con buffer user
+  (spawn, write, …) accetta memoria mappata senza cambi puntuali.
+- Solo RW in M0 (`prot` diverso = `-1`); niente split, niente file-backed
+  (page-in su fault verso userfs e' deadlock-prone: sua fase propria).
+- `libr::mmap` / `mmap_fixed` / `munmap`; `sbrk`/heap/scratch invariati.
+
 ## Riferimenti
 
 - [Writing an OS in Rust - Heap Allocation](https://os.phil-opp.com/heap-allocation/)

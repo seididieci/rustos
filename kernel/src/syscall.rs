@@ -258,6 +258,9 @@ extern "C" fn syscall_handler() -> i64 {
             syscall_numbers::SYS_SPAWN_IMAGE => {
                 sys_spawn_image((*p).arg1, (*p).arg2 as usize, (*p).arg3, (*p).arg4 as usize)
             }
+            // Fase M0: mmap/munmap anonimi nel basso canonico.
+            syscall_numbers::SYS_MMAP => sys_mmap((*p).arg1, (*p).arg2 as usize, (*p).arg3, (*p).arg4),
+            syscall_numbers::SYS_MUNMAP => sys_munmap((*p).arg1, (*p).arg2 as usize),
             _ => -1,
         }
     }
@@ -418,6 +421,43 @@ fn finish_spawn(parent: usize, pid: usize, log_name: &str) -> i64 {
             crate::serial_println!("[syscall] spawn: pool canali esaurito");
             -1
         }
+    }
+}
+
+/// mmap(hint, len, prot, flags): mappa anonima privata nel basso canonico
+/// (Fase M0, zero-fill lazy come `sbrk`: VA subito, frame al primo fault).
+/// Ritorna la base o -1. Solo anonimo in M0: `prot` deve essere RW,
+/// `flags` 0 (hint consigliato, 0 = scelta kernel) o `MMAP_FIXED`.
+fn sys_mmap(hint: u64, len: usize, prot: u64, flags: u64) -> i64 {
+    use syscall_numbers::{MMAP_FIXED, PROT_READ, PROT_WRITE};
+    if prot != PROT_READ | PROT_WRITE {
+        return -1; // M0: solo RW (RO/NX in M1 con enforcement)
+    }
+    if flags & !MMAP_FIXED != 0 {
+        return -1; // flag sconosciuti (file-backed rimandato)
+    }
+    let fixed = flags & MMAP_FIXED != 0;
+    if fixed && hint == 0 {
+        return -1; // FIXED senza hint non ha senso
+    }
+    let cur = current_id() as usize;
+    match crate::vmm_user::vma_map(cur, hint, len as u64, fixed) {
+        Some(base) => base as i64,
+        None => -1,
+    }
+}
+
+/// munmap(addr, len): smappa VMA intere (Fase M0, niente split). 0 o -1.
+fn sys_munmap(addr: u64, len: usize) -> i64 {
+    let cr3 = unsafe { (*(addr_of!(PERCPU))).current_cr3 };
+    if cr3 == 0 {
+        return -1; // cr3 non impostata
+    }
+    let cur = current_id() as usize;
+    if crate::vmm_user::vma_unmap(cur, cr3, addr, len as u64) {
+        0
+    } else {
+        -1
     }
 }
 
