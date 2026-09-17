@@ -12,7 +12,8 @@ PHDRS {
     rodata PT_LOAD FLAGS(4);          /* R-- */
     data   PT_LOAD FLAGS(6);          /* RW- */
     note   PT_NOTE FLAGS(4);
-    tables PT_LOAD FLAGS(6);          /* RW: page tables */
+    tables PT_LOAD FLAGS(6);          /* RW: page tables di transizione */
+    tables_high PT_LOAD FLAGS(6);     /* RW: PD direct + PT VGA (LMA 16M) */
 }
 
 SECTIONS {
@@ -27,8 +28,15 @@ SECTIONS {
         KEEP(*(.pagetables.pdpt_k))
         KEEP(*(.pagetables.pd_k))
         KEEP(*(.pagetables.pdpt_direct))
-        KEEP(*(.pagetables.pd_direct))
     } :tables
+
+    /* PD direct + PT VGA a LMA FISSA 16M (sezione dedicata): sotto 1M non c'e'
+       RAM oltre 0x9FC00 (buco PCI/VGA). VMA = LMA + OFFSET (regola uniforme,
+       verificata da gate-0). 16M e' oltre heap+bitmap in ogni config. */
+    .tables_high 0xFFFFFFFF81000000 : AT(0x1000000) {
+        KEEP(*(.tables_high.pd_direct))
+        KEEP(*(.tables_high.pt_vga))
+    } :tables_high
 
     /* LMA 1M <-> VMA KERN_VIRT_BASE (VMA = LMA + OFFSET): l'immagine resta
        dov'era in fisico, cambia solo la vista virtuale. */

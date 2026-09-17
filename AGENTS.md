@@ -198,7 +198,7 @@ rustos/
           riepilogo `[usertests] PASS N/N` — syscall core, heap lazy demand-
           zero (fresco=0), ramfs write-multichunk/mkdir/errori, /dev/null e
           /dev/zero, map_physical aliasing (pagina scratch `MAP_TEST_PHYS`
-          16 MiB riservata dal kernel), IPC echo + multi-client reply_target,
+          a 64M riservata dal kernel), IPC echo + multi-client reply_target,
           devfs concorrente + heap churn, preemption ring-3 (via contatore su
           pagina scratch), priorita' High>Normal. Helper: `usertest-client`
           (ECHO/ZEROREAD/NULLW con handshake OPENED/GO che dal buffer
@@ -1068,6 +1068,33 @@ rustos/
       Vincoli ereditati Fase 13 (non rilassati): no mix sync/async, FIFO,
       FS 1-in-volo. Rimandati: join/select/timeout, rewrite tty/loop,
       rilassamenti formato frame.
+- [x] Fase HH: Higher-half kernel + direct map (ADR-0020, H0/H1/H2 verificati
+      uno a uno; gate invariato 43/43).
+  - [x] H0 — `kernel/src/addr.rs` (`phys_to_virt`/`virt_to_phys`/`kern_*`,
+        offset 0) + conversione meccanica di tutti i siti identity (choke
+        point entry/set/zero, BITMAP, RSP0=VIRT, boot_info, copy_binary,
+        demand-zero, VGA). Zero cambi di comportamento, prova via gate.
+  - [x] H1 — il flip: kernel a `-2G+1M` (`0xFFFF_FFFF_8010_0000`, LMA 1M —
+        il +1M rende le PD 2M allineate, stile Linux; basi dispari = #PF
+        RSVD a zero output, osservato), direct map `[0,64G)` a pagine 2M
+        (baseline ogni x86-64: niente PDPE1GB, niente flag QEMU; tetto 64G
+        fail-loud oltre), `linker.ld` VMA alte + LMA basse, `boot.asm`
+        tutto-alto dual-map (alias LMA linker + EIP reale, `retf`+`movabs`),
+        `vmm.rs` ridotto a guard, guard seriali a stadi. Gate-0 `readelf`
+        (VMA−LMA == OFFSET + nota PVH) prima di ogni boot.
+  - [x] H2 — pulizia e chiusura: stack alto dallo stub, `unmap_low()`
+        (`PML4[0] = 0` + flush) a inizio `rust_main` (PML4 user futuri
+        ereditano il pulito: nessun walk sui vivi), split VGA UC statico
+        (PT 4K per i primi 2M, PAT di reset), selftest NULL-#PF pre-
+        preemption (`PML4[0]==0` + fault certificato, run congelata per
+        disegno). Bug veri trovati: LMA tabelle nel buco PCI/VGA (solo
+        0x90000–0x9FC00 e' RAM: PD direct a LMA fissa 16M verificata
+        fail-loud); `MAP_TEST_PHYS` collideva a 16M (t12 scriveva sopra le
+        PD → fault ritardato: spostata a 64M + `const assert` di non-
+        sovrapposizione). Scoperte: thread di boot mai ripreso dopo il
+        primo tick (feature `selftest` post-BOOT_OK + Welcome marciti in
+        silenzio — follow-up scheduler, fuori H2); un flake Test-4 FAT
+        isolato su TCG (watch item, rerun verde).
 
 ## Important Notes
 
@@ -1076,11 +1103,11 @@ rustos/
 - **Documentare** ogni decisione architetturale in ADR
 - **Aggiornare** questo file quando si aggiungono nuove fasi
 - **Crate consentite**: solo `no_std`-compatible
-- **Kernel higher-half: RIMANDATO a fase futura** — il kernel resta mappato in
-  identity map (bassa) con protezione U/S via bit delle PTE (ADR-0005). Il
-  higher-half sara' valutato in una fase dedicata post-Fase 6, quando i processi
-  user reali (init, console server) richiederanno spazio utente basso pulito.
-  Motivazioni e dettagli in `03-memory.md`.
+- **Kernel higher-half: FATTO (ADR-0020, Fase HH)** — kernel a `-2G+1M`
+  (`0xFFFF_FFFF_8010_0000`, LMA 1M) + direct map `[0,64G)` a pagine 2M a
+  `0xFFFF_8880_0000_0000`; `PML4[0] = 0` a runtime (NULL-deref faulta).
+  Conversioni via `kernel/src/addr.rs` (`phys_to_virt`/`virt_to_phys`/
+  `kern_*`); RSP0 e stack su VIRT alte. Dettagli e trappole in `04-memory.md`.
 - **TSS per-processo** (ADR-0006): ogni processo ha il proprio TSS con I/O
   bitmap. I driver userspace dichiarano le proprie porte in `io_ranges`
   (`user_binary.rs::NAMED_BINARIES`); chi non ha range non tocca porte.

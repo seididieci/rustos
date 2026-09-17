@@ -24,6 +24,7 @@ global _start
 extern rust_main
 extern BOOT_PML4_LMA
 extern BOOT_GDT_LMA
+extern BOOT_HIGH_STACK
 
 ; Stack di transizione (LOW, identity fino all'unmap H2).
 STACK_TOP equ 0x0009F000
@@ -79,7 +80,12 @@ high_entry:
     mov ds, dx
     mov es, dx
     mov ss, dx
-    mov esp, STACK_TOP
+    ; Stack alto (.bss, VMA alta): da qui rust_main non tocca piu' il basso.
+    ; H2 fa unmap di PML4[0] a inizio rust_main — lo stack LOW di transizione
+    ; (STACK_TOP) resta valido solo per lo stub fin qui.
+    lea rax, [rel BOOT_HIGH_STACK]
+    add rax, 16384                  ; top (base 16-allineata, 16384 % 16 == 0)
+    mov rsp, rax
     xor ebp, ebp
 
     mov edi, ebx                    ; arg1: hvm_start_info (indirizzo fisico,

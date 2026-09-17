@@ -9,6 +9,14 @@ use x86_64::structures::idt::{
     InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode,
 };
 
+/// H2 (solo build `selftest`): il test NULL-#PF arma questo flag prima di
+/// leggere l'indirizzo 0. L'handler, invece di stampare il fault e fermarsi,
+/// certifica il PASS e congela qui (il selftest finisce in questo handler per
+/// disegno: niente chirurgia sul RIP di ritorno, solo log-check).
+#[cfg(feature = "selftest")]
+pub static EXPECT_NULL_PF: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
     let mut idt = InterruptDescriptorTable::new();
 
@@ -55,6 +63,17 @@ extern "x86-interrupt" fn page_fault_handler(
     let addr = x86_64::registers::control::Cr2::read();
     let fault_addr = addr.map(|a| a.as_u64()).unwrap_or(0);
     let pid = crate::syscall::current_id() as usize;
+
+    // H2 selftest NULL-#PF: fault basso atteso (PML4[0] = 0) con flag armato
+    // = prova che il basso e' libero. PASS loggato qui, run congelata qui.
+    #[cfg(feature = "selftest")]
+    if EXPECT_NULL_PF.load(core::sync::atomic::Ordering::SeqCst)
+        && fault_addr < 0x1000
+        && !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
+    {
+        crate::serial_println!("[test] NULL-#PF ok: il basso e' libero (PML4[0] = 0)");
+        halt();
+    }
 
     // Demand-zero dell'heap on-demand (test lazy): una pagina sotto il
     // `heap_brk` del processo non ancora materializzata viene mappata lazy con
