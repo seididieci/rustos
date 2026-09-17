@@ -45,3 +45,4 @@
 - [ADR-0016: FAT32 scrivibile](./adr/0016-fat-writable.md)
 - [ADR-0017: Servizi caricati da disco](./adr/0017-servizi-da-disco.md)
 - [ADR-0018: Cache settoriale write-through in userdisk](./adr/0018-sector-cache-userdisk.md)
+- [ADR-0019: async/await in libr (piano, 4 passi)](./adr/0019-async-await-libr.md)
