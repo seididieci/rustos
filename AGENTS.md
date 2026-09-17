@@ -1043,8 +1043,8 @@ velordor/
         `DISK_STATS` in ADR-0018 come futuri.
   - Verifica: gate 5/5 + 7/7 + 40/40 + shell 30/30, zero FAIL/PANIC/FAULT;
         tabelle P2 in `docs/src/13-performance.md`.
-- [ ] Fase async/await in libr (ADR-0019, PIANO in 4 passi con review dopo
-      ognuno; se ci si ferma, la suite resta verde al passo precedente).
+- [x] Fase async/await in libr (ADR-0019, 4 passi verificati uno a uno;
+      userdisk rimandato alla fase server-run, vedi Passo 4).
       Sintassi `async/await` (solo `core`) sopra syscall 33/34 invariate, con
       router centrale (l'executor unico a chiamare `recv`, instrada per
       `req_id`; risolve `UnexpectedMsg` per costruzione). Kernel invariato.
@@ -1058,9 +1058,13 @@ velordor/
         costruzione, collect non-bloccante al poll) sopra read_async/
         fs_collect invariati (prova client reale, protocollo intatto);
         copertura in t20 (doppia lettura, confronto byte).
-  - [ ] Passo 4 — pilota userdisk SOLO registrazione (`FsReg` →
-        `async fn register`, via `block_on`, riusabile su EXIT_NOTIFY);
-        loop DISK/DEV intatto, copertura t32. Rewrite loop completo rimandato.
+  - [x] Passo 4 — `Join` (Future+Receivable, delega, annidabile) + t43
+        (`Join<Join<W,W>,W>` su 3 server, invii inversi, match per-task);
+        suite → 43/43. userdisk NON convertito (rimandato alla fase
+        server-run con motivazione: `block_on` nel loop scarterebbe gli
+        HELLO/READ sync di userfs → deadlock; serve-while-await richiede
+        router anche delle richieste). Insight: con router-esterno solo i
+        combinatori trasparenti compongono (blocchi `async` opachi no).
       Vincoli ereditati Fase 13 (non rilassati): no mix sync/async, FIFO,
       FS 1-in-volo. Rimandati: join/select/timeout, rewrite tty/loop,
       rilassamenti formato frame.
@@ -1232,9 +1236,9 @@ rg '\[bench\]' /tmp/bench-run1.log /tmp/bench-run2.log /tmp/bench-run3.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 7/7
-#   [usertests] PASS 42/42
+#   [usertests] PASS 43/43
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 42/42' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 43/43' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 

@@ -1019,6 +1019,71 @@ fn t_task_run() -> bool {
     }
 }
 
+/// ADR-0019 Passo 4, t43 — composizione annidata `Join<Join<W,W>,W>` su TRE
+/// helper MODE_SRV, guidata da `block_on`. Gli invii sono in ordine INVERSO
+/// all'albero dei task (C, B, A) per mescolare l'arrivo: ogni risultato deve
+/// comunque matchare il PROPRIO req — prova di routing multi-livello (il
+/// router esterno vede i waiter foglia attraverso i `Join`, mai i messaggi
+/// altrui). Teardown T_STOP+T_DONE per tutti e tre.
+fn t_task_join_nested() -> bool {
+    drain_stray();
+    let (chan_a, _) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, 3, 0) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t43: spawn MODE_SRV(A) FAILED");
+            return false;
+        }
+    };
+    let (chan_b, _) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, 3, 0) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t43: spawn MODE_SRV(B) FAILED");
+            return false;
+        }
+    };
+    let (chan_c, _) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, 3, 0) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t43: spawn MODE_SRV(C) FAILED");
+            return false;
+        }
+    };
+    let (pa, pb, pc) = (8101u64, 8202u64, 8303u64);
+    let mut reqs = [0i64; 3];
+    let chans = [chan_a, chan_b, chan_c];
+    let pays = [pa, pb, pc];
+    // Invii in ordine inverso (C, B, A): l'arrivo non segue l'albero.
+    for &ci in &[2usize, 1, 0] {
+        match libr::send_async(chans[ci], T_REQ, pays[ci], 0) {
+            Ok(r) => reqs[ci] = r,
+            Err(_) => {
+                println!("[usertests] t43: send_async FAILED");
+                return false;
+            }
+        }
+    }
+    let nested = libr::task::join(
+        libr::task::join(
+            libr::task::WaitReply::on_chan(reqs[0], chan_a),
+            libr::task::WaitReply::on_chan(reqs[1], chan_b),
+        ),
+        libr::task::WaitReply::on_chan(reqs[2], chan_c),
+    );
+    let ((ra, rb), rc) = libr::task::block_on(nested);
+    let ok = matches!(ra, Ok(m) if m.req_id == reqs[0] && m.w0 == 2 * pa)
+        && matches!(rb, Ok(m) if m.req_id == reqs[1] && m.w0 == 2 * pb)
+        && matches!(rc, Ok(m) if m.req_id == reqs[2] && m.w0 == 2 * pc);
+    // Teardown (anche a FAIL): T_STOP + T_DONE per tutti, come t21.
+    let mut stop_ok = true;
+    for &ch in &chans {
+        stop_ok &= libr::send(ch, T_STOP, 0, 0).is_ok() && recv_expect(ch, T_DONE);
+    }
+    if !ok {
+        println!("[usertests] t43: nested routing MISMATCH");
+    }
+    ok && stop_ok
+}
+
 // ── Lifecycle tests (Fase 14, ADR-0010) ────────────────────────────
 
 /// t22 — lifecycle churn: spawna e termina molti piu' processi del vecchio
@@ -2699,6 +2764,7 @@ pub extern "C" fn _start() -> ! {
     report(&mut total, &mut ok, "t40 detach + reparent a init", t_detach());
     report(&mut total, &mut ok, "t41 block_on echo async", t_task_block_on());
     report(&mut total, &mut ok, "t42 run 2-task + server died", t_task_run());
+    report(&mut total, &mut ok, "t43 join annidato 3-task", t_task_join_nested());
     // t34 per ULTIMO: i drop sono irrevocabili sul canale di usertests.
     report(&mut total, &mut ok, "t34 diritti per-canale lato server", t_rights());
 

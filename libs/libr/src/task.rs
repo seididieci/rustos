@@ -244,6 +244,77 @@ unsafe fn pin_stack<T>(v: &mut T) -> Pin<&mut T> {
     unsafe { Pin::new_unchecked(v) }
 }
 
+// ── Composizione (ADR-0019, Passo 4) ────────────────────────────────
+// Con router-esterno solo i combinatori TRASPARENTI compongono: il router deve
+// VEDERE i waiter foglia per instradarli, e un blocco `async` e' opaco (i suoi
+// waiter interni sono inaccessibili → non instradabile). `Join` espone i figli
+// e delega: `Join` di `Join` si annidano a piacere. Gli `async fn` opachi
+// arrivano con la fase server-run (executor che guida anche gli handler).
+
+/// Composizione parallela di due task: completa quando ENTRAMBI sono Ready.
+/// `Join` di `Join` per N task annidati. Routing delegato ai figli (ognuno
+/// riceve solo i propri messaggi); `Future` completa con la tupla.
+pub struct Join<A: Future, B: Future> {
+    a: A,
+    b: B,
+    done_a: bool,
+    done_b: bool,
+    out_a: Option<A::Output>,
+    out_b: Option<B::Output>,
+}
+
+/// Costruisce una composizione parallela (come `futures::join!` su 2).
+pub fn join<A: Future, B: Future>(a: A, b: B) -> Join<A, B> {
+    Join { a, b, done_a: false, done_b: false, out_a: None, out_b: None }
+}
+
+impl<A: Receivable + Future, B: Receivable + Future> Receivable for Join<A, B> {
+    fn accepts(&self, m: &IpcMsg) -> bool {
+        (!self.done_a && self.a.accepts(m)) || (!self.done_b && self.b.accepts(m))
+    }
+
+    fn deposit(&mut self, m: IpcMsg) {
+        // A TUTTI gli accettanti non-finiti (una reply ha un solo
+        // proprietario; un EXIT pertinente sveglia ogni waiter che lo accetta).
+        if !self.done_a && self.a.accepts(&m) {
+            self.a.deposit(m);
+        }
+        if !self.done_b && self.b.accepts(&m) {
+            self.b.deposit(m);
+        }
+    }
+}
+
+impl<A: Receivable + Future, B: Receivable + Future> Future for Join<A, B> {
+    type Output = (A::Output, B::Output);
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: come `pin_stack` — i campi `a`/`b` non sono mai mossi (solo
+        // poll in place); `out_a`/`out_b` non sono pinnati (take lecito).
+        let this = unsafe { self.get_unchecked_mut() };
+        if !this.done_a {
+            // SAFETY: come `pin_stack` (campi mai mossi dopo il pin).
+            if let Poll::Ready(v) = unsafe { pin_stack(&mut this.a) }.poll(cx) {
+                this.out_a = Some(v);
+                this.done_a = true;
+            }
+        }
+        if !this.done_b {
+            if let Poll::Ready(v) = unsafe { pin_stack(&mut this.b) }.poll(cx) {
+                this.out_b = Some(v);
+                this.done_b = true;
+            }
+        }
+        if this.done_a && this.done_b {
+            let a = this.out_a.take().expect("task::Join: done senza output (a)");
+            let b = this.out_b.take().expect("task::Join: done senza output (b)");
+            Poll::Ready((a, b))
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
 /// Esegue un singolo task fino a `Ready`. Tra un poll e l'altro resta
 /// bloccato in `recv` (UNA attesa in volo: come `wait_reply`, ma sopra
 /// qualunque `Receivable`, non solo reply).
