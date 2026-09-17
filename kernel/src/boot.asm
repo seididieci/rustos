@@ -1,22 +1,31 @@
-; boot.asm — trampolino minimo: protected mode 32-bit -> long mode -> rust_main
+; boot.asm H1 — tutto-alto dual-map: PM32 (LMA) -> long mode (VMA) -> rust_main
 ;
-; Il loader PVH di QEMU (-kernel ELF64 con nota XEN_ELFNOTE_PHYS32_ENTRY)
-; carica il kernel a 0x100000 e trasferisce il controllo qui in protected
-; mode a 32 bit, paging off, segmenti flat.
+; Il loader PVH di QEMU (-kernel ELF con nota XEN_ELFNOTE_PHYS32_ENTRY)
+; carica il kernel alle LMA e trasferisce il controllo qui (_start, LMA 1M)
+; in protected mode a 32 bit, paging off, segmenti flat.
 ;
-; Le page table e la GDT NON vengono costruite qui: sono statiche Rust
-; const-valutate in src/boot_tables.rs (sezione .pagetables @ 0x90000).
-; Qui resta solo il controllo hardware che prima del far jump non puo'
-; essere codice compilato a 64 bit.
+; Le page table e la GDT sono statiche Rust const-valutate in
+; src/boot_tables.rs (sezione .pagetables, LMA 0x90000). Il PML4 contiene sia
+; l'identity di transizione [0, 8M) (PML4[0]) che la mappa alta (kernel +
+; direct map): dopo `mov cr3` si salta HIGH e il basso resta solo fino a H2.
+;
+; Vincolo reloc 32-bit: in un oggetto elf64 `mov eax, SIMBOLO' emette
+; R_X86_64_32, valida solo per valori < 4G — i simboli VMA alti non ci stanno.
+; Lo stub usa quindi gli alias LMA definiti dal linker (`BOOT_PML4_LMA`,
+; `BOOT_GDT_LMA`: valori < 4G garantiti) e, per il proprio salto, la LMA letta
+; da EIP a runtime (`call/pop` + delta stessa-sezione, sempre piccolo).
+; OFFSET resta in `linker.ld`/`addr.rs`: gate-0 readelf (VMA - LMA di ogni
+; PT_LOAD) lo verifica prima di ogni boot H1.
 ;
 ; NB: le entry delle page table in long mode sono LARGHE 8 BYTE.
 
 BITS 32
 global _start
 extern rust_main
-extern BOOT_PML4
-extern BOOT_GDT
+extern BOOT_PML4_LMA
+extern BOOT_GDT_LMA
 
+; Stack di transizione (LOW, identity fino all'unmap H2).
 STACK_TOP equ 0x0009F000
 
 section .text.boot exec
@@ -24,7 +33,8 @@ _start:
     cli
     mov esp, STACK_TOP
 
-    mov eax, BOOT_PML4              ; simbolo Rust -> indirizzo assoluto
+    ; CR3 = LMA del PML4 di boot (alias linker, < 4G garantito).
+    mov eax, BOOT_PML4_LMA
     mov cr3, eax
 
     mov eax, cr4
@@ -37,22 +47,34 @@ _start:
     or  eax, 1 << 8                 ; LME
     wrmsr
 
-    ; pseudo-descrittore LGDT costruito sullo stack:
-    ;   limit = 512*8 - 1 (costante nota, vedi PageTable::LIMIT)
-    ;   base  = indirizzo di BOOT_GDT (relocation assoluta)
+    ; Pseudo-descrittore LGDT sullo stack: limit noto, base = LMA della GDT
+    ; (paging ancora off: linear == phys).
     sub esp, 8
     mov word [esp], 512*8 - 1
-    mov dword [esp + 2], BOOT_GDT
+    mov eax, BOOT_GDT_LMA
+    mov dword [esp + 2], eax
     lgdt [esp]
     add esp, 8
 
+    ; Un jmp far ptr16:32 non puo' esprimere VMA alte: LMA di low_entry da
+    ; EIP reale (call/pop) + delta stessa-sezione, poi retf in modo 64-bit.
+    call next_eip
+next_eip:
+    pop eax                         ; LMA(next_eip)
+    add eax, low_entry - next_eip    ; + delta -> LMA(low_entry)
+    push dword 0x08
+    push eax
     mov eax, 0x80000011             ; PE | ET | PG -> long mode compat
     mov cr0, eax
-
-    jmp 0x08:.long_mode_entry       ; ricarica CS (L=1): 64-bit vero
+    retf                            ; CS=0x08 (L=1), EIP=LMA(low_entry)
 
 [BITS 64]
-.long_mode_entry:
+low_entry:
+    ; 64-bit a indirizzo LOW: salto assoluto (movabs) alla VMA alta.
+    mov rax, high_entry
+    jmp rax
+
+high_entry:
     mov dx, 0x10                    ; selettore dati della GDT di boot
     mov ds, dx
     mov es, dx

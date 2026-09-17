@@ -102,7 +102,9 @@ pub fn init(
         }
     }
 
-    // Page tables + PD area: 0x90000–0x100000
+    // Tabelle di boot (H1: PML4 + PDPT/PD/PT low + PDPT_K/PD_K +
+    // PDPT_DIRECT + 32 PD direct = 39 pagine) in 0x90000–0x100000.
+    // LMA fisse (CR3 phys); la VMA e' alta ma la contabilita' e' in PHYS.
     let pt_start = 0x90000 / FRAME_SIZE as usize;  // frame 36
     let pt_end = 0x100000 / FRAME_SIZE as usize;    // frame 256
     for f in pt_start..pt_end {

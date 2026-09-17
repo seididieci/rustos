@@ -1,42 +1,67 @@
-//! Tabelle di boot: identity map dei primi 8 MiB + GDT temporanea.
+//! Tabelle di boot H1: dual-map di transizione + kernel alto + direct map.
 //!
-//! Sono `static` const-valutate: il compilatore le emette già pronte nell'ELF
-//! e il loader PVH le carica in RAM insieme al resto dell'immagine. Lo stub
-//! assembly (`boot.asm`) si limita a puntare CR3 e GDTR agli indirizzi fissi.
+//! Sono `static` const-valutate: il compilatore le emette gia' pronte nell'ELF
+//! (LMA basse, VMA alte) e il loader PVH le carica in RAM insieme al resto.
+//! Lo stub (`boot.asm`, tutto RIP-relative + `SYM - low32(OFFSET)` a runtime)
+//! punta CR3 alla LMA del PML4, abilita il paging e salta HIGH.
 //!
-//! Layout: PD[0] → PT a pagine 4 KiB per [0, 2 MiB) (copre kernel basso a
-//! 1 MiB e VGA a 0xB8000); PD[1..3] → large page 2 MiB per [2 MiB, 8 MiB).
-//! Il kernel cresce coi binari embedded (`include_bytes!` in `user_binary.rs`):
-//! il `.bss` ha superato i 2 MiB in Fase 17 (triple fault silenzioso al primo
-//! print con timestamp, che legge `pit::TICKS` oltre il limite) — 8 MiB danno
-//! margine, e `rust_main` verifica `_kernel_end < BOOT_MAP_LIMIT` fail-loud
-//! prima di qualunque print (mai piu' morte a zero output).
+//! PML4 (LMA 0x90000, via CR3 phys):
+//!   [0]    → PDPT_LOW: identity [0, 8M) di TRANSIZIONE (stub LOW, stack di
+//!             transizione, tabelle stesse). Rimossa in H2 (`PML4[0] = 0`).
+//!   [511]  → PDPT_K: immagine kernel alta (VMA `KERN_VIRT_BASE`, pagine 2M,
+//!             finestra VMA [base1G, +16M) -> phys [0, 16M)).
+//!   [DIR]  → PDPT_DIRECT: direct map [0, 64G) a pagine 1G (top-up oltre i
+//!             64G in `vmm.rs`: 1 entry per GiB extra, zero nuove tabelle).
+//! Permessi: PRESENT|WRITABLE, supervisor (U=0) — come prima (niente W^X qui).
 //!
 //! NB: in long mode le entry delle page table sono larghe 8 byte — qui è
 //! garantito dal tipo (`u64`), l'errore classico dello stride a 4 byte non
 //! può nemmeno compilare.
-
-//! I simboli servono a `boot.asm` via indirizzo assoluto: il linker li tiene
-//! vivi, ma il compilatore non vede usi Rust — allow mirato, non rimosso.
+//!
+//! I simboli servono a `boot.asm` via indirizzo (VMA alta, LMA derivata a
+//! runtime): il linker li tiene vivi, ma il compilatore non vede usi Rust —
+//! allow mirato, non rimosso.
 #![allow(dead_code)]
 
 use core::mem::size_of;
+
+use crate::addr::{DIRECT_MAP_BASE, KERN_VIRT_BASE};
 
 pub const PML4_ADDR: u64 = 0x0009_0000;
 pub const PDPT_ADDR: u64 = 0x0009_1000;
 pub const PD_ADDR: u64 = 0x0009_2000;
 pub const PT_ADDR: u64 = 0x0009_3000;
+/// PDPT dell'immagine kernel alta (PML4[511]).
+pub const PDPT_K_ADDR: u64 = 0x0009_4000;
+/// PD dell'immagine kernel alta (finestra 16M a pagine 2M).
+pub const PD_K_ADDR: u64 = 0x0009_5000;
+/// PDPT della direct map (32 entry -> 32 PD da 1G = 64G statici, pagine 2M).
+pub const PDPT_DIRECT_ADDR: u64 = 0x0009_6000;
+/// PD della direct map: 32 tabelle contigue (128 KiB) da 0x97000.
+pub const PD_DIRECT_ADDR: u64 = 0x0009_7000;
+/// PD statiche della direct map (ognuna 1G a pagine 2M).
+pub const DIRECT_STATIC_PDS: usize = 32;
 
 const PRESENT_WRITABLE: u64 = 0x003;
-/// Bit PS (large page 2 MiB) per le entry PD.
+/// Bit PS: large page (2M nel PD, 1G nel PDPT).
 const LARGE_PAGE: u64 = 0x080;
 
-/// Tetto (esclusivo) dell'identity map di boot. `rust_main` abortisce fail-loud
-/// se `_kernel_end` lo supera (vedi nota in testa).
-pub const BOOT_MAP_LIMIT: u64 = 0x800000;
+/// Indice PML4 della VMA kernel (= 511 per KERN_VIRT_BASE -2G).
+const PML4_KERN: usize = ((KERN_VIRT_BASE >> 39) & 0x1FF) as usize;
+/// Indice PDPT della VMA kernel dentro PDPT_K.
+const PDPT_K_IDX: usize = ((KERN_VIRT_BASE >> 30) & 0x1FF) as usize;
+/// Indice PML4 della direct map.
+const PML4_DIRECT: usize = ((DIRECT_MAP_BASE >> 39) & 0x1FF) as usize;
+
+/// Tetto PHYS (esclusivo) della finestra immagine: la PD_K mappa VMA
+/// [KERN-1M, +16M) -> phys [0, 16M); l'immagine (phys 1M..end) cade dentro.
+/// `rust_main` abortisce fail-loud se `_kernel_end` fisico lo supera
+/// (stesso ruolo del vecchio BOOT_MAP_LIMIT).
+pub const KERN_IMAGE_PHYS_LIMIT: u64 = 0x100_0000;
 
 /// Tabella con allineamento garantito a pagina.
 #[repr(C, align(4096))]
+#[derive(Clone, Copy)]
 pub struct PageTable([u64; 512]);
 
 impl PageTable {
@@ -49,6 +74,8 @@ impl PageTable {
 pub static BOOT_PML4: PageTable = {
     let mut t = [0u64; 512];
     t[0] = PDPT_ADDR | PRESENT_WRITABLE;
+    t[PML4_KERN] = PDPT_K_ADDR | PRESENT_WRITABLE;
+    t[PML4_DIRECT] = PDPT_DIRECT_ADDR | PRESENT_WRITABLE;
     PageTable(t)
 };
 
@@ -65,16 +92,14 @@ pub static BOOT_PDPT: PageTable = {
 pub static BOOT_PD: PageTable = {
     let mut t = [0u64; 512];
     t[0] = PT_ADDR | PRESENT_WRITABLE;
-    // Large page 2 MiB: coprono [2 MiB, 8 MiB) per la crescita del kernel
-    // (binari embedded). Vedi nota in testa: 2 MiB non bastano piu'.
+    // Large page 2M: identity di transizione [2M, 8M).
     t[1] = 0x200000 | PRESENT_WRITABLE | LARGE_PAGE;
     t[2] = 0x400000 | PRESENT_WRITABLE | LARGE_PAGE;
     t[3] = 0x600000 | PRESENT_WRITABLE | LARGE_PAGE;
     PageTable(t)
 };
 
-/// Identity map dei primi 8 MiB: PT a 4 KiB per [0, 2 MiB) + large page PD
-/// per [2 MiB, 8 MiB). Copre kernel basso (1 MiB), VGA (0xB8000) e crescita.
+/// Identity di transizione [0, 2M) a 4K (stub LOW, stack, VGA, tabelle).
 #[unsafe(link_section = ".pagetables.pt")]
 #[unsafe(no_mangle)]
 pub static BOOT_PT: PageTable = {
@@ -85,6 +110,67 @@ pub static BOOT_PT: PageTable = {
         i += 1;
     }
     PageTable(t)
+};
+
+/// PDPT dell'immagine kernel: una sola entry verso PD_K.
+#[unsafe(link_section = ".pagetables.pdpt_k")]
+#[unsafe(no_mangle)]
+pub static BOOT_PDPT_K: PageTable = {
+    let mut t = [0u64; 512];
+    t[PDPT_K_IDX] = PD_K_ADDR | PRESENT_WRITABLE;
+    PageTable(t)
+};
+
+/// PD dell'immagine kernel: 8 large page 2M — VMA [KERN-1M, +16M) -> phys
+/// [0, 16M), cioe' VMA [KERN+i*2M) -> phys [1M+i*2M): lo scarto uniforme di
+/// 1M (KERN_VIRT_BASE = -2G+1M, vedi `addr.rs`) rende TUTTE le basi pari e
+/// 2M-allineate. Senza lo scarto (VMA tonda a -2G, LMA 1M) le basi sarebbero
+/// dispari (bit 20 = riservato per pagine 2M -> #PF con RSVD, osservato).
+/// L'immagine (VMA KERN..end = phys 1M..) cade dentro; oltre = guard fail-loud.
+#[unsafe(link_section = ".pagetables.pd_k")]
+#[unsafe(no_mangle)]
+pub static BOOT_PD_K: PageTable = {
+    let mut t = [0u64; 512];
+    let mut i = 0u64;
+    while i < 8 {
+        t[i as usize] = (i << 21) | PRESENT_WRITABLE | LARGE_PAGE;
+        i += 1;
+    }
+    PageTable(t)
+};
+
+/// PDPT della direct map: 32 entry -> 32 PD (64G statici, pagine 2M).
+/// 2M e' baseline long-mode su OGNI x86-64 (niente CPUID, niente feature):
+/// funziona sul TCG qemu64 come sull'hardware reale piu' vecchio.
+#[unsafe(link_section = ".pagetables.pdpt_direct")]
+#[unsafe(no_mangle)]
+pub static BOOT_PDPT_DIRECT: PageTable = {
+    let mut t = [0u64; 512];
+    let mut i = 0u64;
+    while i < DIRECT_STATIC_PDS as u64 {
+        t[i as usize] = (PD_DIRECT_ADDR + i * 4096) | PRESENT_WRITABLE;
+        i += 1;
+    }
+    PageTable(t)
+};
+
+/// PD della direct map: 32 tabelle (128 KiB contigui) — phys [0, 64G) a
+/// pagine 2M. Oltre i 64G: `vmm::init` abortisce fail-loud (le configurazioni
+/// di test usano <= 32G; alzare il tetto = piu' PD statiche, meccanico).
+#[unsafe(link_section = ".pagetables.pd_direct")]
+#[unsafe(no_mangle)]
+pub static BOOT_PD_DIRECT: [PageTable; DIRECT_STATIC_PDS] = {
+    let mut arr = [PageTable([0u64; 512]); DIRECT_STATIC_PDS];
+    let mut j = 0usize;
+    while j < DIRECT_STATIC_PDS {
+        let mut k = 0u64;
+        while k < 512 {
+            arr[j].0[k as usize] = ((j as u64 * 512 + k) << 21) | PRESENT_WRITABLE | LARGE_PAGE;
+            k += 1;
+        }
+        j += 1;
+    }
+    arr
 };
 
 /// Selettori della GDT di boot.

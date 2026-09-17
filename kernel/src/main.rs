@@ -36,19 +36,41 @@ use x86_64::instructions::hlt;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_main(boot_info_phys: u64) -> ! {
-    // Guard mappa di boot (PRIMA di qualunque print): l'identity map iniziale
-    // copre [0, BOOT_MAP_LIMIT) e i print con timestamp leggono `pit::TICKS`
-    // (.bss). Se il kernel — ingrossato dai binari embedded — supera il tetto,
-    // il primo print farebbe triple fault a ZERO output (Fase 17: .bss oltre
-    // i 2 MiB). Fail loud qui con raw serial (porta diretta, niente TICKS,
-    // niente heap, niente format): solo immediati e indirizzo linker.
+    // Guard H1 a stadi (PRIMA di qualunque print): ogni indirizzo sbagliato
+    // nel flip e' triple-fault muto — questi sono l'unica diagnostica. Raw
+    // serial (porta diretta, niente TICKS, niente heap, niente format): solo
+    // immediati e indirizzi linker.
+    //
+    // Stadio 1: l'immagine (LMA 1M..end) sta nella finestra statica PD_K
+    // ([0, 16M) phys)? Altrimenti il codice oltre manca di mappa alta.
     {
         unsafe extern "C" {
             static _kernel_end: u8;
         }
-        let kend = unsafe { &_kernel_end as *const u8 as u64 };
-        if kend >= boot_tables::BOOT_MAP_LIMIT {
-            const MSG: &[u8] = b"BOOT MAP TOO SMALL: kernel exceeds boot identity map\r\n";
+        let kend_phys = crate::addr::kern_virt_to_phys(unsafe { &_kernel_end as *const u8 as u64 });
+        if kend_phys >= boot_tables::KERN_IMAGE_PHYS_LIMIT {
+            const MSG: &[u8] = b"BOOT IMAGE TOO BIG: kernel exceeds static high window\r\n";
+            let mut i = 0usize;
+            while i < MSG.len() {
+                unsafe {
+                    core::arch::asm!("out dx, al", in("dx") 0x3F8u16, in("al") MSG[i]);
+                }
+                i += 1;
+            }
+            loop {
+                unsafe { core::arch::asm!("hlt") };
+            }
+        }
+    }
+    // Stadio 2 (rimosso): le pagine 2M sono baseline long-mode su ogni
+    // x86-64 (niente feature, niente CPUID) — la direct map statica non ha
+    // prerequisiti oltre il long mode stesso.
+    // Stadio 3: CR3 == LMA del PML4 di boot? (stub ha caricato il CR3 giusto?)
+    {
+        let cr3: u64;
+        unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3) };
+        if cr3 & !0xFFF != boot_tables::PML4_ADDR {
+            const MSG: &[u8] = b"BOOT BAD CR3: CR3 != BOOT_PML4 LMA\r\n";
             let mut i = 0usize;
             while i < MSG.len() {
                 unsafe {
