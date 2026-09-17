@@ -57,6 +57,85 @@ pub fn _print(args: ::core::fmt::Arguments) {
     });
 }
 
+/// Scrive byte raw sulla seriale con la stessa disciplina dmesg di `_print
+/// (timestamp a inizio riga, tracking `\n` via `AT_LINE_START`).
+///
+/// Usata da `sys_write` (output userspace, syscall 0/1): a differenza di
+/// `_print` non interpreta UTF-8 — i byte passano tali e quali (audit fedele:
+/// byte in = byte sul filo) e non alloca mai, per qualunque lunghezza.
+/// Lo stato inizio-riga e' globale e persiste tra chiamate, quindi il
+/// chunking del chiamante (e `\n` a cavallo tra chunk) e' trasparente.
+#[doc(hidden)]
+pub fn _write_bytes(data: &[u8]) {
+    use x86_64::instructions::interrupts;
+
+    interrupts::without_interrupts(|| {
+        let mut guard = SERIAL1.lock();
+        let mut at_start = AT_LINE_START.load(Ordering::Relaxed);
+        for &b in data {
+            if at_start && b != b'\n' {
+                let t = crate::pit::ticks();
+                // Timestamp senza `fmt::Write` (niente formattazione qui):
+                // costruzione manuale su stack, zero alloc.
+                let mut ts = [0u8; TS_LEN];
+                let n = format_ts(&mut ts, t / 100, t % 100);
+                for &tb in &ts[..n] {
+                    guard.send(tb);
+                }
+                at_start = false;
+            }
+            guard.send(b);
+            if b == b'\n' {
+                at_start = true;
+            }
+        }
+        AT_LINE_START.store(at_start, Ordering::Relaxed);
+    });
+}
+
+/// Lunghezza massima di `[<sec>.<cc:02>] `: `[` + 20 cifre (u64 max) +
+/// `.` + 2 cifre + `]` + ` ` = 26. Il buffer basta sempre, per qualunque tick.
+const TS_LEN: usize = 26;
+
+/// Scrive `[<sec>.<cc:02>] ` in `buf`, ritorna la lunghezza (sempre ≤ TS_LEN).
+/// Timestamp manuale senza `core::fmt`: questo percorso non deve allocare.
+fn format_ts(buf: &mut [u8; TS_LEN], sec: u64, cc: u64) -> usize {
+    let mut n = 0;
+    buf[n] = b'[';
+    n += 1;
+    n += format_u64(&mut buf[n..], sec);
+    buf[n] = b'.';
+    n += 1;
+    buf[n] = b'0' + (cc / 10) as u8;
+    n += 1;
+    buf[n] = b'0' + (cc % 10) as u8;
+    n += 1;
+    buf[n] = b']';
+    n += 1;
+    buf[n] = b' ';
+    n + 1
+}
+
+/// Scrive un u64 decimale in `buf`, ritorna le cifre scritte.
+/// Il chiamante garantisce spazio sufficiente (u64 max = 20 cifre).
+fn format_u64(buf: &mut [u8], mut v: u64) -> usize {
+    let mut tmp = [0u8; 20];
+    let mut n = 0;
+    if v == 0 {
+        tmp[n] = b'0';
+        n = 1;
+    }
+    while v > 0 {
+        tmp[n] = b'0' + (v % 10) as u8;
+        v /= 10;
+        n += 1;
+    }
+    for (i, &b) in tmp[..n].iter().rev().enumerate() {
+        buf[i] = b;
+    }
+    n
+}
+
 #[macro_export]
 macro_rules! serial_print {
     ($($arg:tt)*) => ($crate::serial::_print(format_args!($($arg)*)));

@@ -36,6 +36,7 @@
 extern crate alloc;
 
 mod block;
+mod cache;
 mod detect;
 mod io;
 mod part;
@@ -340,6 +341,7 @@ fn locate(handle: u32, disk_sectors: &[u64], parts: &[Vec<PartLoc>]) -> Option<(
 }
 
 /// Legge il settore `lba` del nodo `handle` (bound check sul nodo).
+/// Attraversa la cache settoriale (Fase P2/C1): hit = niente PIO.
 fn node_read(
     disks: &[block::AtaDisk],
     disk_sectors: &[u64],
@@ -356,12 +358,24 @@ fn node_read(
         return false;
     }
     match disks.get(disk) {
-        Some(d) => d.read_sector(base + lba, out),
+        Some(d) => {
+            let phys = base + lba;
+            if cache::lookup_into(disk, phys, out) {
+                return true;
+            }
+            let ok = d.read_sector(phys, out);
+            if ok {
+                cache::insert_from(disk, phys, out);
+            }
+            ok
+        }
         None => false,
     }
 }
 
 /// Scrive il settore `lba` del nodo `handle` (bound check sul nodo, come read).
+/// Write-through (Fase P2/C1): prima il PIO stabile, poi la cache; a
+/// fallimento la entry e' invalidata (mai dati sporchi in cache).
 fn node_write(
     disks: &[block::AtaDisk],
     disk_sectors: &[u64],
@@ -378,7 +392,17 @@ fn node_write(
         return false;
     }
     match disks.get(disk) {
-        Some(d) => d.write_sector(base + lba, data),
+        Some(d) => {
+            let phys = base + lba;
+            let ok = d.write_sector(phys, data);
+            if ok {
+                debug_assert!(cache::POLICY == cache::Policy::WriteThrough);
+                cache::insert_from(disk, phys, data);
+            } else {
+                cache::invalidate(disk, phys);
+            }
+            ok
+        }
         None => false,
     }
 }
@@ -388,7 +412,10 @@ fn node_write(
 const DISK_MAX_SECTORS: usize = 7;
 
 /// Legge `out.len()/512` settori contigui del nodo (bound sul nodo + bound
-/// protocollo, 1 comando PIO). `false` a parametri invalidi o errore IO.
+/// protocollo, 1 comando PIO per run di miss). Gli hit di cache sono copiati
+/// senza PIO; i miss contigui restano UN solo `read_sectors` (P1.2 preservato).
+/// `false` a parametri invalidi o errore IO (le entry del run fallito restano
+/// intoccate: niente fill parziale sotto errore).
 fn node_read_multi(
     disks: &[block::AtaDisk],
     disk_sectors: &[u64],
@@ -408,14 +435,42 @@ fn node_read_multi(
     if lba.checked_add(n as u64).map_or(true, |end| end > sectors) {
         return false;
     }
-    match disks.get(disk) {
-        Some(d) => d.read_sectors(base + lba, n as u8, out),
-        None => false,
+    let dev = match disks.get(disk) {
+        Some(d) => d,
+        None => return false,
+    };
+    let mut k = 0usize;
+    while k < n {
+        let phys = base + lba + k as u64;
+        if cache::contains(disk, phys) {
+            let dst = &mut out[k * 512..(k + 1) * 512];
+            if !cache::lookup_into(disk, phys, dst) {
+                return false; // impossibile: contains appena vero
+            }
+            k += 1;
+            continue;
+        }
+        // Run di miss contigui (≤ rimanente, ≤ bound protocollo per costruzione).
+        let mut m = 1usize;
+        while k + m < n && !cache::contains(disk, base + lba + (k + m) as u64) {
+            m += 1;
+        }
+        if !dev.read_sectors(phys, m as u8, &mut out[k * 512..(k + m) * 512]) {
+            return false;
+        }
+        cache::note_misses(m as u64);
+        for j in 0..m {
+            cache::insert_from(disk, phys + j as u64, &out[(k + j) * 512..(k + j + 1) * 512]);
+        }
+        k += m;
     }
+    true
 }
 
 /// Scrive `data.len()/512` settori contigui del nodo (1 comando PIO + 1
-/// flush, vedi `AtaDisk::write_sectors`). Stessi bound di `node_read_multi`.
+/// flush, vedi `AtaDisk::write_sectors`). Write-through: a run stabile le
+/// entry sono aggiornate, a fallimento invalidate. Stessi bound di
+/// `node_read_multi`.
 fn node_write_multi(
     disks: &[block::AtaDisk],
     disk_sectors: &[u64],
@@ -436,7 +491,22 @@ fn node_write_multi(
         return false;
     }
     match disks.get(disk) {
-        Some(d) => d.write_sectors(base + lba, n as u8, data),
+        Some(d) => {
+            let ok = d.write_sectors(base + lba, n as u8, data);
+            if ok {
+                debug_assert!(cache::POLICY == cache::Policy::WriteThrough);
+                for j in 0..n {
+                    cache::insert_from(
+                        disk,
+                        base + lba + j as u64,
+                        &data[j * 512..(j + 1) * 512],
+                    );
+                }
+            } else {
+                cache::invalidate_run(disk, base + lba, n);
+            }
+            ok
+        }
         None => false,
     }
 }

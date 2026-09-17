@@ -364,7 +364,7 @@ pub fn on_tick() {
     // server CBS deve essere stato rilasciato a exit) ne' uno Blocked (in
     // attesa IPC: lo sblocca la reply, non il CBS).
     let replenished = crate::cbs::tick_replenish();
-    for pid in replenished {
+    for pid in replenished.iter() {
         if pid < sched.processes.len() {
             let st = sched.processes[pid].state;
             if st == State::Ready || st == State::Blocked {

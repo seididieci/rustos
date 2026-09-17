@@ -21,7 +21,7 @@
 - [RT Scheduler + CBS](./10-scheduler-rt-cbs.md) — Fase 11
 - [Test Suite](./11-testing.md) — Fase 9.5
 - [Utilities](./12-utilities.md) — Fase 18 (shell + utility utente)
-- [Performance](./13-performance.md) — Fase P0 (baseline throughput)
+- [Performance](./13-performance.md) — Fasi P0/P1/P2 (baseline + throughput + cache)
 
 ---
 
@@ -44,3 +44,4 @@
 - [ADR-0015: POSIX come API di libr](./adr/0015-posix-api-libr-protocollo-interno.md)
 - [ADR-0016: FAT32 scrivibile](./adr/0016-fat-writable.md)
 - [ADR-0017: Servizi caricati da disco](./adr/0017-servizi-da-disco.md)
+- [ADR-0018: Cache settoriale write-through in userdisk](./adr/0018-sector-cache-userdisk.md)
