@@ -2,7 +2,7 @@
 
 > I conteggi di suite citati negli ADR e nelle sotto-fasi del libro sono
 > **snapshot all'epoca** di ciascuna fase (es. 17/17, 21/21, 32/32). Il gate
-> corrente e' quello qui sotto (5/5 + 7/7 + 40/40 + shell) e in `AGENTS.md`.
+> corrente e' quello qui sotto (5/5 + 7/7 + 42/42 + shell) e in `AGENTS.md`.
 
 La regressione automatica del sistema gira **dentro QEMU** a ogni boot: i
 binari di test sono processi user reali, spawnati da `init` in sequenza prima
@@ -17,7 +17,7 @@ libs/libr   libreria di sistema condivisa (runtime + allocatore)
 testland/   test suite + repro + demo storiche
   testfs        usertestfs   — ramfs (read/write/mkdir/errori)   → PASS 5/5
   testfat       usertestfat  — FAT32 scrivibile (Fase 20) + /dev/null, /dev/zero → PASS 7/7
-  usertests     usertests    — suite completa (40 test)          → PASS 40/40
+  usertests     usertests    — suite completa (42 test)          → PASS 42/42
   usertest-client usertestcli  — helper a modalita' (ECHO/ZEROREAD/NULLW/SRV/CHURN/KILLME/SRVDIE/SYNCWAIT/MNTDIE/OPENDIE/MAPHAMMER/FLOOD/NEST)
   usertest-spin  usertestspin  — busy-loop a budget di tick (batch 512 spin puri, priorita' via SpawnMeta)
   utcbstest     utcbstest    — helper CBS: crea server e si attacha (Fase 11.5)
@@ -50,10 +50,10 @@ Righe di gate:
 ```
 [testfs] PASS 5/5
 [testfat] PASS 7/7
-[usertests] PASS 40/40
+[usertests] PASS 42/42
 ```
 
-## Cosa copre `usertests` (40 test; t34 per ultimo: i drop dei diritti sono
+## Cosa copre `usertests` (42 test; t34 per ultimo: i drop dei diritti sono
 irrevocabili sul canale della suite)
 
 | Test | Cosa verifica |
@@ -97,6 +97,8 @@ irrevocabili sul canale della suite)
 | t38 | `stat` metadati senza open (Fase 19.2; FAT senza readonly dalla Fase 20): file/dir ramfs (size reale, vita dopo mkdir/rm), file/dir FAT, device (`/dev/null`), padri sintetizzati (`/dev`), error paths (inesistente, sotto-device) |
 | t39 | servizi da disco (Fase 21): `/bin`+`/test` presenti e non vuoti, tutti i servizi registrati per nome (= boot da disco funzionante) |
 | t40 | detach + reparent a init (Fase 22): MID intermedio spawna due KILLME (uno detached via flag, uno no) poi esce; foglia normale sparita da `ps`, detached viva con parent == 1, poi cleanup-kill (osservazione solo via `ps`, mai distruttiva prima del check) |
+| t41 | `block_on` + echo async (ADR-0019): 1 send_async a helper MODE_SRV, raccolta con router (`on_chan`: stale scartate), teardown T_STOP+T_DONE |
+| t42 | `run` 2-task + morte server (ADR-0019): due helper MODE_SRV (secondo prima per mescolare l'ordine), ogni risultato matcha il proprio req (routing per req_id, non FIFO); poi SRVDIE + kill → `ServerDied{pid,code}` esatti via router |
 | t34 | diritti per-canale lato server (Fase 17, per ultimo: drop irrevocabili): GET default ALL+root, drop WRITE (write -1/read ok), drop MOUNT+subtree /fat (mount/open-fuori -1, open-dentro+read+readdir-dentro ok, readdir-fuori -1), widen rifiutato + GET conferma |
 
 > Il CBS e' sempre attivo (lo scheduler RT e' l'unico): t18/t19 sono test

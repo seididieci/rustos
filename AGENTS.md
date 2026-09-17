@@ -1048,10 +1048,11 @@ rustos/
       Sintassi `async/await` (solo `core`) sopra syscall 33/34 invariate, con
       router centrale (l'executor unico a chiamare `recv`, instrada per
       `req_id`; risolve `UnexpectedMsg` per costruzione). Kernel invariato.
-  - [ ] Passo 1 — `libr::task` (Future, Waker custom, `block_on`, `run`
-        multi-task pool N=8, pin via `core::pin::pin!`, mai heap per-op).
+  - [x] Passo 1 — `libr::task` (Future `WaitReply`/`RecvMsg`, tratto
+        `Receivable` per l'instradamento, Waker no-op, `block_on`, `run`
+        const-generic multi-task, pin contenuto, mai heap per-op).
         Nessun chiamante migrato; gate invariato 40/40.
-  - [ ] Passo 2 — t41 (`block_on` + echo async) / t42 (`run` 2 task +
+  - [x] Passo 2 — t41 (`block_on` + echo async) / t42 (`run` 2 task +
         `ServerDied`); suite → 42/42 (+ run-tests.sh/testing/docs).
   - [ ] Passo 3 — `fs_read_async(...).await` sopra read_async/fs_collect
         invariati (prova client reale, protocollo intatto).
@@ -1229,9 +1230,9 @@ rg '\[bench\]' /tmp/bench-run1.log /tmp/bench-run2.log /tmp/bench-run3.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 7/7
-#   [usertests] PASS 40/40
+#   [usertests] PASS 42/42
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 40/40' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 42/42' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 

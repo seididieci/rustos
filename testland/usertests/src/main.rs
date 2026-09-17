@@ -864,6 +864,138 @@ fn t_ipc_async() -> bool {
     recv_expect(chan, T_DONE)
 }
 
+/// ADR-0019 Passo 2, t41 — `block_on` + echo async verso helper MODE_SRV.
+/// Stesso scenario di t21-sottocaso-1 ma con `WaitReply` + router invece di
+/// `wait_reply`: 1 send_async, raccolta con `block_on`, teardown identico
+/// (T_STOP + T_DONE). Filtro canale (`on_chan`): le EXIT_NOTIFY stale di
+/// helper precedenti (altri canali) sono scartate dal router come
+/// `wait_reply_chan` — mai Died spurio; la morte del NOSTRO server e' FAIL.
+fn t_task_block_on() -> bool {
+    drain_stray();
+    let (chan, _srv_pid) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, 3, 0) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t41: spawn MODE_SRV FAILED");
+            return false;
+        }
+    };
+    let payload = 4242u64;
+    let req = match libr::send_async(chan, T_REQ, payload, 0) {
+        Ok(r) => r,
+        Err(_) => {
+            println!("[usertests] t41: send_async FAILED");
+            let _ = libr::send(chan, T_STOP, 0, 0);
+            let _ = recv_expect(chan, T_DONE);
+            return false;
+        }
+    };
+    let ok = match libr::task::block_on(libr::task::WaitReply::on_chan(req, chan)) {
+        Ok(m) => m.req_id == req && m.w0 == 2 * payload,
+        Err(libr::WaitReplyError::ServerDied { pid, code }) => {
+            println!("[usertests] t41: echo server died (pid={}, code={})", pid, code);
+            false
+        }
+        Err(_) => false,
+    };
+    if !ok {
+        println!("[usertests] t41: reply MISMATCH");
+    }
+    // Teardown come t21 (anche a FAIL: niente helper appeso).
+    if libr::send(chan, T_STOP, 0, 0).is_err() {
+        return false;
+    }
+    ok && recv_expect(chan, T_DONE)
+}
+
+/// ADR-0019 Passo 2, t42 — `run` con 2 task concorrenti + morte server.
+/// Parte A (routing): DUE helper MODE_SRV, una send_async ciascuno (alla B
+/// prima, per mescolare l'ordine di arrivo), raccolta con `run([..])`: ogni
+/// risultato deve matchare il PROPRIO req (non FIFO) — la prova che il router
+/// correla per req_id, cosa che `wait_reply` non puo' fare.
+/// Parte B (morte): helper SRVDIE (non risponde mai, come t24) + kill →
+/// `block_on` deve tornare `ServerDied{pid}` esatto.
+fn t_task_run() -> bool {
+    drain_stray();
+    // ── Parte A: due server, due attese, un run.
+    let (chan_a, _) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, 3, 0) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t42: spawn MODE_SRV(A) FAILED");
+            return false;
+        }
+    };
+    let (chan_b, _) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, 3, 0) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t42: spawn MODE_SRV(B) FAILED");
+            let _ = libr::send(chan_a, T_STOP, 0, 0);
+            let _ = recv_expect(chan_a, T_DONE);
+            return false;
+        }
+    };
+    let (pa, pb) = (7101u64, 7202u64);
+    let req_b = match libr::send_async(chan_b, T_REQ, pb, 0) {
+        Ok(r) => r,
+        Err(_) => {
+            println!("[usertests] t42: send_async(B) FAILED");
+            return false;
+        }
+    };
+    let req_a = match libr::send_async(chan_a, T_REQ, pa, 0) {
+        Ok(r) => r,
+        Err(_) => {
+            println!("[usertests] t42: send_async(A) FAILED");
+            return false;
+        }
+    };
+    let [ra, rb] = libr::task::run([
+        libr::task::WaitReply::on_chan(req_a, chan_a),
+        libr::task::WaitReply::on_chan(req_b, chan_b),
+    ]);
+    let ok_a = matches!(ra, Ok(m) if m.req_id == req_a && m.w0 == 2 * pa);
+    let ok_b = matches!(rb, Ok(m) if m.req_id == req_b && m.w0 == 2 * pb);
+    // Teardown A (anche a FAIL): T_STOP + T_DONE per entrambi, come t21.
+    let stop_a = libr::send(chan_a, T_STOP, 0, 0).is_ok() && recv_expect(chan_a, T_DONE);
+    let stop_b = libr::send(chan_b, T_STOP, 0, 0).is_ok() && recv_expect(chan_b, T_DONE);
+    if !(ok_a && ok_b && stop_a && stop_b) {
+        println!("[usertests] t42: routing MISMATCH (a={} b={})", ok_a, ok_b);
+        return false;
+    }
+    // ── Parte B: morte durante l'attesa (pattern t24, via router).
+    let (chan_c, pid_c) = match spawn_cfg("/fat/test/testcli.bin", "utcli", 16, M_SRVDIE, 0) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t42: spawn SRVDIE FAILED");
+            return false;
+        }
+    };
+    let req_c = match libr::send_async(chan_c, T_REQ, 0, 0) {
+        Ok(r) => r,
+        Err(_) => {
+            println!("[usertests] t42: send_async(C) FAILED");
+            return false;
+        }
+    };
+    let code = -9i64;
+    if libr::kill(pid_c as i64, code).is_err() {
+        println!("[usertests] t42: kill(pid={}) FAILED", pid_c);
+        return false;
+    }
+    // Filtro canale: le EXIT_NOTIFY di A/B (usciti sopra, altri canali) sono
+    // stale e il router le scarta; solo la morte di C arriva qui.
+    match libr::task::block_on(libr::task::WaitReply::on_chan(req_c, chan_c)) {
+        Err(libr::WaitReplyError::ServerDied { pid, code: c }) if pid == pid_c && c == code => true,
+        Err(libr::WaitReplyError::ServerDied { pid, code: c }) => {
+            println!("[usertests] t42: ServerDied errato (pid={}, code={})", pid, c);
+            false
+        }
+        other => {
+            println!("[usertests] t42: atteso ServerDied, ottenuto {:?}", other);
+            false
+        }
+    }
+}
+
 // ── Lifecycle tests (Fase 14, ADR-0010) ────────────────────────────
 
 /// t22 — lifecycle churn: spawna e termina molti piu' processi del vecchio
@@ -2542,6 +2674,8 @@ pub extern "C" fn _start() -> ! {
     report(&mut total, &mut ok, "t38 stat metadati senza open", t_stat());
     report(&mut total, &mut ok, "t39 servizi da disco (/bin+/test)", t_diskboot());
     report(&mut total, &mut ok, "t40 detach + reparent a init", t_detach());
+    report(&mut total, &mut ok, "t41 block_on echo async", t_task_block_on());
+    report(&mut total, &mut ok, "t42 run 2-task + server died", t_task_run());
     // t34 per ULTIMO: i drop sono irrevocabili sul canale di usertests.
     report(&mut total, &mut ok, "t34 diritti per-canale lato server", t_rights());
 
