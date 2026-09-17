@@ -1,6 +1,7 @@
 # ADR-0019: async/await in libr sopra l'IPC asincrona
 
-**Status**: In corso (Passi 1-2 completati e verificati, 3-4 pianificati)
+**Status**: In corso (Passi 1-4 completati e verificati; userdisk rimandato
+alla fase server-run, vedi Passo 4)
 **Data**: 2026-09-17
 
 ## Contesto
@@ -35,9 +36,11 @@ Livelli:
 2. **`block_on(fut)`** — single-task per client semplici (stessi limiti di
    `wait_reply`, ma componibile).
 3. **`run()` multi-task** — const-generic su N task (array su stack,
-      qualunque N, zero heap): polla i non-finiti; se nessuno → `recv()`
-      bloccante → instrada a tutti gli accettanti (una reply ha un solo
-      proprietario; un EXIT_NOTIFY pertinente sveglia ogni waiter).
+   qualunque N, zero heap): polla i non-finiti; se nessuno → `recv()`
+   bloccante → instrada a tutti gli accettanti (una reply ha un solo
+   proprietario; un EXIT_NOTIFY pertinente sveglia ogni waiter).
+4. **`Join` compositivo** (Passo 4) — vedi sotto: con router-esterno solo i
+   combinatori trasparenti compongono.
 4. **Waker custom** (`RawWaker`: wake = marca task ready; single-thread,
    niente lock). Pinning contenuto (`new_unchecked` su stack/array fermi, mai
    heap per-op, regola P1.2/scratch).
@@ -64,12 +67,20 @@ verde al passo precedente.
       non-bloccante al poll; stessi guard/formato/chan-filter). Copertura
       estendendo t20 (stessa lettura via collect manuale e via wrapper,
       confronto byte; fd riaperto: la prima lettura avanza la posizione).
-- [ ] **Passo 4 — server pilota `userdisk`, SOLO registrazione**:
-      `FsReg::{step,collect_if_mine}` → `async fn register(prefixes)` via
-      `block_on` a startup, riusabile sul reset da `EXIT_NOTIFY`. Stessi log,
-      stesso comportamento; loop `DISK_*`/`DEV_*` intatto. Copertura: t32
-      (kill/restart userdisk). Il rewrite completo del loop e' un passo
-      successivo separato (blast radius: data-plane critico di tutto).
+- [x] **Passo 4 — composizione `Join` + t43; userdisk NON convertito.**
+      `Join<A,B>` (Future+Receivable, delega ai figli, annidabile:
+      con router-esterno solo i combinatori trasparenti compongono — un
+      blocco `async` e' opaco ai waiter interni, gli `async fn` arrivano con
+      la fase server-run). t43: `Join<Join<W,W>,W>` su 3 helper MODE_SRV,
+      invii inversi all'albero, ogni risultato matcha il proprio req.
+      Suite → 43/43. Il pilota registrazione userdisk e' RIMANDATO alla fase
+      server-run con motivazione: `block_on(register)` nel loop e' unsound —
+      mentre attende la reply di REGISTER, un `DISK_HELLO` sync di userfs
+      verrebbe scartato dal router (non e' la reply attesa) e userfs resterebbe
+      bloccato per sempre (stalli 5 s su HELLO con bound, hang su READ senza
+      bound). Servire-while-await richiede un unico punto di `recv` che
+      instradi anche le richieste (server-run executor), cioe' il rewrite del
+      loop: fase dedicata, non questo passo.
 
 ## Conseguenze
 
