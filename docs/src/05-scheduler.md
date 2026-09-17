@@ -33,7 +33,8 @@ A livello di meccanismo:
   l'hardware); `userkbd` (ring 3, porte 0x60-0x64) drena l'i8042 e pubblica
   gli scancode su `/dev/kbd`, `usertty` li decodifica (v. ADR-0011)
 - l'`idle process` (priorita' **Idle** = 0) esegue `hlt` quando nulla e' pronto
-- scheduling **solo timer-driven**: nessuno switch volontario; la priorita'
+- scheduling timer-driven + switch volontari nei path IPC/exit (`ipc_send`,
+  `ipc_recv`, `terminate` commutano senza aspettare il tick); la priorita'
   seleziona il prossimo processo, lo switch e' un meccanismo separato
 
 ### Context switch reale
@@ -64,7 +65,7 @@ rilevanti per lo scheduling:
 ```rust
 pub enum State {
     Ready,       // pronto per essere schedulato
-    Blocked,     // in attesa di un evento (es. IPC, scancode)
+    Blocked,     // in attesa di un evento (es. IPC)
     Terminated,  // finito, non piu' schedulabile
 }
 
@@ -72,9 +73,9 @@ pub struct Process {
     pub id: usize,
     pub priority: crate::sched::Priority,  // u8 0-31, costante alias
     pub state: State,
-    pub stack_top: u64,                    // stack kernel (RSP0 per il TSS)
+    pub stack_base: u64,                   // base PHYS dello stack kernel
     pub saved: CpuContext,                 // registri salvati al context switch
-    pub kernel_stack_top: u64,
+    pub kernel_stack_top: u64,             // top VIRT (RSP0 per il TSS)
     pub tss_sel: SegmentSelector,          // TSS per-processo (ADR-0006)
     // ... campi IPC (msg_queue, reply_chan/req, ecc.) e CBS (cbs_server)
 }

@@ -182,14 +182,13 @@ pub const MAX_CBS_SERVERS: usize = 8;
 pub const CBS_BW_CAP: f64 = 0.70;
 
 pub struct CbsServer {
-    pub id: usize,
     pub budget_ticks: u32,       // Q: budget per periodo
     pub period_ticks: u32,       // P: periodo
     pub remaining_budget: i32,   // budget residuo nel periodo corrente
     pub deadline: u64,           // tick assoluto di fine periodo
     pub task_pid: Option<usize>, // processo servito
     pub active: bool,
-    pub bandwidth: f64,          // Q / P
+    pub bandwidth: f64,          // Q / P (solo kernel: get_info NON la espone)
 }
 ```
 
@@ -202,9 +201,9 @@ heap allocation, slot fissi.
 |----------|-------------|
 | `create(Q, P)` | Admission control + alloca slot → id o `Err(())` |
 | `attach(id, pid)` | Lega un server a un processo |
-| `get_info(id)` | Budget/period/remaining/bw (debug/test) |
+| `get_info(id)` | Budget/period/remaining (debug/test; niente bandwidth) |
 | `tick_budget(pid) -> bool` | Decrementa budget; `true` se throttled |
-| `tick_replainish() -> Vec<PID>` | Replenish deadline scadute, ritorna PID da rischedulare |
+| `tick_replenish() -> Replenished` | Replenish deadline scadute, ritorna struct stack (array PID + len, mai `Vec`) da rischedulare |
 
 **Campi nel PCB** (`process.rs`):
 `cbs_server: Option<usize>` — indice nel pool CBS, `None` = nessun server.
@@ -212,9 +211,11 @@ heap allocation, slot fissi.
 **Integrazione in `on_tick`** (ordine):
 
 ```
-1. cbs::tick_replainish()  → set_ready() per PID riapprovvigionati
-2. cbs::tick_budget(cur)   → clear_ready() se throttled, need_switch = true
-3. logica quantum esistente (ticks_current >= QUANTUM_TICKS)
+0. sched.drain_reclaim() → teardown processi Terminated (prima di tutto:
+   mai liberare lo stack di chi gira, e i frame tornano riusabili subito)
+1. cbs::tick_replenish()  → set_ready() per PID riapprovvigionati
+2. logica quantum esistente (ticks_current >= QUANTUM_TICKS)
+3. cbs::tick_budget(cur)   → clear_ready() se throttled, need_switch = true
 4. pick_next() → switch_to() se necessario
 ```
 
@@ -227,7 +228,7 @@ heap allocation, slot fissi.
 3. **Throttle**: quando `remaining_budget == 0`, `tick_budget` ritorna `true`
    → `on_tick` chiama `clear_ready(cur)` e forza lo switch. Il task **non
    viene piu' scelto** finche' il budget non e' ripristinato.
-4. **Replenishment**: `cbs::tick_replainish()` controlla la `deadline` di ogni
+4. **Replenishment**: `cbs::tick_replenish()` controlla la `deadline` di ogni
    server. Se scaduta: `remaining_budget = Q`, `deadline += P`, e il PID viene
    rimesso in ready queue (`set_ready`). Il processo torna schedulabile.
 
@@ -259,14 +260,14 @@ Oltre il cap la richiesta viene **rifiutata** (syscall ritorna -1).
 |--------|---------|-----------|
 | 28 | `cbs_create(budget, period)` | crea un server CBS → id o -1 (admission control) |
 | 29 | `cbs_attach(server_id)` | lega il server al processo corrente |
-| 30 | `cbs_get_info(server_id)` | budget/period/remaining/bandwidth del server (debug/test) |
+| 30 | `cbs_get_info(server_id)` | budget/period/remaining del server (debug/test; niente bandwidth) |
 
 Wrapper in `libr` (`libs/libr/src/lib.rs`):
 
 ```rust
 pub fn cbs_create(budget_ticks: u32, period_ticks: u32) -> Result<i64, ()>;
 pub fn cbs_attach(server_id: i64) -> Result<(), ()>;
-pub fn cbs_get_info(server_id: i64) -> Option<CbsInfo>;   // budget/period/remaining/bw
+pub fn cbs_get_info(server_id: i64) -> Option<CbsInfo>;   // budget/period/remaining (niente bw)
 ```
 
 ### Uso tipico (processo "audio")
@@ -313,11 +314,11 @@ Una richiesta con `Σ bandwidth > cap` (~70%) deve essere rifiutata (-1):
 
 ### Validazione (11.5.3) — PASS
 
-Gate corrente (unico scheduler):
+Gate dell'epoca (unico scheduler; il corrente e' in `11-testing.md`):
 
 ```
 boot pulito + [testfs] PASS 5/5 + [testfat] PASS 7/7
-            + [usertests] PASS 40/40 + test-shell.py ~30/30
+             + [usertests] PASS 40/40 + test-shell.py ~30/30
 ```
 
 ### Fix CBS importanti emersi dalla validazione
