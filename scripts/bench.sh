@@ -10,7 +10,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 RUNS="${RUNS:-3}"
-TIMEOUT_S="${TIMEOUT_S:-120}"
+# 300 s: la prima run paga la build fredda (userland+testland+kernel, ~1-2 min
+# su host lenti) + il boot; le successive sono incrementali. Con 120 s la prima
+# run moriva in build (osservato: log troncato a userkbd) e il bench risultava
+# "incompleto" senza aver mai avviato QEMU.
+TIMEOUT_S="${TIMEOUT_S:-300}"
 
 ACCEL=()
 if [ -e /dev/kvm ]; then

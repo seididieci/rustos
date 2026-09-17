@@ -546,6 +546,14 @@ fn sys_spawn_image(img_ptr: u64, img_len: usize, meta_ptr: u64, meta_len: usize)
 
 /// write(fd, buf, count): stampa su seriale per fd 1/2; ogni altro fd
 /// (nessun file implementato in questa fase) → -1.
+///
+/// Streaming raw a chunk fissi (256 B) via `serial::_write_bytes`: MAI
+/// allocazioni, per qualunque `count` (un `from_utf8_lossy` qui allocherebbe
+/// `count` byte + free con coalesce O(n²) a OGNI println userspace, oltre a
+/// rischiare OOM/panic su `count` enormi). I byte passano tali e quali, senza
+/// validazione UTF-8: audit fedele (byte in = byte sul filo). La logica
+/// dmesg (timestamp a inizio riga) vive nel writer ed e' trasparente al
+/// chunking, anche con `\n` a cavallo tra chunk.
 fn sys_write(fd: u64, buf: *const u8, count: usize) -> i64 {
     if fd != 1 && fd != 2 {
         return -1;
@@ -558,9 +566,14 @@ fn sys_write(fd: u64, buf: *const u8, count: usize) -> i64 {
         crate::serial_println!("[syscall] write: puntatore fuori dallo spazio user");
         return -1;
     }
+    const CHUNK: usize = 256;
     let slice = unsafe { core::slice::from_raw_parts(buf, count) };
-    let s = alloc::string::String::from_utf8_lossy(slice);
-    crate::serial_println!("{}", s);
+    let mut off = 0;
+    while off < count {
+        let end = (off + CHUNK).min(count);
+        crate::serial::_write_bytes(&slice[off..end]);
+        off = end;
+    }
     count as i64
 }
 

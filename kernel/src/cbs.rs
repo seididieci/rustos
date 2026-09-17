@@ -7,7 +7,6 @@
 //! Pool statica di `MAX_CBS_SERVERS` slot, nessuna heap allocation. Sempre
 //! compilato: lo scheduler RT unico di rustOS include il CBS.
 
-use alloc::vec::Vec;
 use spin::Mutex;
 
 /// Numero massimo di server CBS contemporanei.
@@ -162,15 +161,20 @@ pub fn tick_budget(pid: usize) -> bool {
 }
 
 /// Replenishment: controlla se qualche server ha la deadline scaduta e
-/// resetta il budget. Ritorna la lista dei PID da rimettere in ready queue.
+/// resetta il budget. Ritorna i PID da rimettere in ready queue.
 ///
 /// Chiamato da `sched_rt::on_tick` PRIMA del decrement budget, cosi' un
 /// processo throttled ha la possibilita' di tornare schedulabile nello
 /// stesso tick in cui viene riapprovvigionato.
-pub fn tick_replenish() -> Vec<usize> {
+///
+/// Il risultato viaggia in un array sullo stack (`Replenished`), mai in heap:
+/// questo percorso gira sotto IRQ timer 100 volte al secondo con il lock
+/// `CBS_POOL` trattenuto — un `Vec` pagherebbe alloc+free (e lock dell'heap)
+/// proprio li', con failure mode OOM dentro il tick.
+pub fn tick_replenish() -> Replenished {
     let mut pool = CBS_POOL.lock();
     let now = crate::pit::ticks();
-    let mut to_wake = Vec::new();
+    let mut out = Replenished { pids: [0; MAX_CBS_SERVERS], len: 0 };
 
     for slot in pool.iter_mut() {
         if let Some(s) = slot {
@@ -179,10 +183,32 @@ pub fn tick_replenish() -> Vec<usize> {
                 s.remaining_budget = s.budget_ticks as i32;
                 s.deadline += s.period_ticks as u64;
                 if let Some(pid) = s.task_pid {
-                    to_wake.push(pid);
+                    // Bound strutturale: uno slot contribuisce al massimo un
+                    // pid, quindi len non puo' mai superare MAX_CBS_SERVERS.
+                    debug_assert!(out.len < MAX_CBS_SERVERS);
+                    if out.len < MAX_CBS_SERVERS {
+                        out.pids[out.len] = pid;
+                        out.len += 1;
+                    }
                 }
             }
         }
     }
-    to_wake
+    out
+}
+
+/// PIDs con deadline scaduta nel tick corrente (da `tick_replenish`).
+/// Capacita' = `MAX_CBS_SERVERS`: ogni slot contribuisce al massimo un pid,
+/// quindi il bound e' strutturale, non prudenziale. Ordine di pool e
+/// duplicati preservati (come il vecchio `Vec`: `set_ready` e' idempotente).
+pub struct Replenished {
+    pids: [usize; MAX_CBS_SERVERS],
+    len: usize,
+}
+
+impl Replenished {
+    /// Itera i pid in ordine di pool.
+    pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        self.pids[..self.len].iter().copied()
+    }
 }

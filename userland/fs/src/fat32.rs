@@ -10,7 +10,6 @@ extern crate alloc;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::cell::Cell;
 
 /// Sorgente di settori da 512 byte (LBA assoluti nel nodo montato).
 /// Implementata dal driver ATA locale (Fase 9.2) o dal client IPC verso
@@ -96,13 +95,10 @@ pub struct Fat32<B: BlockSource> {
     vol_serial: Option<u32>,
     /// Label volume BPB+71 (11 byte raw, padding spazi): identità `LABEL=`.
     vol_label: [u8; 11],
-    /// P1.1 — memo dell'ultimo settore FAT letto (lba → contenuto). NON e'
-    /// una cache persistente che nasconde il disco: elimina solo i re-read
-    /// dello STESSO settore a distanza di microsecondi (walk catena,
-    /// scan alloc). Invalidata a ogni scrittura FAT (`set_fat_entry`) e
-    /// azzerata a ogni epoca (l'istanza nasce per mount). userfs e'
-    /// single-threaded: `Cell` basta.
-    fat_memo: Cell<Option<(u32, [u8; 512])>>,
+    // Nota: nessun memo settoriale qui (il P1.1 `fat_memo` e' stato rimosso in
+    // P2/C1: la cache settoriale write-through vive in `userdisk`, unico
+    // proprietario dei blocchi — un secondo strato cacherebbe gli stessi 512 B
+    // due volte. Ogni `read_sector` attraversa IPC+PIO o la cache del driver).
 }
 
 const ATTR_DIR: u8 = 0x10;
@@ -155,7 +151,6 @@ impl<B: BlockSource> Fat32<B> {
             root_cluster: root,
             vol_serial,
             vol_label,
-            fat_memo: Cell::new(None),
         })
     }
 
@@ -183,19 +178,13 @@ impl<B: BlockSource> Fat32<B> {
         &self.disk
     }
 
-    /// Settore della PRIMA copia FAT a `lba`, via memo (P1.1): hit = copia
-    /// in RAM (~100 ns), miss = 1 lettura disco + memorizzazione.
+    /// Settore della PRIMA copia FAT a `lba` (P2/C1: via cache del driver in
+    /// `userdisk`, niente memo locale — vedi campo `Fat32`).
     fn fat_sector(&self, lba: u32) -> Option<[u8; 512]> {
-        if let Some((cached, sec)) = self.fat_memo.get() {
-            if cached == lba {
-                return Some(sec);
-            }
-        }
         let mut sec = [0u8; 512];
         if !self.disk.read_sector(lba as u64, &mut sec) {
             return None;
         }
-        self.fat_memo.set(Some((lba, sec)));
         Some(sec)
     }
 
@@ -517,8 +506,6 @@ impl<B: BlockSource> Fat32<B> {
                 return false;
             }
         }
-        // La FAT e' cambiata: il memo non e' piu' valido (P1.1).
-        self.fat_memo.set(None);
         true
     }
 

@@ -340,7 +340,18 @@ rustos/
           puo' rubare CPU oltre la quota)
     - [x] 11.3.4 Replenishment: alla `deadline` scaduta budget = Q e deadline +=
           P; il task torna schedulabile via CBS. Tempo CBS non usato (task
-          bloccato) NON si accumula: va ai processi fixed-priority
+          bloccato) NON si accumula: va ai processi fixed-priority.
+          `tick_replenish` ritorna uno struct `Replenished` su stack
+          (`[usize; MAX_CBS_SERVERS]` + len, bound strutturale: uno slot = un
+          pid), mai `Vec`: il percorso gira sotto IRQ timer con il lock
+          CBS_POOL trattenuto e non deve toccare il lock dell'heap (versione
+          ibrida "no-alloc sui percorsi caldi", primo sito convertito).
+          Secondo sito: `sys_write` (fd 1/2) non fa piu' `String::from_utf8_lossy`
+          (alloc `count` + free O(n²) a ogni println userspace, con rischio
+          OOM/panic su `count` enormi) ma streaming raw a chunk 256 B via
+          `serial::_write_bytes` (timestamp dmesg byte-wise, zero alloc,
+          byte in = byte sul filo per audit fedele; niente piu' `\n`
+          spurio aggiunto dal kernel alle righe utente).
     - [x] 11.3.5 Admission control: un nuovo CBS e' accettato solo se
           `Σ(Qi/Pi) + Q/P ≤ CBS_BW_CAP` (~70%; il resto resta ai fixed-priority)
   - [x] 11.4 Syscall CBS (28-30) + wrappers libr
@@ -970,6 +981,30 @@ rustos/
         nel per-op dei server". Diagnostica `libr::heap::heap_stats` mantenuta.
   - Verifica: gate 5/5 + 7/7 + 40/40 + shell 29/29 (t36 condizionale) KVM,
         bench 3 run stabili, tabella P1 in `docs/src/13-performance.md`.
+- [x] Fase P2/C1: cache settoriale write-through in userdisk (ADR-0018)
+  - Motivazione: dopo P1 il collo resta il PIO (~1.2 ms/settore); ogni op FAT
+    rilegge gli stessi settori (BPB/FAT/dir). Scelta: UN solo strato a blocchi
+    nel driver (indipendente dal FS, copre FAT+raw+futuri FS), mai cache file
+    in userfs (doppia copia degli stessi 512 B = RAM sprecata).
+  - [x] `userland/disk/src/cache.rs`: 256 entry statiche (~128 KiB `.bss`),
+        chiave fisica `(disco, lba)`, eviction CLOCK, write-through (prima PIO+
+        FLUSH stabili poi update; errore = invalida), zero heap nel per-op
+        (array fisso, `static mut` via `addr_of_mut!` per edition 2024),
+        contatori hits/misses/inserts + log throttled ogni 2048 accessi.
+        Hook futuri senza biforcazioni: `Policy`/`dirty`/`CACHE_SECTORS` in un
+        punto solo. I miss contigui restano 1 PIO (`contains` delimita il run,
+        `note_misses` conta). `node_read(_multi)`/`node_write(_multi` + relay
+        `DEV_*` coerenti per costruzione (stessa chiave fisica).
+  - [x] `userfs/fat32.rs`: rimosso `fat_memo` P1.1 (subsumato, un solo strato).
+  - [x] Misure A/B stesso host KVM (media 3 run, TSC ~1.6 GHz; la tabella P1 e'
+        di un altro host): `fat_small_orc` ~126x (6.1M→49K cyc, 6→838 KiB/s),
+        `fat_4K_oow` ~1.9x (86M→46M cyc), resto invariato entro il rumore
+        KVM/DVFS (±20-40% sulle op brevi, misurato su run identici). Hit rate:
+        bench 74%, suite 91%. Dinamica con reclaim RIMANDATA (sbrk solo cresce,
+        nessun canale di pressione kernel→driver); write-back, read-ahead e
+        `DISK_STATS` in ADR-0018 come futuri.
+  - Verifica: gate 5/5 + 7/7 + 40/40 + shell 30/30, zero FAIL/PANIC/FAULT;
+        tabelle P2 in `docs/src/13-performance.md`.
 
 ## Important Notes
 

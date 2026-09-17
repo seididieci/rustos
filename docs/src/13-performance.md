@@ -1,10 +1,11 @@
-# Performance (Fase P0 — baseline)
+# Performance (Fasi P0–P2 — baseline + ottimizzazioni)
 
 > Piattaforma di riferimento: **KVM** (`-accel kvm -cpu host`). I tempi TCG
 > sono emulati e NON di riferimento. Orologio: TSC in ring 3 (CR4.TSD mai
 > impostato), calibrato sul PIT via `libr::tsc_calibrate` (~4.45 GHz sul
-> riferimento). Nessuna cache nel percorso dati: ogni op attraversa IPC +
-> userfs + userdisk + PIO, quindi i numeri misurano il percorso vero.
+> riferimento P0/P1, ~1.6 GHz sull'host della campagna P2: confrontare solo
+> misure dello STESSO host). Nessuna cache nel percorso dati fino a P1
+> (P2/C1 aggiunge la cache settoriale, vedi sotto).
 
 ## Harness
 
@@ -69,3 +70,32 @@ mai allocazioni heap nel percorso per-op** (solo a setup/mount).
 
 Peggioramento > 10% su una qualunque riga (stesso host KVM, media 3 run)
 = fail. Rivalutare la baseline solo a parità di hardware e versione QEMU.
+
+## P2/C1 — cache settoriale write-through in userdisk (ADR-0018)
+
+Un solo strato di cache a blocchi nel driver (`userland/disk/src/cache.rs`:
+256 entry, chiave fisica `(disco, lba)`, CLOCK, write-through, zero heap nel
+per-op); `fat_memo` (P1.1) rimosso da `userfs`. Protocollo `DISK_*` invariato.
+
+Confronto A/B **sullo stesso host** (KVM, media 3 run, TSC ~1.6 GHz;
+la tabella P1 sopra e' di un altro host e NON e' confrontabile):
+
+| Op | P1 stesso host (cyc/op) | C1 (cyc/op) | Effetto |
+|----|-------------------------|-------------|---------|
+| `zero_1B` | ~5.9 K | ~6.9 K | invariato (no disco) |
+| `sda_512B_seq` | ~3.04 M | ~3.75 M | invariato entro il rumore¹ |
+| `fat_small_orc` | ~6.14 M (~6 KiB/s) | ~49 K (~838 KiB/s) | **~126x** |
+| `ramfs_4K_write` | ~93 K | ~117 K | invariato entro il rumore¹ |
+| `ramfs_4K_read` | ~64 K | ~76 K | invariato entro il rumore¹ |
+| `fat_4K_oow` | ~86 M (~81 KiB/s) | ~46 M (~146 KiB/s) | **~1.9x** |
+
+¹ Rumore misurato: su questo host run identici dello stesso binario variano
+±20–40% sulle op brevi (DVFS: tsc 1.62–1.68 GHz tra run; `fat_4K_oow`
+baseline 57–97 KiB/s). Si dichiara solo cio' che supera di molto il rumore:
+le re-read degli stessi settori (small FAT) non pagano piu' PIO; gli
+overwrite pagano ancora PIO+FLUSH per settore (write-through) ma le re-read
+di FAT/dir vanno in cache; il sequenziale freddo resta PIO (niente
+read-ahead in C1, volutamente).
+
+Hit rate: bench 74% (1514 hit / 534 settori via PIO), suite 91%.
+Gate invariato (5/5 + 7/7 + 40/40 + shell 30/30).
