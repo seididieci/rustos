@@ -1,6 +1,6 @@
 # ADR-0019: async/await in libr sopra l'IPC asincrona
 
-**Status**: Planned (Fase async/await, in 4 passi — avanzamento sotto)
+**Status**: In corso (Passi 1-2 completati e verificati, 3-4 pianificati)
 **Data**: 2026-09-17
 
 ## Contesto
@@ -34,11 +34,13 @@ Livelli:
    `SendAndWait{chan,tag,w0,w1}` combinata ("send che sembra sincrona").
 2. **`block_on(fut)`** — single-task per client semplici (stessi limiti di
    `wait_reply`, ma componibile).
-3. **`run()` multi-task** — pool statica N=8 task (coerente col resto del
-   sistema): polla i Ready; se nessuno → `recv()` bloccante → instrada.
+3. **`run()` multi-task** — const-generic su N task (array su stack,
+      qualunque N, zero heap): polla i non-finiti; se nessuno → `recv()`
+      bloccante → instrada a tutti gli accettanti (una reply ha un solo
+      proprietario; un EXIT_NOTIFY pertinente sveglia ogni waiter).
 4. **Waker custom** (`RawWaker`: wake = marca task ready; single-thread,
-   niente lock). Pinning via `core::pin::pin!`; `Box::pin` solo a setup
-   (mai heap per-op, regola P1.2/scratch).
+   niente lock). Pinning contenuto (`new_unchecked` su stack/array fermi, mai
+   heap per-op, regola P1.2/scratch).
 
 Vincoli ereditati dalla Fase 13 (NON rilassati qui): no mix sync/async per
 processo; routing FIFO per `req_id` (niente riordino); FS 1-in-volo
@@ -49,11 +51,11 @@ processo; routing FIFO per `req_id` (niente riordino); FS 1-in-volo
 Ogni passo finisce con gate verde e review; se ci si ferma, la suite resta
 verde al passo precedente.
 
-- [ ] **Passo 1 — `libr::task`** (Future, Waker, `block_on`, `run`). Solo
-      `libr`, nessun chiamante migrato. Verifica: build userland/testland/
-      kernel, gate invariato 40/40 (il modulo compila ma nessuno lo usa
-      ancora — rete di sicurezza come la Fase 13).
-- [ ] **Passo 2 — test t41/t42** (suite 40/40 → 42/42). t41: `block_on` +
+- [x] **Passo 1 — `libr::task`** (Future `WaitReply`/`RecvMsg`, tratto
+      `Receivable`, Waker no-op, `block_on`, `run` const-generic). Solo
+      `libr`, nessun chiamante migrato. Verifica: build userland/testland,
+      gate invariato 40/40 (rete di sicurezza come la Fase 13).
+- [x] **Passo 2 — test t41/t42** (suite 40/40 → 42/42). t41: `block_on` +
       echo async verso helper `MODE_SRV` (reply routing per req_id). t42:
       `run()` con 2 task concorrenti + path morte server (`ServerDied`).
       Aggiornare run-tests.sh/AGENTS/docs-testing come nelle fasi passate.
