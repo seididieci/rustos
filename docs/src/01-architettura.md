@@ -121,12 +121,15 @@ boot, percorso d'avvio interamente sotto controllo.
 
 ## Protezione memoria
 
-Strategia identity map + bit U/S (ADR-0005 §2):
+Strategia higher-half + direct map + bit U/S (ADR-0005 §2 come principio,
+ADR-0020 per l'implementazione):
 
 ```
-Lineare == Fisico per tutto lo spazio basso.
+Kernel a -2G+1M (VMA alta, LMA 1M); direct map [0, 64G) a pagine 2M.
+PML4[0] = 0 a runtime: il basso canonico e' libero (NULL faulta).
 Pagine kernel: PTE.U/S = 0 (supervisor) → ring 3 riceve #PF se le tocca.
-Ogni processo avrà la propria PML4 (Fase 5+).
+Ogni processo ha la propria PML4 (copia delle entry alte del kernel).
+Il basso libero ospita le mappe utente (mmap, Fase M0).
 ```
 
 ## Flusso tipico di una syscall nel progetto maturo

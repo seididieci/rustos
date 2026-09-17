@@ -5,8 +5,9 @@
 //! U=0 → non accessibili da ring 3) e mappa una regione user dedicata nella
 //! fascia alta (`USER_BASE`), con i propri livelli e PTE `USER_ACCESSIBLE`.
 //!
-//! Nota: kernel resta identity map (bassa); il higher-half e' rimandato a una
-//! fase futura (ADR-0005 / docs/03-memory.md).
+//! Il kernel e' higher-half (ADR-0020, Fase HH): PML4[0] = 0 a runtime, il
+//! basso canonico ospita le mappe utente (Fase M0). Dettagli in
+//! `docs/04-memory.md`.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 

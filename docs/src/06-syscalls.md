@@ -20,8 +20,9 @@ system in questa fase).
 - [x] **6.2 — Entry Ring 3**: frame CPU user (`CS/SS` RPL 3, `RSP` user, `RIP` entry) + trampoline
       `iretq`; primo processo (stub `jmp $` in `user_stub.rs`) gira in ring 3 e viene preemptato dal
       timer. *Verifica*: uptime prosegue mentre userdemo busy-loppa in ring 3. ✅ completata
-      (nota: `USER_BASE` deve avere pml4 index ≠ 0 — `0x0000_4000_0000_0000` — altrimenti collide con
-      l'identity map del kernel a PML4[0]).
+      (nota storica: `USER_BASE` con pml4 index ≠ 0 per non collidere con
+      l'identity map del kernel a PML4[0] — oggi `PML4[0] = 0` a runtime e il
+      basso ospita le mappe utente (Fase M0, ADR-0020), ma l'indice resta).
 - [x] **6.3 — Meccanismo syscall/sysret**: MSR `STAR`/`LSTAR`/`SFMASK` + `EFER.SCE`; entry assembly
       con salvataggio/ripristino RSP; handler base `getpid`/`write`/`exit`. *Verifica*: un
       processo user chiama una syscall e il kernel risponde. ✅ completata
@@ -44,8 +45,9 @@ system in questa fase).
         `rust_begin_unwind` (panic handler) prima di `_start` e il boot eseguirebbe il panic.
 
 **Scelte di dettaglio**: spazio utente in una regione virtuale alta canonica (es.
-`0x0000_4000_0000_0000`, pml4 index 128, bit 47=0) per non collidere con la identity map
-bassa del kernel; un solo core → variabili kernel globali per
+`0x0000_4000_0000_0000`, pml4 index 128, bit 47=0) — all'epoca per non collidere
+con la identity map bassa del kernel (oggi `PML4[0] = 0` a runtime, ADR-0020);
+un solo core → variabili kernel globali per
 lo stato durante syscall/sysret (una struct `PerCpu` **raggiunta via `rip`-relative**,
 senza `swapgs`); la demo e' un processo aggiuntivo schedulato accanto
 a keyboard/uptime/idle.
@@ -198,6 +200,8 @@ extern "C" fn syscall_handler() -> i64 {
 | `spawn_image` | 38 | Come `spawn` ma dal binario in memoria del chiamante (servizi da disco, Fase 21) |
 | `map_physical` | 21 | Mappa pagine fisiche nello spazio user (Fase 8.2) |
 | `get_ticks` | 22 | Ritorna il contatore PIT corrente (Fase 8.3) |
+| `mmap` | 39 | Mappa anonima privata RW nel basso canonico (Fase M0): hint o scelta kernel |
+| `munmap` | 40 | Smappa VMA intere (Fase M0, niente split) |
 
 `spawn(name_ptr, name_len)` (Fase 8.1 + 13) crea un nuovo processo a partire dal
 binario user embedded il cui nome combacia con `name` (tabella `NAMED_BINARIES`

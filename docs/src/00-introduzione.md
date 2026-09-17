@@ -99,7 +99,7 @@ velordor/
 | 1 | Bare metal Hello World (VGA) + boot PVH | ✅ Completata |
 | 2 | Memory Map (PVH) + GDT/IDT | ✅ Completata |
 | 3 | Interrupt hardware (PIC/PIT/kbd) | ✅ Completata |
-| 4 | Frame allocator + heap kernel (dinamico, fino a ~109 GiB) | ✅ Completata |
+| 4 | Frame allocator + heap kernel (dinamico; direct map 64G da Fase HH) | ✅ Completata |
 | 5 | Processi + scheduler preemptive | ✅ Completata |
 | 6 | User mode (ring 3) + syscall | ✅ Completata |
 | 7 | IPC sincrona send/recv ⭐ | ✅ Completata |
@@ -118,6 +118,10 @@ velordor/
 | 20 | FAT32 scrivibile (persistenza, ADR-0016) | ✅ Completata |
 | 21 | Servizi caricati da disco via `spawn_image` (ADR-0017) | ✅ Completata |
 | 22 | Detach dalla cascata di morte (emendamento ADR-0010 §6) | ✅ Completata |
+| P0/P1/P2 | Baseline + ottimizzazioni throughput (PIO multi-settore, cache settoriale write-through) | ✅ Completata |
+| async | `async`/`await` in `libr` sopra IPC asincrona (ADR-0019, 4 passi) | ✅ Completata |
+| HH | Higher-half kernel + direct map (ADR-0020: H0/H1/H2) | ✅ Completata |
+| M0 | `mmap` anonimo nel basso canonico (payoff higher-half) | ✅ Completata |
 
 ## Risorse
 
