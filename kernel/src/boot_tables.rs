@@ -37,10 +37,27 @@ pub const PDPT_K_ADDR: u64 = 0x0009_4000;
 pub const PD_K_ADDR: u64 = 0x0009_5000;
 /// PDPT della direct map (32 entry -> 32 PD da 1G = 64G statici, pagine 2M).
 pub const PDPT_DIRECT_ADDR: u64 = 0x0009_6000;
-/// PD della direct map: 32 tabelle contigue (128 KiB) da 0x97000.
-pub const PD_DIRECT_ADDR: u64 = 0x0009_7000;
+/// PD della direct map: 32 tabelle contigue (128 KiB).
+/// LMA FISSA a 16M (sezione `.tables_high`, vedi linker.ld): sotto 1M solo
+/// 0x90000-0x9FC00 e' RAM (il resto e' buco PCI/VGA: letture 0xFF, osservato
+/// con PT_VGA a 0xB7000). 16M e' oltre heap+bitmap per ogni config testata
+/// (<= 32G; max 64G) ed e' verificata RAM da `phys_mem::init` (fail-loud).
+/// La pagina scratch dei test (MAP_TEST_PHYS) sta ALTROVE per invariante
+/// compilata (vedi sotto): scriverci sopra le PD fu il fault ritardato di H2.
+pub const TABLES_HIGH_START: u64 = 0x100_0000;
+/// Pagine `.tables_high`: 32 PD + 1 PT VGA.
+pub const TABLES_HIGH_PAGES: u64 = 33;
+/// Fine (esclusiva) dell'area tabelle alte.
+pub const TABLES_HIGH_END: u64 = TABLES_HIGH_START + TABLES_HIGH_PAGES * 4096;
+pub const PD_DIRECT_ADDR: u64 = 0x100_0000;
+/// PT dello split VGA (stessa sezione, dopo le 32 PD).
+pub const PT_VGA_ADDR: u64 = 0x100_0000 + 32 * 4096;
 /// PD statiche della direct map (ognuna 1G a pagine 2M).
 pub const DIRECT_STATIC_PDS: usize = 32;
+/// Indice 4K della pagina VGA dentro PT_VGA (0xB8000 / 4K).
+const VGA_PT_IDX: usize = 0xB8;
+/// Bit UC per PTE 4K con PAT di reset (PCD|PWT = indice PAT 3 = UC).
+const PAGE_UC: u64 = 0x018;
 
 const PRESENT_WRITABLE: u64 = 0x003;
 /// Bit PS: large page (2M nel PD, 1G nel PDPT).
@@ -155,9 +172,12 @@ pub static BOOT_PDPT_DIRECT: PageTable = {
 };
 
 /// PD della direct map: 32 tabelle (128 KiB contigui) — phys [0, 64G) a
-/// pagine 2M. Oltre i 64G: `vmm::init` abortisce fail-loud (le configurazioni
-/// di test usano <= 32G; alzare il tetto = piu' PD statiche, meccanico).
-#[unsafe(link_section = ".pagetables.pd_direct")]
+/// pagine 2M. ECCEZIONE: entry [0][0] (primi 2M, che contengono il buffer
+/// VGA) punta a PT_VGA invece che a una large page: la direct map e' WB, ma
+/// l'MMIO VGA vuole UC (su QEMU invisibile, su HW reale letture stale).
+/// Oltre i 64G: `vmm::init` abortisce fail-loud (le configurazioni di test
+/// usano <= 32G; alzare il tetto = piu' PD statiche, meccanico).
+#[unsafe(link_section = ".tables_high.pd_direct")]
 #[unsafe(no_mangle)]
 pub static BOOT_PD_DIRECT: [PageTable; DIRECT_STATIC_PDS] = {
     let mut arr = [PageTable([0u64; 512]); DIRECT_STATIC_PDS];
@@ -165,13 +185,46 @@ pub static BOOT_PD_DIRECT: [PageTable; DIRECT_STATIC_PDS] = {
     while j < DIRECT_STATIC_PDS {
         let mut k = 0u64;
         while k < 512 {
-            arr[j].0[k as usize] = ((j as u64 * 512 + k) << 21) | PRESENT_WRITABLE | LARGE_PAGE;
+            if j == 0 && k == 0 {
+                // Split VGA: PT 4K al posto della large page.
+                arr[j].0[k as usize] = PT_VGA_ADDR | PRESENT_WRITABLE;
+            } else {
+                arr[j].0[k as usize] = ((j as u64 * 512 + k) << 21) | PRESENT_WRITABLE | LARGE_PAGE;
+            }
             k += 1;
         }
         j += 1;
     }
     arr
 };
+
+/// PT dello split VGA (H2): 512 pagine 4K per VMA [DIRBASE, +2M) -> phys
+/// [0, 2M), tutte WB tranne la pagina del buffer (UC). Una pagina da 4K,
+/// statica, zero codice: il prezzo dell'MMIO corretto su HW reale.
+#[unsafe(link_section = ".tables_high.pt_vga")]
+#[unsafe(no_mangle)]
+pub static BOOT_PT_VGA: PageTable = {
+    let mut t = [0u64; 512];
+    let mut i = 0u64;
+    while i < 512 {
+        if (i as usize) == VGA_PT_IDX {
+            t[i as usize] = (i << 12) | PRESENT_WRITABLE | PAGE_UC;
+        } else {
+            t[i as usize] = (i << 12) | PRESENT_WRITABLE;
+        }
+        i += 1;
+    }
+    PageTable(t)
+};
+
+/// Stack alto di boot (H2): 16 KiB in .bss (VMA alta, finestra PD_K).
+/// Lo stub vi commuta RSP subito dopo il jump-high, prima di `rust_main`:
+/// dopo l'unmap di PML4[0] lo stack LOW di transizione non e' piu' mappato.
+#[repr(C, align(16))]
+struct BootStack([u8; 16384]);
+
+#[unsafe(no_mangle)]
+pub static BOOT_HIGH_STACK: BootStack = BootStack([0; 16384]);
 
 /// Selettori della GDT di boot.
 pub const SEL_CODE64: u16 = 0x08;

@@ -84,11 +84,27 @@ pub extern "C" fn rust_main(boot_info_phys: u64) -> ! {
         }
     }
 
+    // H2: il basso canonico finisce qui. Da ora solo alto + direct map:
+    // un NULL-deref faulta invece di leggere spazzatura (lo stack e' gia'
+    // alto dallo stub; nessun processo user esiste ancora, quindi nessun
+    // walk sui PML4 vivi — i futuri ereditano il PML4 pulito).
+    vmm::unmap_low();
+    serial_println!("[boot] low unmapped: solo alto + direct map");
+
     gdt::init();
     interrupts::init();
     pic::init();
     pit::init();
     syscall::init();
+
+    // H2 (solo build `selftest`): prova del basso libero PRIMA di qualunque
+    // preemption. Il thread di boot non riprende piu' dopo il primo tick
+    // (magra pre-esistente scoperta in H2: tutto il codice post-BOOT_OK in
+    // rust_main — Welcome, selftests(), halt loop — non esegue mai; vedi
+    // ADR-0020), quindi la prova regina vive qui, single-thread garantito:
+    // IDT installata (riga sopra) + unmap gia' fatto = fault pulito.
+    #[cfg(feature = "selftest")]
+    selftest_low_unmap();
 
     let info = unsafe { boot_info::at(boot_info_phys) };
     assert_eq!(
@@ -170,6 +186,12 @@ pub extern "C" fn rust_main(boot_info_phys: u64) -> ! {
 
 #[cfg(feature = "selftest")]
 fn selftests() {
+    // NOTA (H2): questo corpo non esegue mai — il thread di boot viene
+    // deschedulato per sempre al primo tick (pre-esistente, vedi ADR-0020:
+    // feature `selftest` marcita in silenzio, Welcome mai mostrata). La prova
+    // H2 vive in `selftest_low_unmap()` (pre-preemption). Il resto sotto resta
+    // come documentazione del vecchio harness finche' il ciclo vita del thread
+    // di boot non viene ridisegnato (follow-up scheduler, fuori H2).
     use x86_64::instructions::interrupts::int3;
 
     serial_println!("[test] int3 -> atteso #BREAKPOINT e continuazione");
@@ -212,14 +234,25 @@ fn selftests() {
     phys_mem::free(f2);
     serial_println!("[test] frame liberati, liberi di nuovo = {}", phys_mem::free_frames());
     serial_println!("[test] frame alloc ok");
+}
 
-    serial_println!(
-        "[test] lettura oltre il tetto mappa ({:#x}) -> atteso #PAGE FAULT",
-        vmm::mapped_max() + 0x200000
-    );
-    let bad = (vmm::mapped_max() + 0x200000) as *const u64;
-    let _ = unsafe { bad.read_volatile() };
-    serial_println!("[test] ERRORE: la lettura non doveva riuscire");
+/// H2, solo build `selftest`: prova regina del basso libero, eseguita qui
+/// (pre-preemption, vedi nota sopra) invece che in `selftests()` (mai
+/// raggiunto). Prima l'invariante strutturale (`PML4[0] == 0` dopo l'unmap),
+/// poi la prova comportamentale: leggere NULL deve faultare. L'handler
+/// certifica il PASS e congela qui per disegno (niente chirurgia sul RIP di
+/// ritorno): la build selftest e' una build di prova, verificata via log.
+#[cfg(feature = "selftest")]
+fn selftest_low_unmap() {
+    let pml4_0 = unsafe {
+        core::ptr::read_volatile(crate::addr::phys_to_virt(crate::boot_tables::PML4_ADDR) as *const u64)
+    };
+    assert_eq!(pml4_0, 0, "PML4[0] != 0: identity ancora presente");
+    serial_println!("[test] PML4[0] == 0 ok");
+    serial_println!("[test] lettura NULL -> atteso #PAGE FAULT");
+    crate::interrupts::EXPECT_NULL_PF.store(true, core::sync::atomic::Ordering::SeqCst);
+    let _ = unsafe { (0 as *const u64).read_volatile() };
+    serial_println!("[test] ERRORE: la lettura NULL non doveva riuscire");
 }
 
 #[panic_handler]

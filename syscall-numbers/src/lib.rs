@@ -176,8 +176,12 @@ pub const RIGHTS_ALL: u32 = 0xFF;
 // ── Costanti condivise kernel/userland ─────────────────────────────────────
 // Pagina fisica scratch riservata dal kernel all'avvio (phys_mem::reserve):
 // usata dalla test suite per verificare `map_physical` (aliasing write/read)
-// senza toccare memoria di altri processi. 16 MiB: sempre RAM nei config test.
-pub const MAP_TEST_PHYS: u64 = 0x1_000000;
+// senza toccare memoria di altri processi. 64M: oltre immagine, heap, bitmap
+// e tabelle statiche (16M) in ogni config; sempre RAM nei config test.
+// (Prima a 16M: collideva con le tabelle `.tables_high` dell'higher-half H2
+// — t12 scriveva pattern sopra le PD direct → fault ritardato. Mai piu':
+// invariante di non-sovrapposizione verificata dal compilatore in kernel.)
+pub const MAP_TEST_PHYS: u64 = 0x4_000000;
 pub const MAP_TEST_FRAMES: u64 = 1;
 
 /// Servizi di sistema raggiungibili per nome (ADR-0008, IPC per nome).

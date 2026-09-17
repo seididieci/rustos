@@ -102,9 +102,12 @@ pub fn init(
         }
     }
 
-    // Tabelle di boot (H1: PML4 + PDPT/PD/PT low + PDPT_K/PD_K +
-    // PDPT_DIRECT + 32 PD direct = 39 pagine) in 0x90000–0x100000.
-    // LMA fisse (CR3 phys); la VMA e' alta ma la contabilita' e' in PHYS.
+    // Tabelle base di boot (PML4 + PDPT/PD/PT low + PDPT_K/PD_K +
+    // PDPT_DIRECT = 7 pagine) in 0x90000–0x97000; la riserva copre fino a
+    // 0x100000 (buco PCI/VGA oltre 0x9FC00: mai RAM, mai allocato comunque).
+    // Le PD direct + PT_VGA sono a LMA 16M (`.tables_high`, oltre heap+bitmap
+    // in ogni config): verificate RAM qui sotto, poi riservate.
+    // LMA fisse per CR3; contabilita' sempre in PHYS.
     let pt_start = 0x90000 / FRAME_SIZE as usize;  // frame 36
     let pt_end = 0x100000 / FRAME_SIZE as usize;    // frame 256
     for f in pt_start..pt_end {
@@ -112,6 +115,39 @@ pub fn init(
             mark_used(f);
             FREE.fetch_sub(1, Ordering::Relaxed);
         }
+    }
+
+    // PD direct + PT VGA a LMA 16M (`.tables_high`, 33 pagine = 132 KiB):
+    // devono cadere in RAM vera (il buco PCI/VGA sotto 1M ha insegnato).
+    // Fail-loud se la memmap non le contiene.
+    use crate::boot_tables::{TABLES_HIGH_END, TABLES_HIGH_PAGES, TABLES_HIGH_START};
+    // Invariante anti-collisione (H2): la scratch dei test non deve MAI
+    // sovrapporsi alle tabelle (t12 ci scriveva pattern sopra le PD direct).
+    // Verificata dal compilatore: chi sposta una delle due e rompe l'altra
+    // non compila.
+    const _: () = assert!(
+        syscall_numbers::MAP_TEST_PHYS + syscall_numbers::MAP_TEST_FRAMES * 4096 <= TABLES_HIGH_START
+            || syscall_numbers::MAP_TEST_PHYS >= TABLES_HIGH_END,
+        "MAP_TEST_PHYS si sovrappone alle tabelle .tables_high"
+    );
+    {
+        let mut ok = false;
+        for entry in memmap {
+            if entry.kind == crate::boot_info::MEM_RAM
+                && entry.addr <= TABLES_HIGH_START
+                && entry.addr + entry.size >= TABLES_HIGH_END
+            {
+                ok = true;
+                break;
+            }
+        }
+        if !ok {
+            crate::serial_println!("[pmm] TABELLE 16M fuori RAM: direct map inutilizzabile");
+            loop {
+                unsafe { core::arch::asm!("hlt") };
+            }
+        }
+        reserve(TABLES_HIGH_START, TABLES_HIGH_PAGES * 4096);
     }
 
     // Bitmap stessa (contabilita' in PHYS)
