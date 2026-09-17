@@ -998,6 +998,25 @@ rustos/
         su TUTTE le op dopo: ramfs 25 µs→2 ms). Cura: hot path FAT zero-alloc
         (parse incrementale, run stack ≤8, risposta stack); regola "mai heap
         nel per-op dei server". Diagnostica `libr::heap::heap_stats` mantenuta.
+  - [x] Passo A (stesso algoritmo, cliff rimosso): `push_free` inserisce
+        ORDINATO per indirizzo e fonde solo coi vicini fisici — free O(n),
+        mai O(n²); invariante "lista sempre coalescente" identica, `first_fit`
+        invariato. Nessun cambio di semantica di allocazione.
+  - [x] Passo C2 (`libr::scratch`, bump + `reset()`, backing `sbrk` dedicato
+        fuori free-list, mai liberato, OOM → `None`; align ≤ 8 come heap;
+        `alloc_slice` con lifetime di output (coercizione `'static → 's`,
+        vincolo `T: 's`) cosi' i contenuti possono prendere in prestito dai
+        mount/path senza richiedere `T: 'static`). Migrati in userfs (con UN
+        `reset()` in testa al loop; borrow tutti entro l'iterazione): payload
+        IPC (il temp piu' grosso, fino a 4096 B/chunk), split path in
+        `find`/`find_or_create` (two-pass + slice), check diritti via vista
+        borrowed `normalize_sub_view` (zero alloc, owned resta per gli store),
+        `synth`/`fsmount_children` → `StrList` in prestito dai mount (+
+        adattamento `union`). Restano heap (corretto, A-cheapened): `list_dir`
+        del parser, `readdir` ramfs, response `buf`, nomi long-lived
+        nell'albero/mount table. Altri server on demand.
+  - Regola aggiornata: temporanei per-op su stack o scratch, mai sullo heap
+        globale (P1.2 vale ancora per chi non usa scratch).
   - Verifica: gate 5/5 + 7/7 + 40/40 + shell 29/29 (t36 condizionale) KVM,
         bench 3 run stabili, tabella P1 in `docs/src/13-performance.md`.
 - [x] Fase P2/C1: cache settoriale write-through in userdisk (ADR-0018)

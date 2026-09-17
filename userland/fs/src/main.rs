@@ -139,16 +139,18 @@ fn resolve_mount<'a>(path: &'a str, mounts: &[Mount]) -> Option<(u64, &'a str)> 
 /// Root INCLUSA (Fase 18.1-ter: union con dedupe nel chiamante, mai shadow
 /// del ramfs): `readdir("/")` → ["dev", …]. Ritorna None se nessun prefix sta
 /// sotto `path`. Nessun IPC: la Mount table basta (single source gia' qui).
-fn synth_children(mounts: &[Mount], path: &str) -> Option<Vec<String>> {
+/// Nomi presi in prestito dai prefix (mai heap: vivono nella Mount table oltre
+/// la richiesta); il contenitore e' scratch (vita = iterazione corrente).
+fn synth_children<'a>(mounts: &'a [Mount], path: &str) -> Option<StrList<'a>> {
     let t = path.trim_matches('/');
-    let mut out: Vec<String> = Vec::new();
+    let mut out = StrList::with_capacity(mounts.len())?;
     for m in mounts {
         let p = m.prefix.trim_start_matches('/');
         if t.is_empty() {
             // Root: primo componente di ogni prefix ("dev" da "/dev/null").
             let child = p.split('/').next().unwrap_or("");
-            if !child.is_empty() && !out.iter().any(|e| e == child) {
-                out.push(String::from(child));
+            if !child.is_empty() && !out.contains(child) {
+                out.push(child);
             }
             continue;
         }
@@ -158,8 +160,8 @@ fn synth_children(mounts: &[Mount], path: &str) -> Option<Vec<String>> {
         if p.starts_with(t) && p.as_bytes().get(t.len()) == Some(&b'/') {
             let rest = &p[t.len() + 1..];
             let child = rest.split('/').next().unwrap_or("");
-            if !child.is_empty() && !out.iter().any(|e| e == child) {
-                out.push(String::from(child));
+            if !child.is_empty() && !out.contains(child) {
+                out.push(child);
             }
         }
     }
@@ -171,14 +173,62 @@ fn synth_children(mounts: &[Mount], path: &str) -> Option<Vec<String>> {
     }
 }
 
+/// Lista scratch di `&str` (backing libr, vita = iterazione corrente del
+/// loop). Capacita' esatta a monte (ogni mount contribuisce al massimo un
+/// figlio: il dedupe rende i push ≤ cap): `push` oltre cap e' no-op difensivo
+/// (mai heap di fallback — i bound sono strutturali, come i ring).
+/// Il contenitore e' un raw pointer (non un borrow `'static`): `as_slice`
+/// restituisce un borrow legato a `&self`, che il compilatore traccia
+/// nell'iterazione — meglio di un `&'static` che mentirebbe oltre il reset.
+struct StrList<'a> {
+    ptr: *mut &'a str,
+    cap: usize,
+    len: usize,
+}
+
+impl<'a> StrList<'a> {
+    fn with_capacity(cap: usize) -> Option<Self> {
+        // `'s = 'a`: il borrow del contenitore vive quanto i contenuti.
+        let buf = libr::scratch::alloc_slice::<'a, &'a str>(cap)?;
+        Some(Self { ptr: buf.as_mut_ptr(), cap, len: 0 })
+    }
+
+    fn push(&mut self, s: &'a str) {
+        if self.len < self.cap {
+            unsafe {
+                *self.ptr.add(self.len) = s;
+            }
+            self.len += 1;
+        }
+    }
+
+    fn contains(&self, s: &str) -> bool {
+        self.as_slice().iter().any(|e| *e == s)
+    }
+
+    fn sort(&mut self) {
+        unsafe {
+            core::slice::from_raw_parts_mut(self.ptr, self.len).sort();
+        }
+    }
+
+    fn as_slice(&self) -> &[&'a str] {
+        unsafe { core::slice::from_raw_parts(self.ptr as *const _, self.len) }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
 /// Figli immediati di `path` tra i target dei mount locali (Fase 18.1-ter,
 /// speculare a `synth_children`): i target (`fat`, `mnt`, …) sono mount point
 /// e compaiono nei listing (`ls /` → ["fat", …]). Include gli inattivi: il
 /// mount point esiste, l'accesso fallisce lazy come oggi. None se nessun
-/// target sta sotto `path`.
-fn fsmount_children(mounts: &[FsMount], path: &str) -> Option<Vec<String>> {
+/// target sta sotto `path`. Come `synth_children`: nomi in prestito, scratch.
+fn fsmount_children<'a>(mounts: &'a [FsMount], path: &str) -> Option<StrList<'a>> {
     let t = path.trim_matches('/');
-    let mut out: Vec<String> = Vec::new();
+    let mut out = StrList::with_capacity(mounts.len())?;
     for m in mounts {
         let p = m.target.as_str();
         let rest = if t.is_empty() {
@@ -193,8 +243,8 @@ fn fsmount_children(mounts: &[FsMount], path: &str) -> Option<Vec<String>> {
         };
         if let Some(rest) = rest {
             let child = rest.split('/').next().unwrap_or("");
-            if !child.is_empty() && !out.iter().any(|e| e == child) {
-                out.push(String::from(child));
+            if !child.is_empty() && !out.contains(child) {
+                out.push(child);
             }
         }
     }
@@ -216,13 +266,20 @@ fn union_mount_children(
     mounts_fat: &[FsMount],
     path: &str,
 ) -> Vec<String> {
-    for extra in synth_children(mounts, path)
-        .into_iter()
-        .flatten()
-        .chain(fsmount_children(mounts_fat, path).into_iter().flatten())
-    {
-        if !entries.iter().any(|e| e == &extra) {
-            entries.push(extra);
+    // Extra in prestito dalle tabelle (scratch): solo i nomi dei mount point
+    // restano owned (pochi, solo nei listing che contengono mount — es. `ls /`).
+    if let Some(extra) = synth_children(mounts, path) {
+        for e in extra.as_slice() {
+            if !entries.iter().any(|x| x.as_str() == *e) {
+                entries.push(String::from(*e));
+            }
+        }
+    }
+    if let Some(extra) = fsmount_children(mounts_fat, path) {
+        for e in extra.as_slice() {
+            if !entries.iter().any(|x| x.as_str() == *e) {
+                entries.push(String::from(*e));
+            }
         }
     }
     entries.sort();
@@ -601,7 +658,16 @@ impl RamFs {
         if path.is_empty() || path == "/" {
             return None;
         }
-        let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+        // Componenti in scratch (mai heap: 1 alloc per lookup prima). Two-pass:
+        // conta poi riempi — il path e' minuscolo, la doppia scansione e'
+        // trascurabile contro una free-list round-trip.
+        let t = path.trim_start_matches('/');
+        let n = t.split('/').count();
+        let parts_buf = libr::scratch::alloc_slice::<&str>(n)?;
+        for (i, comp) in t.split('/').enumerate() {
+            parts_buf[i] = comp;
+        }
+        let parts = &parts_buf[..n];
         let mut current_dir = &self.root;
         for (i, &part) in parts.iter().enumerate() {
             let node = current_dir.get(part)?;
@@ -618,7 +684,15 @@ impl RamFs {
 
     /// Trova o crea un nodo per path (crea le directory intermedie).
     fn find_or_create(&mut self, path: &str) -> Option<&mut FsNode> {
-        let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+        // Componenti in scratch come `find` (i `String::from` sotto restano
+        // heap: vivono nell'albero ramfs oltre la richiesta, mai scratch).
+        let t = path.trim_start_matches('/');
+        let n = t.split('/').count();
+        let parts_buf = libr::scratch::alloc_slice::<&str>(n)?;
+        for (i, comp) in t.split('/').enumerate() {
+            parts_buf[i] = comp;
+        }
+        let parts = &parts_buf[..n];
         if parts.is_empty() || parts[0].is_empty() {
             return None;
         }
@@ -922,6 +996,13 @@ fn rights_subtree<'a>(rights: &'a BTreeMap<u64, ChanRights>, chan: u64) -> &'a s
 /// Normalizza subtree/path ("//fat//" → "fat", "/" o "" → "").
 fn normalize_sub(path: &str) -> String {
     String::from(path.trim().trim_matches('/'))
+}
+
+/// Vista normalizzata (solo trim, ZERO alloc): per i CHECK per-op nel choke
+/// point (ogni op con path la attraversa). Per gli STORE nella tabella diritti
+/// (long-lived oltre la richiesta) resta `normalize_sub` owned.
+fn normalize_sub_view(path: &str) -> &str {
+    path.trim().trim_matches('/')
 }
 
 /// true se il path normalizzato `p` e' dentro il subtree `sub` ("" = root).
@@ -1728,6 +1809,10 @@ pub extern "C" fn _start() -> ! {
             Ok(m) => m,
             Err(_) => continue,
         };
+        // Scratch arena per-op (libr): TUTTI i borrow sotto muoiono entro
+        // questa iterazione (handler sincroni, reply prima del prossimo
+        // recv). Mai tenere `&` scratch oltre il fondo del loop.
+        libr::scratch::reset();
 
         // Il client e' identificato dal canale da cui arriva la richiesta
         // (ADR-0008): ogni client ha il proprio canale verso Fs. La reply e'
@@ -1920,30 +2005,41 @@ pub extern "C" fn _start() -> ! {
         // payload dichiarato. req_ring_read_payload avanza la tail di
         // (20 + expect); eventuali byte successivi (coalescenza) restano per
         // la loro notifica invece di essere inghiottiti.
-        let mut payload = vec![0u8; expect];
-        req_ring_read_payload(&mut payload, expect);
+        // Il payload vive in scratch (mai heap: e' il temp per-op piu' grosso,
+        // fino a 4096 B per chunk di write; consumato entro l'iterazione).
+        // `expect` ≤ 4096 per il bound sopra: sta nel backing iniziale.
+        let payload: &mut [u8] = match libr::scratch::alloc_bytes(expect) {
+            Some(p) => p,
+            None => {
+                // OOM vera sullo scratch: come frame impossibile (mai wedge).
+                req_resync();
+                let _ = libr::reply(0, ERR, 0);
+                continue;
+            }
+        };
+        req_ring_read_payload(payload, expect);
 
         // Diritti per-canale, check subtree (Fase 17): solo le op con path.
         // Gli fd restano capability pure (read/write/close non ricontrollano
         // il path aperto). UTF-8 invalido o spec malformata: passa oltre, lo
         // rifiuta l'handler (i diritti non decidono la validita').
         let subtree_ok = match op_tag {
-            R_OPEN | R_MKDIR | R_READDIR | R_DELETE | R_STAT => match core::str::from_utf8(&payload) {
-                Ok(p) => within_subtree(rights_subtree(&rights, chan), &normalize_sub(p)),
+            R_OPEN | R_MKDIR | R_READDIR | R_DELETE | R_STAT => match core::str::from_utf8(payload) {
+                Ok(p) => within_subtree(rights_subtree(&rights, chan), normalize_sub_view(p)),
                 Err(_) => true,
             },
-            R_MOUNT => match core::str::from_utf8(&payload) {
+            R_MOUNT => match core::str::from_utf8(payload) {
                 Ok(spec) => match spec.split_once('\0') {
                     Some((_, target)) => within_subtree(
                         rights_subtree(&rights, chan),
-                        &normalize_sub(target.trim_end_matches('\0')),
+                        normalize_sub_view(target.trim_end_matches('\0')),
                     ),
                     None => true,
                 },
                 Err(_) => true,
             },
-            R_UMOUNT => match core::str::from_utf8(&payload) {
-                Ok(t) => within_subtree(rights_subtree(&rights, chan), &normalize_sub(t)),
+            R_UMOUNT => match core::str::from_utf8(payload) {
+                Ok(t) => within_subtree(rights_subtree(&rights, chan), normalize_sub_view(t)),
                 Err(_) => true,
             },
             _ => true,

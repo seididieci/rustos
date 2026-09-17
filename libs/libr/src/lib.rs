@@ -43,6 +43,11 @@ pub use syscall_numbers::{DISK_CLOSE, DISK_HELLO, DISK_OPEN, DISK_READ, DISK_RES
 /// duplicare codice.
 pub mod heap;
 
+/// Scratch arena per-op (bump + `reset()`, backing `sbrk` dedicato fuori
+/// free-list): per i temporanei con lifetime = una richiesta. Mai heap
+/// globale nei percorsi per-op (regola P1.2 aggiornata).
+pub mod scratch;
+
 /// Esegue una syscall a 4 argomenti e ne restituisce il risultato in `rax`.
 ///
 /// # Safety
