@@ -59,9 +59,11 @@ verde al passo precedente.
       echo async verso helper `MODE_SRV` (reply routing per req_id). t42:
       `run()` con 2 task concorrenti + path morte server (`ServerDied`).
       Aggiornare run-tests.sh/AGENTS/docs-testing come nelle fasi passate.
-- [ ] **Passo 3 — client reale**: wrapper `fs_read_async(fd,…).await` sopra
-      `read_async`/`fs_collect` invariati (guard `FS_PENDING` invariata).
-      Prova che la sintassi scala al path FS senza toccare il protocollo.
+- [x] **Passo 3 — client reale**: `FsRead` (compone `WaitReply::on_chan`:
+      invio `read_async` a costruzione, attesa via router, `fs_collect_msg`
+      non-bloccante al poll; stessi guard/formato/chan-filter). Copertura
+      estendendo t20 (stessa lettura via collect manuale e via wrapper,
+      confronto byte; fd riaperto: la prima lettura avanza la posizione).
 - [ ] **Passo 4 — server pilota `userdisk`, SOLO registrazione**:
       `FsReg::{step,collect_if_mine}` → `async fn register(prefixes)` via
       `block_on` a startup, riusabile sul reset da `EXIT_NOTIFY`. Stessi log,

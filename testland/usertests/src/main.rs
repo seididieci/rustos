@@ -713,10 +713,33 @@ fn t_fs_async() -> bool {
     let mut buf = [0u8; 128];
     let n = libr::fs_collect(req, &mut buf, 128);
     let _ = libr::close(fd);
-    if n as usize >= HELLO.len() && buf[..HELLO.len()] == *HELLO {
+    if !(n as usize >= HELLO.len() && buf[..HELLO.len()] == *HELLO) {
+        println!("[usertests] t_fs_async: collect n={} (atteso >= {})", n, HELLO.len());
+        return false;
+    }
+    // ADR-0019 Passo 3: stessa lettura via wrapper async `FsRead` (stesso
+    // file, fd riaperto perche' la prima lettura ha avanzato la posizione).
+    // Deve coincidere byte per byte con la collect manuale sopra.
+    let fd2 = libr::open("hello.txt", 0);
+    if fd2 < 0 {
+        println!("[usertests] t_fs_async: reopen hello.txt FAILED");
+        return false;
+    }
+    let mut buf2 = [0u8; 128];
+    let f = match libr::task::FsRead::new(fd2, &mut buf2, 128) {
+        Ok(f) => f,
+        Err(_) => {
+            println!("[usertests] t_fs_async: FsRead::new FAILED");
+            let _ = libr::close(fd2);
+            return false;
+        }
+    };
+    let n2 = libr::task::block_on(f);
+    let _ = libr::close(fd2);
+    if n2 == n && buf2[..HELLO.len()] == buf[..HELLO.len()] {
         true
     } else {
-        println!("[usertests] t_fs_async: collect n={} (atteso >= {})", n, HELLO.len());
+        println!("[usertests] t_fs_async: wrapper n2={} n={} (atteso uguali)", n2, n);
         false
     }
 }

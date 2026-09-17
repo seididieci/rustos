@@ -234,6 +234,28 @@ let m = libr::wait_reply(req)?;                    // blocca finche' arriva
   notify/relay/reply (event-driven). Dettagli in
   [ADR-0011](./adr/0011-userspace-keyboard-terminal.md).
 
+## async/await in `libr` (ADR-0019, sopra le syscall 33/34 invariate)
+
+Sintassi `async/await` (solo `core::future`) con **router centrale**: i task
+non chiamano mai `recv` direttamente — `block_on`/`run` sono gli unici a
+leggere dal canale e instradano per `req_id` (risposte → task proprietario,
+`EXIT_NOTIFY` → waiter secondo filtro canale). Risolve `UnexpectedMsg` per
+costruzione nel multi-task. Kernel invariato, reply implicita invariata.
+
+- **`WaitReply`** (come `wait_reply`/`wait_reply_chan`, ma `Future`):
+  `new(req)` accetta qualunque EXIT_NOTIFY, `on_chan(req, chan)` solo quelle
+  sul canale (stale scartate dal router, per FS).
+- **`block_on`** (1 task) e **`run<const N>`** (N task concorrenti, stack,
+  zero heap): ogni `recv` bloccante instrada prima del poll successivo.
+  Dominio reply-only + EXIT (richieste server in arrivo scartate, come
+  `wait_reply` le consuma e fallisce oggi).
+- **`FsRead`** (prova client reale): `read_async` all'invio (costruzione) +
+  attesa via router + `fs_collect_msg` al poll — stessi guard `FS_PENDING`,
+  stesso formato frame, stesso chan-filter di `fs_collect`. Copertura: t20
+  (stessa lettura via collect manuale e via wrapper, confronto byte).
+- Vincoli Fase 13 invariati (no mix sync/async, FIFO, FS 1-in-volo); t41
+  (`block_on` + echo) e t42 (`run` 2-task + `ServerDied`) in suite.
+
 ## Fase 14 — notifica unificata di morte + `wait_reply` con errore (ADR-0010)
 
 Quando un processo muore, **tutti i peer** dei suoi canali ricevono

@@ -1054,8 +1054,10 @@ rustos/
         Nessun chiamante migrato; gate invariato 40/40.
   - [x] Passo 2 — t41 (`block_on` + echo async) / t42 (`run` 2 task +
         `ServerDied`); suite → 42/42 (+ run-tests.sh/testing/docs).
-  - [ ] Passo 3 — `fs_read_async(...).await` sopra read_async/fs_collect
-        invariati (prova client reale, protocollo intatto).
+  - [x] Passo 3 — `FsRead` (compone `WaitReply::on_chan`, invio a
+        costruzione, collect non-bloccante al poll) sopra read_async/
+        fs_collect invariati (prova client reale, protocollo intatto);
+        copertura in t20 (doppia lettura, confronto byte).
   - [ ] Passo 4 — pilota userdisk SOLO registrazione (`FsReg` →
         `async fn register`, via `block_on`, riusabile su EXIT_NOTIFY);
         loop DISK/DEV intatto, copertura t32. Rewrite loop completo rimandato.
