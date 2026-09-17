@@ -311,6 +311,8 @@ nei test).
 | `FS_NOTIFY` | 0x32 | notifica operazione FS nel request ring |
 | `R_*` | 0x10-0x1B | op FS nei frame (`OPEN/READ/WRITE/CLOSE/READDIR/MKDIR/MOUNT/UMOUNT/DELETE/STAT/RIGHTS_*`) |
 | `DISK_*` | 0x50-0x55 | data-plane userfs↔userdisk (`HELLO/OPEN/READ/CLOSE/RESOLVE/WRITE`) |
+| `DEV_*` | 0x20-0x24 | op userfs↔driver (`OPEN/READ/WRITE/CLOSE/READDIR`; DocsD: prima duplicati in 6 file) |
+| `DEV_*` type (`w0` di `DEV_OPEN`) | 0-4 | `NULL/ZERO` (devfs), `KEYBOARD` (tty), `CONSOLE` (console), `KBD` (kbd) |
 | `EXIT_NOTIFY` | 0x7C | morte peer (kernel→tutti i peer, `w0` = code, `w1` = pid) |
 | `KBD_NOTIFY` | 0x40 | scancode pronti (userkbd→usertty) |
 | `IRQ_NOTIFY_KBD` | 0x41 | bridge interrupt→IPC (kernel→userkbd) |

@@ -29,19 +29,12 @@ use libr::println;
 // async non aspetta). Senza notify tty dovrebbe pompare in polling (sempre
 // Ready → dilution dello scheduler, vedi diagnosi t30 Fase 15).
 
-const DEV_OPEN: u64 = 0x20;
-const DEV_READ: u64 = 0x21;
-const DEV_WRITE: u64 = 0x22;
-const DEV_CLOSE: u64 = 0x23;
-const DEV_READDIR: u64 = 0x24;
+// ── IPC tags + device type (DocsD: single source in `syscall-numbers`) ─
+use libr::{DEV_CLOSE, DEV_KBD, DEV_OPEN, DEV_READ, DEV_READDIR, DEV_WRITE};
 
 /// Notify a tty: scancode in attesa (w1 = quanti, hint).
 /// Single source in `syscall-numbers` (DocsB), via `libr`.
 use libr::KBD_NOTIFY;
-
-// ── Device types (w0 di DEV_OPEN, deve combaciare con `dev_type` in userfs) ─
-
-const DEV_KBD: u64 = 4;
 
 // ── Ring I/O (Fase 10.2, stesso pattern di devfs) ───────────────────
 // La response del client va nella finestra CLI_RESP_VA (mappata da userfs

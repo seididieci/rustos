@@ -28,16 +28,8 @@ const VGA_COLS: usize = 80;
 const CRTC_INDEX: u16 = 0x3D4;
 const CRTC_DATA: u16 = 0x3D5;
 
-// ── IPC tags ────────────────────────────────────────────────────────
-
-/// IPC tags verso userfs (devono combaciare con userfs/devfs/tty).
-const DEV_OPEN: u64 = 0x20;
-const DEV_READ: u64 = 0x21;
-const DEV_WRITE: u64 = 0x22;
-const DEV_CLOSE: u64 = 0x23;
-
-/// Device type per DEV_OPEN (output console, vedi `dev_type` in userfs).
-const DEV_CONSOLE: u64 = 3;
+// ── IPC tags + device type (DocsD: single source in `syscall-numbers`) ─
+use libr::{DEV_CLOSE, DEV_CONSOLE, DEV_OPEN, DEV_READ, DEV_WRITE};
 
 /// Valore di errore IPC.
 const ERR: u64 = !0u64;
