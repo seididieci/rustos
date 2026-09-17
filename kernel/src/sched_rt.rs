@@ -78,7 +78,14 @@ static mut BOOT_CONTEXT: CpuContext = CpuContext::ZERO;
 impl Scheduler {
     fn new() -> Self {
         Self {
-            processes: Vec::new(),
+            // Pre-alloca la capacita' massima a init (unica alloc del Vec,
+            // mai piu' realloc a runtime): `place_process` sovrascrive a PID
+            // riusato e fa `push` solo in crescita, i PID sono ≤ MAX_PIDS-1
+            // riusati dal free-set (Fase 14) e mai rimossi → capacita'
+            // monotona, path spawn senza alloc dopo il warmup. Se MAX_PIDS
+            // cresce (growth path oltre 32, vedi AGENTS) la capacita' segue
+            // la costante da sola.
+            processes: Vec::with_capacity(MAX_PIDS),
             current: None,
             ticks_current: 0,
             rr_cursor: [0u32; 32],
@@ -410,8 +417,9 @@ pub fn on_tick() {
     if !need_switch {
         #[cfg(feature = "sched_debug")]
         if tn % 100 == 0 {
-            crate::serial_println!("[sched] tick={} cur={:?} mask={:#x} l16={:#x}",
-                tn, sched.current, sched.ready_prio_mask, sched.ready_by_prio[16]);
+            crate::serial_println!("[sched] tick={} cur={:?} mask={:#x} l16={:#x} heap_out={} heap_n={}",
+                tn, sched.current, sched.ready_prio_mask, sched.ready_by_prio[16],
+                crate::heap::outstanding(), crate::heap::allocs_total());
             // DEBUG temporaneo (deadlock t24): chi e' Blocked e su cosa.
             for (pid, p) in sched.processes.iter().enumerate() {
                 if p.state == State::Blocked {
@@ -429,8 +437,9 @@ pub fn on_tick() {
         _ => {
             #[cfg(feature = "sched_debug")]
             if tn % 100 == 0 {
-                crate::serial_println!("[sched] tick={} cur={:?} mask={:#x} l16={:#x} (no-switch)",
-                    tn, sched.current, sched.ready_prio_mask, sched.ready_by_prio[16]);
+                crate::serial_println!("[sched] tick={} cur={:?} mask={:#x} l16={:#x} heap_out={} heap_n={} (no-switch)",
+                    tn, sched.current, sched.ready_prio_mask, sched.ready_by_prio[16],
+                    crate::heap::outstanding(), crate::heap::allocs_total());
             }
             return;
         }

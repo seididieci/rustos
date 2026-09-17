@@ -352,6 +352,25 @@ rustos/
           `serial::_write_bytes` (timestamp dmesg byte-wise, zero alloc,
           byte in = byte sul filo per audit fedele; niente piu' `\n`
           spurio aggiunto dal kernel alle righe utente).
+          Audit completo heap kernel (tutti i siti): `processes` pre-allocato
+          con `Vec::with_capacity(MAX_PIDS)` a init (unica alloc del Vec;
+          `place_process` sovrascrive a PID riusato, push solo in crescita
+          ≤32, mai shrink → zero realloc dopo il warmup); `main.rs` Box/Vec
+          solo sotto feature `selftest` pre-init; crate esterne mai
+          (stati inline / hole-list interna). Invariante osservabile:
+          `heap::AuditedHeap` conta byte outstanding + alloc totali
+          (2 atomiche/op, nessun lock); riga `[sched] tick=` con sched_debug
+          riporta `heap_out=`/`heap_n=` — entrambi piatti post-boot
+          (misurato: out=27648, n=1 per tutta la suite incl. churn t22).
+          `heap_out` piatto = niente crescita netta, `heap_n` piatto = zero
+          allocazioni (non solo zero leak).
+          Growth path oltre 32 PID (strutturale in 6 punti: `free_pids: u32`,
+          `ready_by_prio: [u32; 32]`, `rr_cursor % 32`, pool TSS 32,
+          `HEAP_BRK`/`RING_PHYS` per-pid, `PS_SCAN_MAX=32`): strada A = 32→64
+          meccanica (u32→u64, array a 64, GDT regge), tutto resta statico e
+          no-alloc (`with_capacity` segue la costante da solo); strada B =
+          strutture dinamiche = heap sul solo path spawn (redesign vero,
+          solo su pressione reale — oggi ~8 servizi, cap ampiamente libero).
     - [x] 11.3.5 Admission control: un nuovo CBS e' accettato solo se
           `Σ(Qi/Pi) + Q/P ≤ CBS_BW_CAP` (~70%; il resto resta ai fixed-priority)
   - [x] 11.4 Syscall CBS (28-30) + wrappers libr
