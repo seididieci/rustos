@@ -516,9 +516,8 @@ fn node_write_multi(
 // raw, mappati qui, mai iniettati da nessuno) + FS_BUF_REG / R_REGISTER via
 // send_async + collect per req_id. Una sola op FS in volo (come libr).
 
-/// Tag IPC FS (devono combaciare con userfs).
-const FS_BUF_REG: u64 = 0x31;
-const FS_REGISTER: u64 = 0x30;
+/// Tag IPC FS (DocsB: single source in `syscall-numbers`, via `libr`).
+use libr::{FS_BUF_REG, FS_REGISTER};
 /// Tag frame nel request ring (single source in `syscall-numbers`, Fase 17).
 use libr::R_REGISTER;
 
@@ -872,7 +871,7 @@ pub extern "C" fn _start() -> ! {
     // (16.3) e l'ACK non puo' aspettare il mount (deadlock: il mount aspetta
     // Fs che parte dopo). Fire-and-forget, retry bounded, mai hang.
     for _ in 0..100 {
-        if libr::send_async(libr::CHANNEL_PARENT, 0x7D, 1, 0).is_ok() {
+        if libr::send_async(libr::CHANNEL_PARENT, libr::SVC_READY, 1, 0).is_ok() {
             break;
         }
         for _ in 0..10_000 {

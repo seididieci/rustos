@@ -281,7 +281,7 @@ da disco (+ attesa READY: richiede Fs pronto), uptime, `userdevfs`
 (+ attesa READY), i test in sequenza e la shell
 per ultima. I READY sono fire-and-forget via `send_async` (consumati senza
 reply): una `send` sync resterebbe bloccata perché a boot init non aspetta
-console/devfs (e console registra `/dev/input` solo dopo userfs: attendere
+console/devfs (e usertty registra `/dev/input` solo dopo userfs: attendere
 dopo sarebbe deadlock).
 
 Dalla **Fase 14 (init-restart)** init è anche **supervisore**: console, disk,
@@ -328,8 +328,9 @@ esteso cosi' (dettagli in `AGENTS.md` e ADR):
 
 - **Fase 14 — Cleanup processi** ([ADR-0010](./adr/0010-process-lifecycle-cleanup.md)):
   `exit`/`kill` kernel-side con cleanup differito (stack/TSS/CR3/page table/
-  ring/heap), slot a generazioni, **notifica exit al parent** sul canale di
-  nascita (consente a init di riavviare i servizi) e cascata sulla discendenza.
+  ring/heap), slot a generazioni, **notifica exit unificata a tutti i peer**
+  (ognuno sul suo canale, DOPO il teardown — il parent e' un peer come gli
+  altri: init la usa per riavviare i servizi) e cascata sulla discendenza.
 - **Fase 15 — Keyboard + Terminal server in userspace** (implementata,
   [ADR-0011](./adr/0011-userspace-keyboard-terminal.md)): `userkbd` (driver PS/2
   in ring 3, `io_ranges 0x60-0x64`, `/dev/kbd`, servizio `Kbd` svegliato da
@@ -339,11 +340,13 @@ esteso cosi' (dettagli in `AGENTS.md` e ADR):
   async senza attese di wake, handshake per canale.
 - **Fase 16 — Disk/ATA server in userspace** (implementata,
   [ADR-0012](./adr/0012-userspace-disk-driver.md)): `userdisk` (driver ATA in
-  ring 3, entrambi i canali via `io_ranges`, enumerazione IDENTIFY + MBR,
-  `/dev/sdX`, servizio `Disk`) + `userfs` senza porte ne' codice ATA (parser
-  FAT32 generico su `BlockSource`, client `DISK_*` con riconnessione lazy).
-  Regole: mai sync incrociate tra server (registrazione async), mai throttle
-  senza waker, consumer SPSC a `tail`, `ring_alloc` a coppie fresche.
+  ring 3, canale primario via `io_ranges` — il secondario e' probato ma non
+  concesso: sda/sdb sono master+slave sullo stesso canale; enumerazione
+  IDENTIFY + MBR, `/dev/sdX`, servizio `Disk`) + `userfs` senza porte ne'
+  codice ATA (parser FAT32 generico su `BlockSource`, client `DISK_*` con
+  riconnessione lazy). Regole: mai sync incrociate tra server
+  (registrazione async), mai throttle senza waker, consumer SPSC a `tail`,
+  `ring_alloc` a coppie fresche.
   Fase 16c: mappa nome→handle di proprieta' del driver (`DISK_RESOLVE` 0x54,
   tag centralizzati in `syscall-numbers`) — userfs chiede, non indovina;
   userdisk unico owner di `Disk` (SATA futuro come backend interno).

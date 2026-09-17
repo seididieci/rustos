@@ -106,7 +106,7 @@ senza copie ne' race, ogni processo ha una coppia di **ring SPSC** dedicati.
 
 > I "Checkpoint" sotto sono i risultati **all'epoca** di ciascuna sotto-fase
 > (non il gate corrente). Gate corrente: `[testfs] PASS 5/5` + `[testfat] PASS
-> 7/7` + `[usertests] PASS 40/40` + `test-shell.py` ~30/30, zero FAIL/PANIC.
+> 7/7` + `[usertests] PASS 44/44` + `test-shell.py` 30/30, zero FAIL/PANIC.
 
 ### 9.1 -- Shared buffer + ramfs server (originale, sostituita da 9.6)
 
@@ -221,7 +221,7 @@ usertests 17/17, shell 3/3.
 | `kernel/src/syscall.rs` | Handler `sys_ring_alloc` (26), `sys_map_in` (27, generico) |
 | `kernel/src/sched_rt.rs` (esposto come `crate::sched`) | `process_cr3` (per map_in) |
 | `libs/libr/src/lib.rs` | Wrappers FS su ring + `fs_init` lazy + chunking read/write + `map_in` + `ring_alloc_raw` (coppia senza handshake, Fase 16) |
-| `userland/fs/src/main.rs` | userfs: finestra ring, registro `pid→(req,resp)`, map_in per device remoti |
+| `userland/fs/src/main.rs` | userfs: finestra ring, registro `chan→(req,resp)` + `ftable`/`next_fd` per canale, map_in per device remoti |
 | `userland/fs/src/ipc_disk.rs` | client `DISK_*` verso userdisk (`BlockSource`, riconnessione lazy, Fase 16; resolve nome→handle + map di entrambi i ring, Fase 16c; OPEN-once per connessione, Fase 21) |
 | `userland/disk/src/main.rs` | userdisk: detect+part, `/dev/sdX`, protocolli `DISK_*`+`DEV_*` (Fase 16; `DISK_RESOLVE` single-source-of-truth, Fase 16c) |
 | `userland/devfs/src/main.rs` | devfs: `/dev/null`, `/dev/zero` |

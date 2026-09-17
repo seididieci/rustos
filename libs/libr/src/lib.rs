@@ -776,13 +776,12 @@ pub use syscall_numbers::{STAT_DEVICE, STAT_DIR, STAT_FILE, STAT_READONLY};
 /// Flag `open` (Fase 18.2): crea il file se non esiste.
 pub use syscall_numbers::O_CREAT;
 
-/// IPC tag: il client ha scritto nel request ring e notifica il server.
-const FS_NOTIFY: u64 = 0x32;
-/// IPC tag: un driver registra il proprio prefix di mount (frame R_REGISTER
-/// nel request ring). Deve combaciare con la costante FS_REGISTER di userfs.
-const FS_REGISTER: u64 = 0x30;
-/// Handshake: "i miei ring buffer hanno fisico req=w0, resp=w1".
-const FS_BUF_REG: u64 = 0x31;
+/// Tag IPC FS/boot/kbd (DocsB): single source in `syscall-numbers` (prima
+/// duplicati qui, in userfs/userdisk/init/tty/kbd e come letterali). `libr`
+/// li riesporta: i server/test usano i path `libr::`, mai i valori.
+pub use syscall_numbers::{
+    FS_BUF_REG, FS_NOTIFY, FS_REGISTER, KBD_NOTIFY, SVC_READY, TEST_DONE,
+};
 
 const ERR: u64 = !0u64;
 /// Deve combaciare con `ERR_NOHANDSHAKE` di userfs: il server non conosce i

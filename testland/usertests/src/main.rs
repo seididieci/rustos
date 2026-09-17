@@ -2874,7 +2874,7 @@ pub extern "C" fn _start() -> ! {
     report(&mut total, &mut ok, "t34 diritti per-canale lato server", t_rights());
 
     println!("[usertests] SUMMARY {}/{} PASS", ok, total);
-    let _ = libr::send(libr::CHANNEL_PARENT, 0x7E, ok as u64, 0); // init: test finito
+    let _ = libr::send(libr::CHANNEL_PARENT, libr::TEST_DONE, ok as u64, 0); // init: test finito
     if ok == total {
         println!("[usertests] PASS {}/{}", ok, total);
         libr::exit(0);

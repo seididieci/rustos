@@ -42,7 +42,8 @@ const DEV_CLOSE: u64 = 0x23;
 /// Notify da userkbd (fire-and-forget, NESSUNA reply): scancode in attesa.
 /// tty dorme in recv() e si sveglia solo qui (o su relay DEV / reply async).
 /// Senza notify servirebbe pump in polling (sempre Ready → dilution scheduler).
-const KBD_NOTIFY: u64 = 0x40;
+/// Single source in `syscall-numbers` (DocsB), via `libr`.
+use libr::KBD_NOTIFY;
 
 /// Device type per DEV_OPEN (stesso di prima: il path non cambia).
 const DEV_KEYBOARD: u64 = 2;
@@ -513,7 +514,7 @@ pub extern "C" fn _start() -> ! {
             tty.pump_now = true;
             // SVC_READY fire-and-forget (init aspetta a boot): retry bounded.
             for _ in 0..100 {
-                if libr::send_async(libr::CHANNEL_PARENT, 0x7D, 1, 0).is_ok() {
+                if libr::send_async(libr::CHANNEL_PARENT, libr::SVC_READY, 1, 0).is_ok() {
                     break;
                 }
                 for _ in 0..10_000 {
