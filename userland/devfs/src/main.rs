@@ -160,7 +160,7 @@ pub extern "C" fn _start() -> ! {
     // Fire-and-forget (send_async): a boot init non aspetta devfs → una
     // send sync resterebbe bloccata per sempre. Retry bounded, mai hang.
     for _ in 0..100 {
-        if libr::send_async(libr::CHANNEL_PARENT, 0x7D, 1, 0).is_ok() {
+        if libr::send_async(libr::CHANNEL_PARENT, libr::SVC_READY, 1, 0).is_ok() {
             break;
         }
         for _ in 0..10_000 {

@@ -176,7 +176,7 @@ pub extern "C" fn _start() -> ! {
         println!("[testfs] FAIL");
     }
     println!("[testfs] all tests done");
-    let _ = libr::send(libr::CHANNEL_PARENT, 0x7E, 0, 0); // init: test finito (spawn sequenziale)
+    let _ = libr::send(libr::CHANNEL_PARENT, libr::TEST_DONE, 0, 0); // init: test finito (spawn sequenziale)
     libr::exit(0)
 }
 

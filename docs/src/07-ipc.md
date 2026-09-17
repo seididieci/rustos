@@ -12,7 +12,7 @@ registri della CPU (nessun buffer/zero-copy in questa fase): il kernel fa **solo
 smistatore tra i PCB, senza copiare payload.
 
 Dal **Fase 12** l'indirizzamento e' per **canale** (channel id), non per PID:
-vedi [sezione dedicata](#fase-13-ipc-per-nome--registry--channel).
+vedi [ADR-0008](./adr/0008-ipc-by-name-channels.md) e la sezione Fase 12 sotto.
 
 ```
 Processo A (server)                Processo B (client)
@@ -254,7 +254,8 @@ costruzione nel multi-task. Kernel invariato, reply implicita invariata.
   stesso formato frame, stesso chan-filter di `fs_collect`. Copertura: t20
   (stessa lettura via collect manuale e via wrapper, confronto byte).
 - Vincoli Fase 13 invariati (no mix sync/async, FIFO, FS 1-in-volo); t41
-  (`block_on` + echo) e t42 (`run` 2-task + `ServerDied`) in suite.
+  (`block_on` + echo), t42 (`run` 2-task + `ServerDied`) e t43 (`Join`
+  annidato) in suite.
 
 ## Fase 14 — notifica unificata di morte + `wait_reply` con errore (ADR-0010)
 
@@ -295,7 +296,13 @@ bound provabile); `reclaim_one` le notifica DOPO il teardown fisico.
   Se in futuro un driver avrà peer diretti con stato per-client, ricavarne
   la tabella per `(chan, fd)` e purgarla come userfs.
 
-## Tag di protocollo (single source in `syscall-numbers`)
+## Tag di protocollo (single source in `syscall-numbers`, via `libr`)
+
+Tutti i tag sotto vivono in `syscall-numbers` e sono riesportati da `libr`
+(i server/test usano i path `libr::`, mai i valori). Centralizzazione DocsB:
+prima `FS_REGISTER`/`FS_BUF_REG` vivevano in `libr`+userfs+userdisk,
+`SVC_READY`/`TEST_DONE` in init, `KBD_NOTIFY` in tty+kbd (piu' letterali
+nei test).
 
 | Tag | Valore | Uso |
 |-----|--------|-----|
@@ -304,10 +311,11 @@ bound provabile); `reclaim_one` le notifica DOPO il teardown fisico.
 | `FS_NOTIFY` | 0x32 | notifica operazione FS nel request ring |
 | `R_*` | 0x10-0x1B | op FS nei frame (`OPEN/READ/WRITE/CLOSE/READDIR/MKDIR/MOUNT/UMOUNT/DELETE/STAT/RIGHTS_*`) |
 | `DISK_*` | 0x50-0x55 | data-plane userfs↔userdisk (`HELLO/OPEN/READ/CLOSE/RESOLVE/WRITE`) |
-| `SVC_READY` | 0x7D | servizio pronto (fire-and-forget a init sul canale di nascita) |
-| `TEST_DONE` | 0x7E | fine test (sul canale di nascita verso init) |
+| `EXIT_NOTIFY` | 0x7C | morte peer (kernel→tutti i peer, `w0` = code, `w1` = pid) |
 | `KBD_NOTIFY` | 0x40 | scancode pronti (userkbd→usertty) |
 | `IRQ_NOTIFY_KBD` | 0x41 | bridge interrupt→IPC (kernel→userkbd) |
+| `SVC_READY` | 0x7D | servizio pronto (fire-and-forget a init sul canale di nascita) |
+| `TEST_DONE` | 0x7E | fine test (sul canale di nascita verso init) |
 | `CHANNEL_PARENT` | 0 | alias canale di nascita verso il parent |
 
 ## Riferimenti

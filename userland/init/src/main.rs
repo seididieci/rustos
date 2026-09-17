@@ -14,14 +14,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 use libr;
 use libr::{println, print_str};
-
-/// Tag di fine-test usato dai binari della test suite per notificare a init
-/// che hanno terminato (spawn sequenziale, Fase 9.5).
-const TEST_DONE: u64 = 0x7E;
-/// Tag "servizio pronto": un servizio (userfs) lo manda a init sul canale di
-/// nascita dopo essersi registrato per nome (ADR-0008). init lo usa per
-/// sincronizzare il boot: chi usa il FS parte solo dopo che userfs e' pronto.
-const SVC_READY: u64 = 0x7D;
+// Tag di fine-test e servizio-pronto (DocsB): single source in
+// `syscall-numbers`, via `libr` (prima duplicati qui).
+use libr::{SVC_READY, TEST_DONE};
 
 /// Attende dal canale `chan` un messaggio con tag `tag` e lo consuma SENZA
 /// reply (i READY sono fire-and-forget via send_async: rispondere accoderebbe

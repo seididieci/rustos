@@ -46,9 +46,10 @@ pub const SYS_MKDIR: u64 = 23;
 pub const SYS_FS_REGISTER: u64 = 24;
 pub const SYS_SBRK: u64 = 25;
 /// Alloca due pagine fisiche per il ring buffer SPSC del processo corrente
-/// (request + response), le mappa a `USER_FS_BUFFER` e `USER_FS_BUFFER+0x1000`,
-/// e ritorna gli indirizzi fisici (req in rax, resp in rdi). Il chiamante
-/// registra entrambi presso il fs server con una IPC `FS_BUF_REG`.
+/// (request + response), le mappa a `USER_FS_BUFFER` e `USER_RESP_RING`
+/// (= `USER_FS_BUFFER+0x10000`), e ritorna gli indirizzi fisici (req in rax,
+/// resp in rdi). Il chiamante registra entrambi presso il fs server con una
+/// IPC `FS_BUF_REG`. Ogni chiamata da' pagine fresche (multi-coppia, Fase 16).
 pub const SYS_RING_ALLOC: u64 = 26;
 /// Mappa `count` pagine fisiche a partire da `phys` all'indirizzo virtuale
 /// `virt` nello spazio del processo `pid` (usato da userfs per mappare la
@@ -104,6 +105,20 @@ pub const SPAWN_FLAG_DETACH: u8 = 0x01;
 pub const PS_SCAN_MAX: u32 = 32;
 /// IPC tag: il client ha scritto nel request ring e notifica il server.
 pub const FS_NOTIFY: u64 = 0x32;
+// ── Tag IPC userland, single source (centralizzazione DocsB: prima duplicati
+// in `libr`, userfs/userdisk/init/tty/kbd e come letterali nei test) ────────
+// - FS_REGISTER (0x30): un driver registra il prefix di mount (frame
+//   R_REGISTER nel request ring, letto da userfs).
+// - FS_BUF_REG (0x31): handshake register-only "i miei ring sono req=w0,
+//   resp=w1" (client e driver verso userfs).
+// - KBD_NOTIFY (0x40): userkbd → usertty, scancode in coda (w0 = count).
+// - SVC_READY (0x7D): servizio → init, "sono su" (fire-and-forget a boot).
+// - TEST_DONE (0x7E): test suite → init, fine sequenza (w0 = ok count).
+pub const FS_REGISTER: u64 = 0x30;
+pub const FS_BUF_REG: u64 = 0x31;
+pub const KBD_NOTIFY: u64 = 0x40;
+pub const SVC_READY: u64 = 0x7D;
+pub const TEST_DONE: u64 = 0x7E;
 /// Tag kernel→parent: un figlio e' terminato (exit o kill). Il kernel lo invia
 /// sul canale di nascita con `w0` = exit code e `w1` = pid del figlio morto
 /// (Fase 14, ADR-0010). Non e' una richiesta: il parent non deve rispondere.

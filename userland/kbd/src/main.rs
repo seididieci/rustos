@@ -36,7 +36,8 @@ const DEV_CLOSE: u64 = 0x23;
 const DEV_READDIR: u64 = 0x24;
 
 /// Notify a tty: scancode in attesa (w1 = quanti, hint).
-const KBD_NOTIFY: u64 = 0x40;
+/// Single source in `syscall-numbers` (DocsB), via `libr`.
+use libr::KBD_NOTIFY;
 
 // ── Device types (w0 di DEV_OPEN, deve combaciare con `dev_type` in userfs) ─
 
@@ -267,7 +268,7 @@ pub extern "C" fn _start() -> ! {
     // Avvisa il parent (init) di essere pronto (SVC_READY fire-and-forget,
     // come devfs: a boot init aspetta, su restart nessuno — mai sync).
     for _ in 0..100 {
-        if libr::send_async(libr::CHANNEL_PARENT, 0x7D, 1, 0).is_ok() {
+        if libr::send_async(libr::CHANNEL_PARENT, libr::SVC_READY, 1, 0).is_ok() {
             break;
         }
         for _ in 0..10_000 {

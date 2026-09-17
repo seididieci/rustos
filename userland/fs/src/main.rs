@@ -59,11 +59,8 @@ use libr::{
     R_CLOSE, R_DELETE, R_MKDIR, R_MOUNT, R_OPEN, R_READ, R_READDIR, R_REGISTER, R_UMOUNT,
     R_WRITE, R_RIGHTS_DROP, R_RIGHTS_GET, R_STAT,
 };
-
-/// IPC tag: il client ha scritto nel request ring e notifica il server.
-const FS_NOTIFY: u64 = 0x32;
-/// Handshake client: "i miei ring buffer hanno fisico req=w0, resp=w1".
-const FS_BUF_REG: u64 = 0x31;
+// Tag IPC FS/boot (DocsB): single source in `syscall-numbers`, via `libr`.
+use libr::{FS_BUF_REG, FS_NOTIFY, FS_REGISTER, SVC_READY};
 
 const MAX_PATH: usize = 256;
 
@@ -85,10 +82,6 @@ const DEV_KEYBOARD: u64 = 2;
 const DEV_CONSOLE: u64 = 3;
 /// Device type del driver tastiera (Fase 15, prefix "/dev/kbd").
 const DEV_KBD: u64 = 4;
-
-// ── IPC tag: registrazione driver ──────────────────────────────────
-
-const FS_REGISTER: u64 = 0x30;
 
 // ── Mount table dinamica ───────────────────────────────────────────
 
@@ -354,7 +347,8 @@ enum MountedFs {
 struct FsMount {
     /// Target normalizzato senza slash ("fat", "mnt").
     target: String,
-    /// Source originale ("/dev/sda") per diagnostica e re-apply.
+    /// Source originale (`UUID=xxxxxxxx`, mai lettere instabili) per
+    /// diagnostica e re-apply.
     source: String,
     /// Opzioni mount (placeholder Strato 0: conservate, non interpretate —
     /// futuro: uid=/gid=/mode per i permessi FAT finti alla Linux).
@@ -1793,7 +1787,7 @@ pub extern "C" fn _start() -> ! {
     // READY fire-and-forget (send_async, init-restart): init consuma senza
     // reply → una send sync resterebbe bloccata. Retry bounded, mai hang.
     for _ in 0..100 {
-        if libr::send_async(libr::CHANNEL_PARENT, 0x7D, reg_ok as u64, 0).is_ok() {
+        if libr::send_async(libr::CHANNEL_PARENT, SVC_READY, reg_ok as u64, 0).is_ok() {
             break;
         }
         for _ in 0..10_000 {

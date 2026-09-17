@@ -13,7 +13,7 @@
 //!   b5 fat_4K_oow ........... open+overwrite+close 4 KiB su /fat (write+FLUSH)
 //!
 //! Outputegrepabile: righe `[bench] <nome> iters=<n> cyc_op=<c> kb_s=<k>`
-//! (c = cicli TSC per op, k = KiB/s). Fine: TEST_DONE a init (0x7E) + exit.
+//! (c = cicli TSC per op, k = KiB/s). Fine: TEST_DONE a init + exit.
 
 #![no_std]
 #![no_main]
@@ -160,7 +160,7 @@ pub extern "C" fn _start() -> ! {
     } else {
         println!("[bench] DONE ok=0");
     }
-    let _ = libr::send(libr::CHANNEL_PARENT, 0x7E, 0, 0); // init: bench finito
+    let _ = libr::send(libr::CHANNEL_PARENT, libr::TEST_DONE, 0, 0); // init: bench finito
     libr::exit(if ok { 0 } else { 1 })
 }
 
