@@ -148,6 +148,91 @@ impl Future for RecvMsg {
     }
 }
 
+// ── Client FS reale (ADR-0019, Passo 3) ─────────────────────────────
+// Prova che la sintassi scala al protocollo FS sopra `read_async`/
+// `fs_collect_msg` INVARIATI (stesso guard `FS_PENDING`, stesso formato
+// frame, stesso chan-filter `wait_reply_chan`).
+
+/// Lettura FS async come `Future`: `read_async` (un chunk ≤ RING_MAX_PAYLOAD)
+/// + attesa della reply via router + lettura del response frame.
+///
+/// L'invio avviene a COSTRUZIONE (`new`, come `read_async`: syscall non
+/// bloccante, niente da attendere), mai al primo poll: cosi' il `req_id` e'
+/// noto al router fin da subito. Il poll non blocca mai (il collect dal ring
+/// e' puro consumo, come `fs_collect_msg`).
+///
+/// Composizione invece di duplicazione: il routing e' delegato a un
+/// `WaitReply::on_chan` interno (stessa semantica `fs_collect`: solo la morte
+/// del server FS sul canale cachato conta, le stale no).
+pub struct FsRead<'a> {
+    inner: WaitReply,
+    dst: &'a mut [u8],
+    cap: usize,
+}
+
+impl<'a> FsRead<'a> {
+    /// Come `read_async(fd, cap)` ma ritorna il future invece del req_id.
+    /// `Err(())` nei casi di `read_async` (-1: op in volo, ring pieno, send
+    /// fallita). Il buffer `dst` e' riempito al completamento.
+    pub fn new(fd: i64, dst: &'a mut [u8], cap: usize) -> Result<Self, ()> {
+        let req = crate::read_async(fd, cap);
+        if req < 0 {
+            return Err(());
+        }
+        // Invariante di `fs_collect`: la read_async riuscita ha risolto e
+        // cachato FS_CHAN prima di registrare FS_PENDING.
+        let fchan =
+            crate::FS_CHAN.load(core::sync::atomic::Ordering::Relaxed).max(0) as u64;
+        Ok(Self { inner: WaitReply::on_chan(req, fchan), dst, cap })
+    }
+}
+
+impl Receivable for FsRead<'_> {
+    fn accepts(&self, m: &IpcMsg) -> bool {
+        self.inner.accepts(m)
+    }
+
+    fn deposit(&mut self, m: IpcMsg) {
+        self.inner.deposit(m);
+    }
+}
+
+impl Future for FsRead<'_> {
+    /// Byte letti, o -1 (stessi casi di `fs_collect`: errore IO, server morto
+    /// con reset ring + guard come `fs_collect`, mai wedge).
+    type Output = i64;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        // `WaitReply: Unpin` (solo scalari/Option): pin diretto, niente unsafe.
+        match Pin::new(&mut this.inner).poll(cx) {
+            Poll::Ready(Ok(m)) => {
+                Poll::Ready(crate::fs_collect_msg(&m, &mut *this.dst, this.cap, true))
+            }
+            Poll::Ready(Err(e)) => {
+                // Come `fs_collect` sul path errore: frame orfano, reset ring
+                // + guard, -1 al chiamante (niente retry qui, mai wedge). Il
+                // log pid/code solo per morte reale; gli altri Err sono
+                // irraggiungibili via router (deposita solo accettati).
+                if let crate::WaitReplyError::ServerDied { pid, code } = e {
+                    crate::println!(
+                        "[libr] fs_read_async: server pid {} morto (code {})",
+                        pid,
+                        code
+                    );
+                }
+                unsafe {
+                    crate::ring_reset(crate::REQ_RING_VA);
+                    crate::ring_reset(crate::RESP_RING_VA);
+                }
+                crate::FS_PENDING.store(-1, core::sync::atomic::Ordering::Relaxed);
+                Poll::Ready(-1)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
 // ── Executor ────────────────────────────────────────────────────────
 // Unico punto di `recv` per i task gestiti: ogni messaggio letto viene
 // instradato PRIMA del poll successivo (nessun task vede mai messaggi altrui).
