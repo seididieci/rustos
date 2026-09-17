@@ -32,12 +32,8 @@ use pc_keyboard::{DecodedKey, HandleControl, KeyCode, Keyboard, ScancodeSet1, la
 
 use libr::println;
 
-// ── IPC tags (devono combaciare con userfs) ─────────────────────────
-
-const DEV_OPEN: u64 = 0x20;
-const DEV_READ: u64 = 0x21;
-const DEV_WRITE: u64 = 0x22;
-const DEV_CLOSE: u64 = 0x23;
+// ── IPC tags (DocsD: single source in `syscall-numbers`, via `libr`) ──
+use libr::{DEV_CLOSE, DEV_KEYBOARD, DEV_OPEN, DEV_READ, DEV_WRITE};
 
 /// Notify da userkbd (fire-and-forget, NESSUNA reply): scancode in attesa.
 /// tty dorme in recv() e si sveglia solo qui (o su relay DEV / reply async).
@@ -45,8 +41,8 @@ const DEV_CLOSE: u64 = 0x23;
 /// Single source in `syscall-numbers` (DocsB), via `libr`.
 use libr::KBD_NOTIFY;
 
-/// Device type per DEV_OPEN (stesso di prima: il path non cambia).
-const DEV_KEYBOARD: u64 = 2;
+/// Device type per DEV_OPEN (stesso di prima: il path non cambia; valore in
+/// `syscall-numbers`, importato sopra).
 
 const ERR: u64 = !0u64;
 

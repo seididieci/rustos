@@ -119,6 +119,23 @@ pub const FS_BUF_REG: u64 = 0x31;
 pub const KBD_NOTIFY: u64 = 0x40;
 pub const SVC_READY: u64 = 0x7D;
 pub const TEST_DONE: u64 = 0x7E;
+// ── Protocollo DEV_* (userfs→driver: devfs/console/kbd/tty/disk, DocsD) ───
+// Single source of truth dei tag e dei device type (w0 di DEV_OPEN): prima
+// duplicati in userfs/userdisk/devfs/console/kbd/tty. userfs instrada per
+// prefix al server e inoltra l'op; il driver risponde sul relay.
+// - OPEN/READ/WRITE/CLOSE/READDIR: op sui nodi device (raw o sintetizzati).
+// - Type: NULL/ZERO (devfs), KEYBOARD (tty, `/dev/input`), CONSOLE (console,
+//   `/dev/console`), KBD (kbd, `/dev/kbd`); userdisk usa handle disco<<16|sub.
+pub const DEV_OPEN: u64 = 0x20;
+pub const DEV_READ: u64 = 0x21;
+pub const DEV_WRITE: u64 = 0x22;
+pub const DEV_CLOSE: u64 = 0x23;
+pub const DEV_READDIR: u64 = 0x24;
+pub const DEV_NULL: u64 = 0;
+pub const DEV_ZERO: u64 = 1;
+pub const DEV_KEYBOARD: u64 = 2;
+pub const DEV_CONSOLE: u64 = 3;
+pub const DEV_KBD: u64 = 4;
 /// Tag kernel→parent: un figlio e' terminato (exit o kill). Il kernel lo invia
 /// sul canale di nascita con `w0` = exit code e `w1` = pid del figlio morto
 /// (Fase 14, ADR-0010). Non e' una richiesta: il parent non deve rispondere.

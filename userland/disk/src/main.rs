@@ -47,13 +47,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use libr::println;
 
-// ── IPC tags ────────────────────────────────────────────────────────
-
-const DEV_OPEN: u64 = 0x20;
-const DEV_READ: u64 = 0x21;
-const DEV_WRITE: u64 = 0x22;
-const DEV_CLOSE: u64 = 0x23;
-const DEV_READDIR: u64 = 0x24;
+// ── IPC tags (DocsD: single source in `syscall-numbers`, via `libr`) ──
+use libr::{DEV_CLOSE, DEV_OPEN, DEV_READ, DEV_READDIR, DEV_WRITE};
 
 /// Handshake data-plane: userfs chiede i fisici dei ring DISK.
 /// Reply: w0 = req_phys (anello delle richieste di resolve, Fase 16c),

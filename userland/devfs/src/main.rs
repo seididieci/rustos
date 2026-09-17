@@ -14,18 +14,8 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use libr;
 
-// ── IPC tags da userfs ──────────────────────────────────────────────
-
-const DEV_OPEN: u64 = 0x20;
-const DEV_READ: u64 = 0x21;
-const DEV_WRITE: u64 = 0x22;
-const DEV_CLOSE: u64 = 0x23;
-const DEV_READDIR: u64 = 0x24;
-
-// ── Device types (w0 di DEV_OPEN) ──────────────────────────────────
-
-const DEV_NULL: u64 = 0;
-const DEV_ZERO: u64 = 1;
+// ── IPC tags + device types (DocsD: single source in `syscall-numbers`) ─
+use libr::{DEV_CLOSE, DEV_NULL, DEV_OPEN, DEV_READ, DEV_READDIR, DEV_WRITE, DEV_ZERO};
 
 // ── Ring I/O (Fase 10.2) ─────────────────────────────────────────
 // La response ring del client e' mappata a RESP_RING_VA da userfs (map_in);

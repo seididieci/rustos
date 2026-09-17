@@ -777,10 +777,16 @@ pub use syscall_numbers::{STAT_DEVICE, STAT_DIR, STAT_FILE, STAT_READONLY};
 pub use syscall_numbers::O_CREAT;
 
 /// Tag IPC FS/boot/kbd (DocsB): single source in `syscall-numbers` (prima
-/// duplicati qui, in userfs/userdisk/init/tty/kbd e come letterali). `libr`
-/// li riesporta: i server/test usano i path `libr::`, mai i valori.
+/// duplicati qui, in userfs/userdisk/init/tty/kbd e come letterali nei test).
+/// `libr` li riesporta: i server/test usano i path `libr::`, mai i valori.
 pub use syscall_numbers::{
     FS_BUF_REG, FS_NOTIFY, FS_REGISTER, KBD_NOTIFY, SVC_READY, TEST_DONE,
+};
+/// Tag DEV_* op + device type (DocsD): stesso pattern, prima duplicati in
+/// userfs/userdisk/devfs/console/kbd/tty.
+pub use syscall_numbers::{
+    DEV_CLOSE, DEV_KBD, DEV_KEYBOARD, DEV_CONSOLE, DEV_NULL, DEV_OPEN, DEV_READ,
+    DEV_READDIR, DEV_WRITE, DEV_ZERO,
 };
 
 const ERR: u64 = !0u64;

@@ -59,29 +59,18 @@ use libr::{
     R_CLOSE, R_DELETE, R_MKDIR, R_MOUNT, R_OPEN, R_READ, R_READDIR, R_REGISTER, R_UMOUNT,
     R_WRITE, R_RIGHTS_DROP, R_RIGHTS_GET, R_STAT,
 };
+// Tag DEV_* op + device types (DocsD: single source in `syscall-numbers`).
+use libr::{
+    DEV_CLOSE, DEV_CONSOLE, DEV_KBD, DEV_KEYBOARD, DEV_NULL, DEV_OPEN, DEV_READ,
+    DEV_READDIR, DEV_WRITE, DEV_ZERO,
+};
 // Tag IPC FS/boot (DocsB): single source in `syscall-numbers`, via `libr`.
 use libr::{FS_BUF_REG, FS_NOTIFY, FS_REGISTER, SVC_READY};
 
 const MAX_PATH: usize = 256;
 
-// ── IPC tags verso i driver remoti (devfs/console) ─────────────────
-
-const DEV_OPEN: u64 = 0x20;
-const DEV_READ: u64 = 0x21;
-const DEV_WRITE: u64 = 0x22;
-const DEV_CLOSE: u64 = 0x23;
-const DEV_READDIR: u64 = 0x24;
-
-// ── Device types (w0 di DEV_OPEN) ──────────────────────────────────
-
-const DEV_NULL: u64 = 0;
-const DEV_ZERO: u64 = 1;
-/// Device type del console server (tastiera/terminale, prefix "/dev/input").
-const DEV_KEYBOARD: u64 = 2;
-/// Device type del console server come output (Fase 15, prefix "/dev/console").
-const DEV_CONSOLE: u64 = 3;
-/// Device type del driver tastiera (Fase 15, prefix "/dev/kbd").
-const DEV_KBD: u64 = 4;
+// ── IPC tags verso i driver remoti (devfs/console/kbd/tty/disk): op DEV_*
+// e device types importati sopra da `syscall-numbers` (DocsD) ──────────
 
 // ── Mount table dinamica ───────────────────────────────────────────
 
