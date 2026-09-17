@@ -38,7 +38,9 @@ pub fn init() {
 /// Manda End of Interrupt al PIC dopo aver servito un IRQ.
 ///
 /// # Sicurezza
-/// `irq` deve essere il numero IRQ (0-15), non il numero INT.
+/// `irq` e' il numero INT (vettore: 0x20 per IRQ0, 0x21 per IRQ1 con gli
+/// offset sopra), come vuole `pic8259::notify_end_of_interrupt` — non il
+/// numero IRQ 0-15.
 pub unsafe fn end_of_interrupt(irq: u8) {
     unsafe { PICS.lock().notify_end_of_interrupt(irq) };
 }

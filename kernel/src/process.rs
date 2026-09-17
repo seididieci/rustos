@@ -128,7 +128,8 @@ pub struct Process {
     /// (NUL-trimmed, max 16). Lo slot PCB e' riusato ai reclaim: niente leak.
     pub name_owned: [u8; 16],
     pub name_len: u8,
-    /// Priorita' BASE del processo (0 = massima, 31 = minima). Immutabile.
+    /// Priorita' BASE del processo (31 = massima, 0 = minima/idle).
+    /// Immutabile. `pick_next` sceglie il livello piu' alto via bitmask.
     pub priority: crate::sched::Priority,
     pub state: State,
     /// Processo padre (chi ha creato questo processo via `spawn`). `None` per i

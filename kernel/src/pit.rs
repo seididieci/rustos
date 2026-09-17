@@ -5,7 +5,7 @@
 //! da qualsiasi codice kernel che debba misurare intervalli di tempo.
 //!
 //! Frequenza target: 100 Hz → ogni 10 ms circa.
-//! Divisore = 1_193_182 / 100 = 11_932 (0x2E9C).
+//! Divisore = 1_193_182 / 100 = 11_931 (troncamento intero).
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::instructions::port::Port;

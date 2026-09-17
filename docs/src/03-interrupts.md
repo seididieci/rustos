@@ -44,12 +44,14 @@ DOPO:   IRQ 0-7  → INT 32-39  (master, offset 0x20)
 
 ```rust
 use pic8259::ChainedPics;
-static PICS: Mutex<ChainedPics> =
+static PICS: Mutex<ChainedPics> = /* privato a pic.rs */
     Mutex::new(unsafe { ChainedPics::new(0x20, 0x28) });
 
 // Init: PICS.lock().initialize();
-// Maschera: solo IRQ 0 (timer) e IRQ 1 (keyboard) abilitati.
-// EOI dopo ogni handler: unsafe { PICS.lock().notify_end_of_interrupt(irq); }
+// Maschera: solo IRQ 0 (timer) e IRQ 1 (keyboard):
+//   PICS.lock().write_masks(0b1111_1100, 0b1111_1111);
+// EOI via wrapper (numero INT, non IRQ):
+//   unsafe { crate::pic::end_of_interrupt(0x20) }; // IRQ0 → INT 0x20
 ```
 
 **EOI (End of Interrupt)**: dopo ogni interrupt handler, il kernel deve
@@ -69,13 +71,15 @@ Porta 0x40: low byte + high byte del divisore
 
 ```rust
 extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
-    TICKS.fetch_add(1, Ordering::Relaxed);
-    unsafe { PICS.lock().notify_end_of_interrupt(0); }
+    // EOI PRIMA dello scheduling: se on_tick fa switch, il PIC non deve
+    // restare in attesa con i timer successivi bloccati.
+    unsafe { crate::pic::end_of_interrupt(0x20) };
+    crate::sched::on_tick(); // tick PIT + scheduler preemptive (Fase 5/11)
 }
 ```
 
-Il contatore `TICKS: AtomicU64` è globale: lo scheduler (Fase 5) lo
-leggerà per decidere quando fare context switch.
+Il contatore `TICKS: AtomicU64` (`pit.rs`) avanza dentro il tick; lo
+scheduler lo legge per quantum/CBS e `get_ticks` (22) lo espone in userspace.
 
 ## Tastiera PS/2
 
@@ -112,11 +116,13 @@ va perso (fire-and-forget a coda piena: il drain successivo recupera).
 ## Ordine di inizializzazione
 
 ```
-GDT → IDT → PIC (remap + maschera) → PIT (~100 Hz) → keyboard → STI
+GDT → IDT → PIC (remap + maschera) → PIT (~100 Hz) → syscall → ... → STI
 ```
 
-`sti` (enable interrupts) viene dopo aver configurato tutto: se lo
-chiamassimo prima, un IRQ non gestito causerebbe un triple fault.
+`sti` (enable interrupts) viene molto dopo aver configurato tutto (dopo
+`sched::init`, spawn di idle/init, `BOOT_OK`): se lo chiamassimo prima, un
+IRQ non gestito causerebbe un triple fault. (Niente step tastiera: il driver
+PS/2 vive in userspace dalla Fase 15, il kernel fa solo routing+EOI.)
 
 ## Interrupt Stack Frame
 
