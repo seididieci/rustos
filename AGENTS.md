@@ -1095,6 +1095,23 @@ rustos/
         primo tick (feature `selftest` post-BOOT_OK + Welcome marciti in
         silenzio — follow-up scheduler, fuori H2); un flake Test-4 FAT
         isolato su TCG (watch item, rerun verde).
+- [x] Fase M0: mmap anonimo nel basso canonico (payoff higher-half).
+  - Syscall `SYS_MMAP (39)` / `SYS_MUNMAP (40)` + `PROT_*`/`MMAP_FIXED` in
+    `syscall-numbers`; zona `[0x10_0000, 0x4000_0000)` (primi 64K mai
+    assegnati: NULL faulta); solo anonimo RW in M0 (altro prot/flag = -1).
+  - Tabella VMA per-pid (16 record statici, mai heap) in `vmm_user.rs`:
+    overlap-check totale, first-fit dal basso, pagine `OWNED` (teardown
+    esistente), `munmap` solo VMA intere two-phase, `is_user_range` esteso
+    (spawn/write accettano buffer mappati gratis), purge record a teardown.
+  - Fault handler: ramo VMA dopo il ramo heap (stesso materializza
+    demand-zero). `libr::mmap`/`mmap_fixed`/`munmap`; sbrk/heap invariati.
+  - t44 (pattern, multi-PT 3M spot-check, fixed/overlap/len-0/unallineato
+    rifiutati, munmap parziale rifiutato senza stato, riuso fixed + zeri
+    freschi, write seriale da buffer mappato). Suite → 44/44.
+  - Bug vero trovato: `is_user_range` passava `end` invece di `len` a
+    `vma_contains_range` (raddoppiava la somma → ogni VMA rifiutata;
+    invisibile finche' solo la heap clause serviva). Rimandati: mprotect/NX,
+    guard page, file-backed (fase propria: page-in deadlock-prone).
 
 ## Important Notes
 
@@ -1263,9 +1280,9 @@ rg '\[bench\]' /tmp/bench-run1.log /tmp/bench-run2.log /tmp/bench-run3.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 7/7
-#   [usertests] PASS 43/43
+#   [usertests] PASS 44/44
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 43/43' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 44/44' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 

@@ -339,8 +339,112 @@ fn t_dev_zero() -> bool {
     ok
 }
 
-fn t_map_alias() -> bool {
-    if libr::map_physical(libr::MAP_TEST_PHYS, VA_A, 1).is_err() {
+/// t44 — mmap anonimo nel basso canonico (Fase M0): pattern R/W, multi-PT,
+/// fixed/overlap, munmap intero + riuso, integrazione syscall (write da
+/// buffer mappato). Solo path suite-safe (rifiuti = -1, mai fault): i
+/// negativi-con-fault fermerebbero il sistema, come il NULL test kernel.
+fn t_mmap() -> bool {
+    // 1. Anonima 3 pagine: base bassa + allineata, pattern oltre le pagine.
+    let a = match libr::mmap(0, 3 * 4096) {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    if a < 0x10_0000 || a & 0xFFF != 0 {
+        return false;
+    }
+    for i in 0..3 * 4096usize {
+        unsafe { core::ptr::write_volatile((a + i) as *mut u8, i.wrapping_mul(7) as u8); }
+    }
+    for i in 0..3 * 4096usize {
+        if unsafe { core::ptr::read_volatile((a + i) as *const u8) } != i.wrapping_mul(7) as u8 {
+            return false;
+        }
+    }
+    // 2. Multi-PT: 3 MiB, spot-check per pagina (1536 fault demand-zero).
+    let big = match libr::mmap(0, 3 * 1024 * 1024) {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    if big == a {
+        return false; // basi distinte (no alias)
+    }
+    let npages = 3 * 1024 * 1024 / 4096;
+    for p in 0..npages {
+        unsafe { core::ptr::write_volatile((big + p * 4096) as *mut u8, (p & 0xFF) as u8); }
+    }
+    for p in 0..npages {
+        if unsafe { core::ptr::read_volatile((big + p * 4096) as *const u8) } != (p & 0xFF) as u8 {
+            return false;
+        }
+    }
+    // 3. Fixed + overlap: libero ok, occupati/disallineati/len-0 rifiutati.
+    let f = match libr::mmap_fixed(0x50_0000, 8192) {
+        Ok(x) => x,
+        Err(_) => return false,
+    };
+    if f != 0x50_0000 {
+        return false;
+    }
+    if libr::mmap_fixed(a, 4096).is_ok() {
+        return false; // dentro `a`
+    }
+    if libr::mmap(big + 4096, 4096).is_ok() {
+        return false; // hint dentro `big` (strict: niente fallback)
+    }
+    if libr::mmap(0, 0).is_ok() {
+        return false; // len 0
+    }
+    if libr::mmap(a + 1, 4096).is_ok() {
+        return false; // hint disallineato
+    }
+    // 4. Munmap: parziale rifiutato senza stato, interi ok + riuso fixed.
+    if libr::munmap(a + 4096, 4096).is_ok() {
+        return false; // split = Err in M0
+    }
+    if unsafe { core::ptr::read_volatile(a as *const u8) } != 0 {
+        return false; // ancora intatta (pattern[0] = 0)
+    }
+    if libr::munmap(a, 3 * 4096).is_err() {
+        return false;
+    }
+    if libr::munmap(big, 3 * 1024 * 1024).is_err() {
+        return false;
+    }
+    if libr::munmap(f, 8192).is_err() {
+        return false;
+    }
+    let a2 = match libr::mmap_fixed(a, 3 * 4096) {
+        Ok(x) => x,
+        Err(_) => return false,
+    };
+    if a2 != a {
+        return false;
+    }
+    for i in 0..64usize {
+        if unsafe { core::ptr::read_volatile((a2 + i) as *const u8) } != 0 {
+            return false; // fresca = zeri (frame nuovi, mai stale)
+        }
+    }
+    let _ = libr::munmap(a2, 3 * 4096);
+    // 5. Integrazione syscall: sys_write (fd 2, seriale) da buffer mappato —
+    // is_user_range accetta le VMA (rifiuto = -1, non fault).
+    let m = match libr::mmap(0, 4096) {
+        Ok(x) => x,
+        Err(_) => return false,
+    };
+    let msg = b"mmap-write-ok\n";
+    for (i, &b) in msg.iter().enumerate() {
+        unsafe { core::ptr::write_volatile((m + i) as *mut u8, b); }
+    }
+    let n = libr::write(2, m as *const u8, msg.len());
+    let _ = libr::munmap(m, 4096);
+    if n != msg.len() as i64 {
+        return false;
+    }
+    true
+}
+
+fn t_map_alias() -> bool {    if libr::map_physical(libr::MAP_TEST_PHYS, VA_A, 1).is_err() {
         return false;
     }
     if libr::map_physical(libr::MAP_TEST_PHYS, VA_B, 1).is_err() {
@@ -2765,6 +2869,7 @@ pub extern "C" fn _start() -> ! {
     report(&mut total, &mut ok, "t41 block_on echo async", t_task_block_on());
     report(&mut total, &mut ok, "t42 run 2-task + server died", t_task_run());
     report(&mut total, &mut ok, "t43 join annidato 3-task", t_task_join_nested());
+    report(&mut total, &mut ok, "t44 mmap anonimo basso", t_mmap());
     // t34 per ULTIMO: i drop sono irrevocabili sul canale di usertests.
     report(&mut total, &mut ok, "t34 diritti per-canale lato server", t_rights());
 

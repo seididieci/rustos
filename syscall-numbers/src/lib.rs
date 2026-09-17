@@ -81,6 +81,19 @@ pub const SYS_PS_INFO: u64 = 37;
 /// con `io_count == 0`); prio 1..31 per tutti. `meta` e' uno SpawnMeta da 40 B
 /// (vedi sotto); ritorna il channel di nascita o -1.
 pub const SYS_SPAWN_IMAGE: u64 = 38;
+/// Mappa `len` byte anonimi privati (zero-fill lazy) nel basso canonico
+/// (Fase M0, mmap): `(hint, len, prot, flags)`. Ritorna la base o -1.
+/// Solo anonimo in M0: `prot` deve essere `PROT_READ|PROT_WRITE`, `flags`
+/// 0 (hint consigliato, 0 = scelta kernel) o `MMAP_FIXED` (hint obbligatorio).
+pub const SYS_MMAP: u64 = 39;
+/// Smappa `[addr, addr+len)`: solo VMA intere in M0 (parziali = -1 senza
+/// cambiare stato). Ritorna 0 o -1.
+pub const SYS_MUNMAP: u64 = 40;
+/// Protezioni `mmap` (M0: solo la combinazione RW e' accettata; M1: RO/NX).
+pub const PROT_READ: u64 = 0x1;
+pub const PROT_WRITE: u64 = 0x2;
+/// Flag `mmap`: piazza esattamente a `hint` (o fallisci), niente fallback.
+pub const MMAP_FIXED: u64 = 0x1;
 /// Flag `SpawnMeta.flags` (Fase 22, detach): il figlio non partecipa alla
 /// cascata di morte del parent — alla morte del parent viene ri-parentato a
 /// init invece di terminare. Deciso dallo spawner (il figlio non puo'

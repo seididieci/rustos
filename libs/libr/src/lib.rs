@@ -485,6 +485,45 @@ pub fn sbrk(inc: usize) -> Result<usize, ()> {
     }
 }
 
+/// Fase M0 — `mmap(hint, len)`: mappa anonima privata RW nel basso canonico
+/// (zero-fill lazy come `sbrk`). `hint == 0` = scelta kernel (first-fit dal
+/// basso); altrimenti e' un consiglio onorato solo se libero. Ritorna la base
+/// (sempre < 2^63) o `Err`. Solo RW in M0 (il kernel rifiuta altri `prot`).
+#[inline]
+pub fn mmap(hint: usize, len: usize) -> Result<usize, ()> {
+    let r = unsafe { syscall4(SYS_MMAP, hint as u64, len as u64, PROT_READ | PROT_WRITE, 0) };
+    if r < 0 {
+        Err(())
+    } else {
+        Ok(r as usize)
+    }
+}
+
+/// Fase M0 — `mmap_fixed(addr, len)`: come `mmap` ma piazza esattamente ad
+/// `addr` (`MMAP_FIXED`) o fallisce, mai fallback. Utile per riuso
+/// deterministico dopo `munmap`.
+#[inline]
+pub fn mmap_fixed(addr: usize, len: usize) -> Result<usize, ()> {
+    let r = unsafe { syscall4(SYS_MMAP, addr as u64, len as u64, PROT_READ | PROT_WRITE, MMAP_FIXED) };
+    if r < 0 {
+        Err(())
+    } else {
+        Ok(r as usize)
+    }
+}
+
+/// Fase M0 — `munmap(addr, len)`: smappa VMA intere (parziali = `Err` senza
+/// cambiare stato, niente split in M0).
+#[inline]
+pub fn munmap(addr: usize, len: usize) -> Result<(), ()> {
+    let r = unsafe { syscall4(SYS_MUNMAP, addr as u64, len as u64, 0, 0) };
+    if r < 0 {
+        Err(())
+    } else {
+        Ok(())
+    }
+}
+
 
 /// Termina il processo corrente con il codice `code`. Non ritorna.
 #[inline]
