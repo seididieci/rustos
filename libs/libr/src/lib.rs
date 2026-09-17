@@ -48,6 +48,12 @@ pub mod heap;
 /// globale nei percorsi per-op (regola P1.2 aggiornata).
 pub mod scratch;
 
+/// Executor async minimale sopra l'IPC asincrona (ADR-0019): `Future`
+/// (`WaitReply`, `RecvMsg`), tratto `Receivable` per l'instradamento,
+/// `block_on` single-task e `run` multi-task a router centrale.
+/// Kernel invariato; vincoli Fase 13 invariati (vedi modulo).
+pub mod task;
+
 /// Esegue una syscall a 4 argomenti e ne restituisce il risultato in `rax`.
 ///
 /// # Safety

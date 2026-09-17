@@ -1043,6 +1043,24 @@ velordor/
         `DISK_STATS` in ADR-0018 come futuri.
   - Verifica: gate 5/5 + 7/7 + 40/40 + shell 30/30, zero FAIL/PANIC/FAULT;
         tabelle P2 in `docs/src/13-performance.md`.
+- [ ] Fase async/await in libr (ADR-0019, PIANO in 4 passi con review dopo
+      ognuno; se ci si ferma, la suite resta verde al passo precedente).
+      Sintassi `async/await` (solo `core`) sopra syscall 33/34 invariate, con
+      router centrale (l'executor unico a chiamare `recv`, instrada per
+      `req_id`; risolve `UnexpectedMsg` per costruzione). Kernel invariato.
+  - [ ] Passo 1 — `libr::task` (Future, Waker custom, `block_on`, `run`
+        multi-task pool N=8, pin via `core::pin::pin!`, mai heap per-op).
+        Nessun chiamante migrato; gate invariato 40/40.
+  - [ ] Passo 2 — t41 (`block_on` + echo async) / t42 (`run` 2 task +
+        `ServerDied`); suite → 42/42 (+ run-tests.sh/testing/docs).
+  - [ ] Passo 3 — `fs_read_async(...).await` sopra read_async/fs_collect
+        invariati (prova client reale, protocollo intatto).
+  - [ ] Passo 4 — pilota userdisk SOLO registrazione (`FsReg` →
+        `async fn register`, via `block_on`, riusabile su EXIT_NOTIFY);
+        loop DISK/DEV intatto, copertura t32. Rewrite loop completo rimandato.
+      Vincoli ereditati Fase 13 (non rilassati): no mix sync/async, FIFO,
+      FS 1-in-volo. Rimandati: join/select/timeout, rewrite tty/loop,
+      rilassamenti formato frame.
 
 ## Important Notes
 
