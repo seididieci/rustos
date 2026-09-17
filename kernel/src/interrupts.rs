@@ -66,7 +66,7 @@ extern "x86-interrupt" fn page_fault_handler(
         if fault_addr < brk {
             let page = fault_addr & !0xfff;
             if let Some(frame) = crate::phys_mem::alloc() {
-                unsafe { core::ptr::write_bytes(frame as *mut u8, 0, 4096); }
+                unsafe { core::ptr::write_bytes(crate::addr::phys_to_virt(frame) as *mut u8, 0, 4096); }
                 let cr3 = crate::vmm_user::active_cr3();
                 unsafe { crate::vmm_user::map_user_region_owned(cr3, page, frame, 1); }
                 unsafe { flush_page(page) };

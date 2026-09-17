@@ -6,7 +6,7 @@ use spin::Mutex;
 
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
-const VGA_BUFFER_ADDR: *mut Buffer = 0xb8000 as *mut Buffer;
+const VGA_BUFFER_ADDR: *mut Buffer = crate::addr::phys_to_virt(crate::addr::VGA_PHYS) as *mut Buffer;
 
 pub static WRITER: Mutex<Writer> = Mutex::new(Writer {
     column_position: 0,

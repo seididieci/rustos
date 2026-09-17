@@ -5,6 +5,7 @@
 
 extern crate alloc;
 
+mod addr;
 mod boot_info;
 mod boot_tables;
 mod channels;
@@ -103,7 +104,7 @@ pub extern "C" fn rust_main(boot_info_phys: u64) -> ! {
     // sovrascriverebbero la free-list dell'heap (corruzione).
     {
         let hs = phys_mem::bitmap_end();
-        phys_mem::reserve(hs, crate::heap::HEAP_SIZE as u64);
+        phys_mem::reserve(crate::addr::virt_to_phys(hs), crate::heap::HEAP_SIZE as u64);
     }
 
     // Pagina fisica scratch per i test userspace di `map_physical`

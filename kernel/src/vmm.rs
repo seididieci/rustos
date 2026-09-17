@@ -35,8 +35,9 @@ pub fn mapped_max() -> u64 {
 }
 
 pub fn init(max_addr: u64) {
-    let pdpt = unsafe { &mut *(PDPT_ADDR as *mut [u64; 512]) };
-    let pd0 = unsafe { &mut *(PD_ADDR as *mut [u64; 512]) };
+    use crate::addr::phys_to_virt;
+    let pdpt = unsafe { &mut *(phys_to_virt(PDPT_ADDR) as *mut [u64; 512]) };
+    let pd0 = unsafe { &mut *(phys_to_virt(PD_ADDR) as *mut [u64; 512]) };
 
     // ── PD[0]: entries 1-511 → large pages (2 MiB – 1 GiB) ────────
     for i in 1..512usize {
@@ -59,7 +60,7 @@ pub fn init(max_addr: u64) {
         let pd_phys = PD_AREA_START + (extra_pds as u64) * PAGE_SIZE;
         pdpt[pdpt_idx] = pd_phys | PRESENT_WRITABLE;
 
-        let new_pd = unsafe { &mut *(pd_phys as *mut [u64; 512]) };
+        let new_pd = unsafe { &mut *(phys_to_virt(pd_phys) as *mut [u64; 512]) };
 
         for j in 0..512usize {
             let phys = covered + (j as u64) * 2 * 1024 * 1024;

@@ -84,9 +84,9 @@ impl core::fmt::Display for HvmMemmapEntry {
 /// Interpreta un indirizzo fisico come riferimento alla start-info.
 ///
 /// Safety: l'indirizzo deve essere quello passato dal loader PVH in EBX e la
-/// zona deve essere mappata identity (i primi 2 MiB lo sono).
+/// zona deve essere mappata (direct map: i primi 2 MiB lo sono sempre).
 pub unsafe fn at(phys: u64) -> &'static HvmStartInfo {
-    unsafe { &*(phys as usize as *const HvmStartInfo) }
+    unsafe { &*(crate::addr::phys_to_virt(phys) as usize as *const HvmStartInfo) }
 }
 
 /// Tabella della memoria come slice tipizzata.
@@ -99,7 +99,7 @@ pub fn memmap(info: &HvmStartInfo) -> &[HvmMemmapEntry] {
     assert!(info.memmap_entries < 256, "memory map irrealistica");
     unsafe {
         slice::from_raw_parts(
-            info.memmap_paddr as usize as *const HvmMemmapEntry,
+            crate::addr::phys_to_virt(info.memmap_paddr) as usize as *const HvmMemmapEntry,
             info.memmap_entries as usize,
         )
     }
@@ -135,12 +135,12 @@ pub fn cmdline(info: &HvmStartInfo) -> Option<&'static str> {
     }
     unsafe {
         let mut len = 0usize;
-        let mut p = info.cmdline_paddr as *const u8;
+        let mut p = crate::addr::phys_to_virt(info.cmdline_paddr) as *const u8;
         while *p != 0 && len < 512 {
             len += 1;
             p = p.add(1);
         }
-        let bytes = slice::from_raw_parts(info.cmdline_paddr as *const u8, len);
+        let bytes = slice::from_raw_parts(crate::addr::phys_to_virt(info.cmdline_paddr) as *const u8, len);
         core::str::from_utf8(bytes).ok()
     }
 }

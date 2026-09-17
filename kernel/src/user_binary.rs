@@ -91,10 +91,12 @@ fn spawn_user(
 
 /// Alloca `frames` frame contigui e vi copia il contenuto del binario embedded
 /// a `code_phys`. Ritorna il phys della copia (privata per il processo).
+/// `code_phys` e' un VIRT kernel (indirizzo della `static` embedded, nonostante
+/// il nome); `dst` e' PHYS e va scritto via direct map.
 fn copy_binary(code_phys: u64, frames: usize) -> Option<u64> {
     let dst = crate::phys_mem::alloc_contiguous(frames)?;
     let src = code_phys as *const u8;
-    let out = dst as *mut u8;
+    let out = crate::addr::phys_to_virt(dst) as *mut u8;
     for i in 0..(frames * crate::phys_mem::FRAME_SIZE as usize) {
         unsafe {
             *out.add(i) = *src.add(i);
@@ -125,14 +127,17 @@ pub fn spawn_image(
     let frame = crate::phys_mem::FRAME_SIZE as usize;
     let frames = len.div_ceil(frame);
     let dst = crate::phys_mem::alloc_contiguous(frames)?;
+    // `src` e' user-VA del chiamante (CR3 attivo: lettura diretta); `dst` e'
+    // PHYS e va scritto via direct map.
+    let out = crate::addr::phys_to_virt(dst) as *mut u8;
     for i in 0..len {
         unsafe {
-            *(dst as *mut u8).add(i) = *src.add(i);
+            *(out).add(i) = *src.add(i);
         }
     }
     for i in len..frames * frame {
         unsafe {
-            *(dst as *mut u8).add(i) = 0;
+            *(out).add(i) = 0;
         }
     }
     let id = unsafe {

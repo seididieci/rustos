@@ -241,7 +241,9 @@ impl Process {
         io_ranges: &[(u16, u16)],
     ) -> Option<Process> {
         let stack_base = crate::phys_mem::alloc_contiguous(STACK_FRAMES)?;
-        let stack_top = stack_base + (STACK_FRAMES as u64 * crate::phys_mem::FRAME_SIZE);
+        // `stack_base` resta PHYS (free a teardown); `stack_top` e' VIRT
+        // (direct map: RSP0 del TSS + scritture del frame iniziale).
+        let stack_top = crate::addr::phys_to_virt(stack_base + (STACK_FRAMES as u64 * crate::phys_mem::FRAME_SIZE));
 
         // Stack kernel in 16 KiB: finestra per il frame CPU fittizio e i
         // frame di interrupt annidati.
@@ -304,8 +306,9 @@ impl Process {
         detached: bool,
     ) -> Option<Process> {
         // Kernel stack: RSP0 (per rientrare a ring 0 su interrupt) + frame.
+        // Come sopra: base PHYS (teardown), top VIRT (RSP0 + frame iniziale).
         let stack_base = crate::phys_mem::alloc_contiguous(STACK_FRAMES)?;
-        let stack_top = stack_base + (STACK_FRAMES as u64 * crate::phys_mem::FRAME_SIZE);
+        let stack_top = crate::addr::phys_to_virt(stack_base + (STACK_FRAMES as u64 * crate::phys_mem::FRAME_SIZE));
 
         // Address space user dedicato (PML4 proprio, kernel condiviso U=0).
         let cr3 = crate::vmm_user::new_address_space()?;
