@@ -1,5 +1,10 @@
 # ADR-0004: Boot via protocollo PVH con stub custom
 
+> **Nota di superamento (Fase HH)**: tabelle e mappa di boot sono oggi
+> higher-half + direct map (ADR-0020): `BOOT_MAP_LIMIT` non esiste piu'
+> (finestra immagine statica + guard), le PD direct stanno a LMA 16M. Resta
+> valido tutto il resto (PVH, stub, GDT statica, niente bootloader).
+
 ## Status
 
 Accepted
