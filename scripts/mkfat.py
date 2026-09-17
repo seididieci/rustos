@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Genera un'immagine disco FAT32 minimale (read-only) per Velordor.
+"""Genera un'immagine disco FAT32 minimale per Velordor.
 
-Produce `fat.img` da montare come `/fat` dal fs server (Fase 9.2): BPB corretto,
-2 FAT identiche, root directory nel cluster 2, file 8.3 con catena di cluster e
-una sotto-directory.
+Produce `fat.img` da montare come `/fat` dal fs server (Fase 9.2, scrivibile
+da Fase 20): BPB corretto, 2 FAT identiche, root directory nel cluster 2,
+file 8.3 con catena di cluster e una sotto-directory.
 
 Parametri (coerenti con userland/fs/src/fat32.rs):
-  settore 512 B, cluster 4 KiB (spc=8), rsvd=32, num_fats=2, fat_size=128 settori
-  => data_start = 32 + 2*128 = 288.
+  settore 512 B, cluster 4 KiB (spc=8), rsvd=32, num_fats=2, fat_size=516 settori
+  => data_start = 32 + 2*516 = 1064.
 
 Nessuna dipendenza da tool host: scrive i byte direttamente.
 """
@@ -186,7 +186,7 @@ def main() -> None:
     label = (args.label.upper() + " " * 11)[:11].encode()
     b = Builder(vol_serial=serial, vol_label=label)
     b.add_file("HELLO.TXT", b"Hello from Velordor FAT32!\n")
-    b.add_file("README.TXT", b"Velordor FAT32 read-only demo (Fase 9.2)\n")
+    b.add_file("README.TXT", b"Velordor FAT32 demo (Fase 9.2, scrivibile da Fase 20)\n")
     if args.marker is not None:
         b.add_file("MARKER.TXT", args.marker.encode())
     b.add_subdir("SUB", [("NOTES.TXT", b"Subdirectory note.\n")])

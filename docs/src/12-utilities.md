@@ -90,7 +90,7 @@ Rendering VGA in userspace. Gestisce:
 - Scrittura VGA (testo, cursore hardware CRTC)
 - Registrazione device `/dev/console` presso userfs via `FS_REGISTER`
 
-La tastiera è gestita da `userkbd`/`usertty` (Fase 15): input da `/dev/input/keyboard`, echo alla shell tramite device path DEV.
+La tastiera è gestita da `userkbd`/`usertty` (Fase 15): input da `/dev/input/keyboard`, echo su `/dev/console` verso la shell.
 
 ### FS server (userfs)
 

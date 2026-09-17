@@ -1,9 +1,10 @@
-//! Parser FAT32 read-only (Fase 9.2).
+//! Parser FAT32 (Fase 9.2, scrivibile da Fase 20).
 //!
 //! Legge BPB, FAT, catene di cluster, directory e file 8.3 da una sorgente
-//! settori `BlockSource` (Fase 16: disco ATA locale prima, client IPC poi).
+//! settori `BlockSource` (Fase 16: client IPC verso userdisk).
 //! Generalizzato a qualunque dimensione di cluster (BytesPerSec x SPC).
-//! Limiti MVP: read-only, niente LFN (le entry 0x0F sono saltate), 8.3 names.
+//! Limiti: niente LFN (le entry 0x0F sono saltate), 8.3 names, niente
+//! mkdir/rm su FAT (solo overwrite/create/grow, Fase 20).
 
 extern crate alloc;
 
@@ -12,8 +13,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 /// Sorgente di settori da 512 byte (LBA assoluti nel nodo montato).
-/// Implementata dal driver ATA locale (Fase 9.2) o dal client IPC verso
-/// userdisk (Fase 16, `ipc_disk.rs`): il parser non distingue.
+/// Implementata dal client IPC verso userdisk (Fase 16, `ipc_disk.rs`):
+/// il parser non distingue (il driver ATA locale e' stato rimosso in Fase 16).
 pub trait BlockSource {
     fn read_sector(&self, lba: u64, buf: &mut [u8; 512]) -> bool;
     /// Scrive un settore (Fase 20, FAT scrivibile): write-through, nessun

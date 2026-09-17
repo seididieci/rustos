@@ -124,7 +124,7 @@ pub extern "C" fn rust_main(boot_info_phys: u64) -> ! {
 
     serial_println!("[boot] max_addr RAM: {:#x} ({} MiB)", max_addr, max_addr / (1024 * 1024));
 
-    // Fase 4: identity map dinamica → frame allocator → heap
+    // Fase 4 + HH: direct map 64G (verificata) → frame allocator → heap
     vmm::init(max_addr);
     vmm_user::init();
 

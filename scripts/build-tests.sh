@@ -6,8 +6,8 @@
 # gli strumenti di stress (hogheap, devreader) e la suite di regressione
 # completa (usertests + helper client/spin).
 #
-# Prodotto: testland/build/*.bin, incluso nel kernel via `include_bytes!`
-# (user_binary.rs) e spawnato da init o dall'orchestratore usertests.
+# Prodotto: testland/build/*.bin, iniettati in /fat/test via inject-bins.sh
+# e spawnati da disco (spawn_image); solo init/disk/fs restano embedded.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/build_common.sh

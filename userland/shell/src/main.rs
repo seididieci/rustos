@@ -90,7 +90,7 @@ fn spin_brief() {
 }
 
 fn term_init() -> bool {
-    // Il mount /dev/input viene registrato dal console server al suo avvio:
+    // Il mount /dev/input viene registrato da usertty al suo avvio:
     // ritenta se l'open iniziale fallisce (race di boot).
     for _ in 0..100 {
         unsafe {
@@ -554,8 +554,9 @@ fn cmd_kill(args: &[&str]) {
 }
 
 /// Copia file client-side (Fase 18.2): read a chunk + write. Usata da `cp`
-/// e `mv`. Niente nuove op FS: su /fat la write rifiuta (read-only) e la
-/// copia fallisce pulita senza toccare la sorgente.
+/// e `mv`. Niente nuove op FS: mkdir/rmdir/rm su /fat restano rifiutati
+/// (niente unlink, fuori scope), la write funziona (Fase 20) e la copia
+/// fallisce pulita senza toccare la sorgente.
 fn copy_file(src: &str, dst: &str) -> bool {
     let from = resolve(src);
     let to = resolve(dst);

@@ -87,7 +87,8 @@ velordor/
 ├── syscall-numbers/# Costanti syscall + costanti condivise (kernel+user)
 ├── scripts/        # Build userland/testland, mkfat, ...
 ├── run.sh          # Build userland + testland + kernel + QEMU (PVH)
-├── userland/       # Servizi utente: init, console, fs, devfs, shell, uptime
+├── userland/       # Servizi utente: init, console, fs, devfs, shell, uptime,
+│                   # kbd, tty, disk (tutti supervisionati da init)
 ├── testland/       # Test suite + repro + demo (usertests, testfs, testfat, ...)
 └── docs/           # Documentazione mdbook (src/ = capitoli + adr/)
 ```

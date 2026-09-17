@@ -1,7 +1,8 @@
 //! userdisk — Driver disco ATA in userspace (Fase 16).
 //!
-//! Possiede le porte ATA primario + secondario (via `io_ranges`, TSS
-//! per-processo ADR-0006), rileva i dischi presenti via `IDENTIFY`
+//! Possiede le porte ATA del canale primario (via `io_ranges`, TSS
+//! per-processo ADR-0006; il secondario e' probato da `detect.rs` ma non
+//! concesso: toccarlo e' #GP — su QEMU non esiste), rileva i dischi presenti
 //! (`detect.rs`), parsa le partizioni MBR primarie (`part.rs`) ed espone ogni
 //! nodo come `/dev/sdX` (`FS_REGISTER` per nodo, solo i presenti) + servizio
 //! `Disk` per il data-plane verso userfs.
@@ -17,10 +18,10 @@
 //! Due protocolli serviti, entrambi con reply implicita (ADR-0008):
 //! - `DISK_*` (canale diretto userfs→userdisk, service_lookup(Disk)): HELLO
 //!   (fisici nelle reply: w0 = req_phys del DISK_REQ ring, w1 = resp_phys),
-//!   OPEN/READ settoriali, CLOSE, RESOLVE chiave→handle (Fase 16c: userdisk e'
-//!   l'unico proprietario della mappa; 16d: chiave = nome (`sda`), UUID hex
-//!   8 char (seriale volume FAT) o label (priorità in quest'ordine).
-//!   Un settore per chiamata (1:1 con BlockSource).
+//!   OPEN/READ multi-settore (P1.2, count≤7 per IPC), CLOSE, RESOLVE
+//!   chiave→handle (Fase 16c: userdisk e' l'unico proprietario della mappa;
+//!   16d: chiave = nome (`sda`), UUID hex 8 char (seriale volume FAT) o label
+//!   (priorità in quest'ordine).
 //! - `DEV_*` (relay userfs per gli open raw `/dev/sdX`): OPEN(w0=handle
 //!   codificato disco<<16|sub), READ sequenziale con posizione per-fd (solo
 //!   multipli di 512), WRITE sempre ERR (read-only), CLOSE, READDIR vuota.

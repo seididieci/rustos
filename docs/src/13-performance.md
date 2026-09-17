@@ -10,8 +10,8 @@
 ## Harness
 
 - `testland/bench` (`userbench`, `/test/bench.bin`): 6 op end-to-end con
-  warmup, stampa righe `[bench] <nome> iters=<n> cyc_op=<c> kb_s=<k>`.
-- `scripts/bench.sh` (`RUNS=3`, `TIMEOUT_S=120`): N boot KVM, fail-loud se il
+  warmup, stampa righe `[bench] <nome> iters=<n> cyc_op=<c> max_cyc=<m> kb_s=<k>`.
+- `scripts/bench.sh` (`RUNS=3`, `TIMEOUT_S=300`): N boot KVM, fail-loud se il
   bench non completa (`DONE ok=1`). Esecuzione: `RUN_BENCH=1` compila init
   con feature `bench` (ortogonale a `skip_tests`): il bench gira dopo
   l'eventuale suite, prima della shell — **mai nel gate** di regressione.
@@ -98,4 +98,4 @@ di FAT/dir vanno in cache; il sequenziale freddo resta PIO (niente
 read-ahead in C1, volutamente).
 
 Hit rate: bench 74% (1514 hit / 534 settori via PIO), suite 91%.
-Gate invariato (5/5 + 7/7 + 40/40 + shell 30/30).
+Gate invariato (5/5 + 7/7 + 44/44 + shell 30/30).
