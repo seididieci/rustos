@@ -9,6 +9,9 @@ fn main() {
     let boot_obj = out_dir.join("boot.o");
 
     println!("cargo:rerun-if-changed={}", boot_src.display());
+    // Il linker script determina VMA/LMA dell'immagine: senza questa riga
+    // modificarlo non invalida la build (stale silenzioso, osservato in H1).
+    println!("cargo:rerun-if-changed={}", manifest_dir.join("linker.ld").display());
 
     // I binari user embeddati (user_binary.rs) vengono rigenerati da
     // scripts/build-userland.sh e scripts/build-tests.sh: se cambiano il
