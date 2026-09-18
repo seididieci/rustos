@@ -158,9 +158,8 @@ pub fn t_stable_id() -> bool {
 }
 
 /// t32 — disk driver in userspace (Fase 16).
-/// (A) Baseline: /dev/sda leggibile raw con firma boot. (B) Kill userdisk
-/// (pid via `service_pid`, non figlio nostro) e attesa init-restart come
-/// t27/t28: sparizione dallo slot, ricomparsa, poi /dev/sda di nuovo
+/// (A) Baseline: /dev/sda leggibile raw con firma boot. (B) Bounce via init
+/// (`init_bounce`, Fase 35) e attesa init-restart come t27/t28: sparizione dallo slot, ricomparsa, poi /dev/sda di nuovo
 /// operativo + smoke /fat/HELLO.TXT (riconnessione lazy di userfs al driver
 /// rinato, senza rimontare: il mount sopravvive). Bound generosi (1000 tick
 /// ~ 10 s contro restart atteso ~50), mai hang; poll throttled Livello 1.
@@ -170,17 +169,15 @@ pub fn t_disk() -> bool {
         println!("[usertests] t32: baseline /dev/sda FAILED");
         return false;
     }
-    let p1 = match libr::service_pid(libr::Service::Disk) {
+    // Bounce via init (Fase 35: userdisk e' figlio di init, kill diretto qui
+    // fallirebbe col kill parent-scoped).
+    let p1 = match libr::init_bounce(libr::Service::Disk) {
         Ok(p) => p,
         Err(_) => {
-            println!("[usertests] t32: service_pid(Disk) FAILED");
+            println!("[usertests] t32: bounce userdisk FAILED");
             return false;
         }
     };
-    if libr::kill(p1, -16).is_err() {
-        println!("[usertests] t32: kill userdisk pid={} FAILED", p1);
-        return false;
-    }
     // Fase A: sparizione dallo slot (morte osservata dal registry).
     if !libr::poll_wait(1000, libr::POLL_PERIOD_TICKS, || {
         libr::service_pid(libr::Service::Disk).is_err()

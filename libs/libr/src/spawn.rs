@@ -105,6 +105,21 @@ pub fn service_pid(service: Service) -> Result<i64, ()> {
     if p < 0 { Err(()) } else { Ok(p) }
 }
 
+/// Fase 35 (hardening) — `init_bounce(service)`: chiede a init (canale di
+/// nascita, solo per figli di init) di uccidere+riavviare il servizio
+/// supervisionato `service`. Uccidere un server supervisionato e' operazione
+/// da supervisore: i test guidano il caos tramite init invece di killare
+/// direttamente (il kill diretto e' parent-scoped). Ritorna il pid ucciso o
+/// `Err` (servizio ignoto / init irraggiungibile). La morte+restart si
+/// osservano poi via `service_pid` come prima.
+#[inline]
+pub fn init_bounce(service: Service) -> Result<i64, ()> {
+    match send(CHANNEL_PARENT, INIT_BOUNCE, service as u64, 0) {
+        Ok(r) if r.w0 != u64::MAX => Ok(r.w0 as i64),
+        _ => Err(()),
+    }
+}
+
 /// `map_physical(phys, virt, count)`: mappa `count` pagine fisiche a partire
 /// da `phys` all'indirizzo virtuale `virt` nello spazio del chiamante.
 /// Usato dal console server per accedere al frame buffer VGA.

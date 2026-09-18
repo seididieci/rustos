@@ -156,11 +156,16 @@ pub const FS_NOTIFY: u64 = 0x32;
 // - KBD_NOTIFY (0x40): userkbd → usertty, scancode in coda (w0 = count).
 // - SVC_READY (0x7D): servizio → init, "sono su" (fire-and-forget a boot).
 // - TEST_DONE (0x7E): test suite → init, fine sequenza (w0 = ok count).
+// - INIT_BOUNCE (0x7F): figlio → init, "uccidi+riavvia il servizio `w0`"
+//   (Fase 35, hardening: uccidere un server supervisionato e' operazione da
+//   supervisore — i test guidano il caos tramite init invece di killare
+//   direttamente; init risponde con reply (0 = pid ucciso, ERR = ignoto)).
 pub const FS_REGISTER: u64 = 0x30;
 pub const FS_BUF_REG: u64 = 0x31;
 pub const KBD_NOTIFY: u64 = 0x40;
 pub const SVC_READY: u64 = 0x7D;
 pub const TEST_DONE: u64 = 0x7E;
+pub const INIT_BOUNCE: u64 = 0x7F;
 // ── Protocollo DEV_* (userfs→driver: devfs/console/kbd/tty/disk, DocsD) ───
 // Single source of truth dei tag e dei device type (w0 di DEV_OPEN): prima
 // duplicati in userfs/userdisk/devfs/console/kbd/tty. userfs instrada per

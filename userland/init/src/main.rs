@@ -127,11 +127,35 @@ fn run_test(meta: &SvcMeta, supervised: &mut [Supervised]) {
                 let _ = libr::reply(TEST_DONE, 0, 0);
                 return;
             }
+            Ok(m) if m.tag == libr::INIT_BOUNCE => {
+                let r = handle_bounce(supervised, m.w0);
+                let _ = libr::reply(0, r, 0);
+            }
             Ok(m) if m.tag == libr::EXIT_NOTIFY => {
                 handle_child_death(supervised, m.w1 as i64, m.w0 as i64);
             }
             Ok(_) => {}
             Err(_) => {}
+        }
+    }
+}
+
+/// Bounce di un servizio supervisionato (Fase 35, hardening): uccide il figlio
+/// (init e' parent: sempre consentito, anche col kill parent-scoped) e lascia
+/// che il restart avvenga per la via normale (EXIT_NOTIFY → restart_service).
+/// Ritorna il pid ucciso o `u64::MAX` se il servizio e' ignoto. Chiamato dai
+/// loop che ricevono (run_test + supervisore): il chiamante risponde con
+/// reply (i test guidano il caos tramite init invece di killare direttamente).
+fn handle_bounce(supervised: &[Supervised], svc_disc: u64) -> u64 {
+    match supervised.iter().find(|e| e.svc as u64 == svc_disc) {
+        Some(e) => {
+            println!("[init] bounce: uccido pid={} ({})", e.pid, e.svc as u64);
+            let _ = libr::kill(e.pid, 0);
+            e.pid as u64
+        }
+        None => {
+            println!("[init] bounce: servizio ignoto ({})", svc_disc);
+            u64::MAX
         }
     }
 }
@@ -473,6 +497,10 @@ pub extern "C" fn _start() -> ! {
         match libr::recv() {
             Ok(m) if m.tag == libr::EXIT_NOTIFY => {
                 handle_child_death(&mut supervised, m.w1 as i64, m.w0 as i64);
+            }
+            Ok(m) if m.tag == libr::INIT_BOUNCE => {
+                let r = handle_bounce(&supervised, m.w0);
+                let _ = libr::reply(0, r, 0);
             }
             Ok(_) => {}
             Err(_) => {}
