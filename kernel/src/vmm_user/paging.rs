@@ -2,7 +2,7 @@ pub(super) const PTE_PRESENT: u64 = 0x1;
 
 // Split from vmm_user.rs (byte-identical move; see facade).
 use core::sync::atomic::{AtomicU64, Ordering};
-use super::layout::{USER_BASE, USER_PRESENT_WRITABLE, PAGE_SIZE, USER_CODE, USER_STACK_TOP, USER_STACK_FRAMES};
+use super::layout::{USER_BASE, USER_PRESENT_WRITABLE, PAGE_SIZE, USER_STACK_TOP, USER_STACK_FRAMES};
 
 /// Ritorna il CR3 attivo (del processo correntemente in esecuzione).
 pub fn active_cr3() -> u64 {
@@ -151,18 +151,6 @@ pub unsafe fn map_user_region_owned_ro(cr3: u64, vaddr: u64, phys: u64, count: u
     unsafe { map_user_region_flags(cr3, vaddr, phys, count, super::layout::USER_LEAF_RO | super::layout::USER_OWNED) }
 }
 
-/// Mapping del binario user (29): il binario e' FLAT (codice + .rodata +
-/// .data + .bss in un'unica regione contigua copiata dall'embed): non
-/// conoscendo il confine codice/dati serve ancora RWX (writable+executable).
-/// NX e' comunque enforced su heap, stack, mmap e pagine iniettate: il W^X
-/// del binario richiede i confini di sezione all'embed-time (29b).
-///
-/// # Safety
-/// Come `map_user_region_owned`.
-pub unsafe fn map_user_region_owned_binary(cr3: u64, vaddr: u64, phys: u64, count: usize) {
-    unsafe { map_user_region_flags(cr3, vaddr, phys, count, super::layout::USER_PRESENT_WRITABLE | super::layout::USER_OWNED) }
-}
-
 unsafe fn map_user_region_flags(cr3: u64, vaddr: u64, phys: u64, count: usize, flags: u64) {
     let cur = cr3;
     let mut addr = vaddr;
@@ -214,25 +202,33 @@ pub unsafe fn map_user_region_shared(cr3: u64, vaddr: u64, phys: u64, count: usi
     unsafe { map_user_region_flags(cr3, vaddr, phys, count, flags) }
 }
 
-/// Prepara la memoria di un processo user: mappa il codice `code_phys` (per
-/// `code_frames` frame) a `USER_CODE`, alloca+mappa lo stack user a
-/// `USER_STACK_TOP`. Le due pagine ring (`USER_FS_BUFFER` = request,
-/// `USER_RESP_RING` = response) NON sono mappate qui: ogni processo le alloca
-/// e le mappa lazy al primo uso via la syscall `SYS_RING_ALLOC` (Fase 10.2,
-/// ring SPSC per-processo al posto della vecchia FS buffer page).
-/// Ritorna il RSP iniziale (`USER_STACK_TOP`).
+/// Mappa UNA pagina user con flag espliciti W/X (Fase 31, loader ELF):
+/// U=1, owned, NX se non eseguibile. E' il solo percorso che puo' mappare una
+/// pagina eseguibile (il codice); tutto il resto e' NX.
 ///
 /// # Safety
-/// `cr3` e' un address space creato da `new_address_space`; `code_phys` deve
-/// puntare a frame fisici validi contenenti il codice user.
-pub unsafe fn setup_user_memory(cr3: u64, code_phys: u64, code_frames: usize) -> u64 {
-    // 29: il binario flat resta RWX (vedi `map_user_region_owned_binary`).
-    unsafe { map_user_region_owned_binary(cr3, USER_CODE, code_phys, code_frames); }
+/// Come `map_user_region`.
+pub unsafe fn map_user_leaf(cr3: u64, vaddr: u64, phys: u64, writable: bool, executable: bool) {
+    let mut flags = 0x4 | 0x1 | super::layout::USER_OWNED; // U + P + owned
+    if writable {
+        flags |= 0x2;
+    }
+    if !executable {
+        flags |= super::layout::PTE_NX;
+    }
+    unsafe { map_user_region_flags(cr3, vaddr, phys, 1, flags) }
+}
 
+/// Alloca e mappa lo stack user a `USER_STACK_TOP` (Fase 31: separato dal
+/// caricamento del codice, che ora e' `elf::load`). Ritorna il RSP iniziale.
+/// La pagina guard sotto lo stack (`USER_STACK_GUARD`) resta mai mappata.
+///
+/// # Safety
+/// `cr3` e' un address space creato da `new_address_space`.
+pub unsafe fn setup_user_stack(cr3: u64) -> u64 {
     let stack_base = USER_STACK_TOP - (USER_STACK_FRAMES as u64 * PAGE_SIZE);
     let stack_phys = crate::phys_mem::alloc_contiguous(USER_STACK_FRAMES)
         .expect("oom per lo stack user");
     unsafe { map_user_region_owned(cr3, stack_base, stack_phys, USER_STACK_FRAMES); }
-
     USER_STACK_TOP
 }

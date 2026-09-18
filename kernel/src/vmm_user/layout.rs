@@ -1,5 +1,8 @@
 // Split from vmm_user.rs (byte-identical move; see facade).
-pub const USER_BASE: u64 = 0x0000_4000_0000_0000;
+/// Indirizzo virtuale del codice user (inizio della regione user).
+/// Single source in `syscall-numbers` (Fase 31: serve anche al loader/test).
+pub use syscall_numbers::USER_CODE;
+pub const USER_BASE: u64 = USER_CODE;
 pub(super) const USER_PRESENT_WRITABLE: u64 = 0x4 | 0x3; // U + P + W
 /// Bit NX sulla PTE (bit 63, Fase 29): richiede EFER.NXE (abilitato in
 /// `boot.asm`). Valido solo sulle foglie: messo sui livelli intermedi
@@ -21,9 +24,6 @@ pub(super) const USER_LEAF_RO: u64 = 0x4 | 0x1 | PTE_NX; // U + P + NX
 /// bit: il loro owner (il processo che le ha allocate) le libera.
 pub(super) const USER_OWNED: u64 = 0x200;
 pub(super) const PAGE_SIZE: u64 = 0x1000;
-
-/// Indirizzo virtuale del codice user (inizio della regione user).
-pub const USER_CODE: u64 = USER_BASE;
 
 /// Indirizzo virtuale della finestra request ring del processo corrente.
 pub const USER_FS_BUFFER: u64 = USER_BASE + 0x200_000;

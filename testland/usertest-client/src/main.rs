@@ -96,6 +96,7 @@ const MODE_FAULT_NX: u64 = 15;
 const MODE_FAULT_GUARD: u64 = 16;
 const MODE_FAULT_GPF: u64 = 17;
 const MODE_SHMDEMO: u64 = 18;
+const MODE_FAULT_CODE: u64 = 19;
 
 // Tag DEV_* + errore IPC (A1): single source in `libr` (prima letterali qui).
 use libr::{DEV_CLOSE, DEV_OPEN, ERR};
@@ -278,7 +279,7 @@ pub extern "C" fn _start() -> ! {
             let _ = libr::send(parent, T_READY, det, norm);
             libr::exit(0);
         }
-        MODE_FAULT_RO | MODE_FAULT_NONE | MODE_FAULT_NX | MODE_FAULT_GUARD | MODE_FAULT_GPF => {
+        MODE_FAULT_RO | MODE_FAULT_NONE | MODE_FAULT_NX | MODE_FAULT_GUARD | MODE_FAULT_GPF | MODE_FAULT_CODE => {
             run_fault(mode);
         }
         _ => {
@@ -350,6 +351,11 @@ fn run_fault(mode: u64) -> ! {
             // Nessuna porta concessa a questo helper (io_count == 0): `in` su
             // una porta qualsiasi → #GP → il kernel termina il processo.
             unsafe { libr::pio::inb(0x80); }
+        }
+        MODE_FAULT_CODE => {
+            // Fase 31: il codice e' mappato RX (W^X): scrivere all'indirizzo
+            // del codice (USER_CODE) → #PF protection-violation → kill.
+            unsafe { core::ptr::write_volatile(libr::USER_CODE as *mut u8, 0x41); }
         }
         _ => {}
     }

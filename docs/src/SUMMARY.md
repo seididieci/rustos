@@ -47,3 +47,4 @@
 - [ADR-0018: Cache settoriale write-through in userdisk](./adr/0018-sector-cache-userdisk.md)
 - [ADR-0019: async/await in libr (piano, 4 passi)](./adr/0019-async-await-libr.md)
 - [ADR-0020: Higher-half kernel + direct map](./adr/0020-higher-half-direct-map.md)
+- [ADR-0021: Loader ELF per-segmento (W^X)](./adr/0021-elf-loader.md)

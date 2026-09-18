@@ -125,6 +125,7 @@ velordor/
 | 28 | `mmap` anonimo nel basso canonico (payoff higher-half) | ✅ Completata |
 | 29 | Protezioni di memoria (`mprotect`/NX, fault→kill del processo) | ✅ Completata |
 | 30 | Memoria condivisa tra processi (`shm_create`/`shm_map`) | ✅ Completata |
+| 31 | Loader ELF per-segmento (W^X del binario, ADR-0021) | ✅ Completata |
 
 ## Risorse
 

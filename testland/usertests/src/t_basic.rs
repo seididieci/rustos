@@ -347,6 +347,7 @@ pub fn t_mprotect() -> bool {
         (helpers::M_FAULT_NX, "NX-exec"),
         (helpers::M_FAULT_GUARD, "guard"),
         (helpers::M_FAULT_GPF, "port-GP"),
+        (helpers::M_FAULT_CODE, "code-write"),
     ] {
         let (chan, _pid) = match helpers::spawn_cfg(
             "/fat/test/testcli.bin", "utcli", 16, mode, 0,

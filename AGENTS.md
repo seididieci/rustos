@@ -1156,37 +1156,41 @@ velordor/
     non ha un FS (e' in userfs) e non puo' leggere file; servirebbe COW o IPC
     FS dal kernel (fuori ADR-0005). La parte "errore del processo → muore il
     processo" e' stata fatta in 29b (OOM e #GP → kill).
-- [ ] Fase 31: loader ELF per-segmento (W^X del binario; ADR-0021).
+- [x] Fase 31: loader ELF per-segmento (W^X del binario; ADR-0021).
   - Obiettivo: mappare il binario utente per segmento con i flag dell'ELF
     (`R E`→RX, `R`→RO, `RW`→RW, NX su tutto tranne il codice), invece di un
     unico mapping RWX. Chiude il limite W^X di 29b. Il kernel carica sempre
     al `p_vaddr` di link (USER_CODE): nessuna reloc a runtime (le
     `R_X86_64_RELATIVE` sono gia' applicate dal linker).
-  - [ ] 31.1 Build: `build_common.sh` produce l'ELF **stripped** (`objcopy
+  - [x] 31.1 Build: `build_common.sh` produce l'ELF **stripped** (`objcopy
     --strip-all`, phdrs conservati) al posto del flat `-O binary`; nomi
     output invariati (`.bin`, il loader sniffa il magic). `readelf -lW` di
     controllo; bound `spawn_image` 256 KiB rispettato.
-  - [ ] 31.2 Kernel `kernel/src/elf.rs`: `load_elf(cr3, bytes) -> Option<u64>`
-    con validazione pre-allocazione (magic/class/LE/machine/e_phnum/e_phoff),
-    `PT_LOAD` page-aligned, `p_filesz <= p_memsz`, `p_vaddr` in
-    `[USER_CODE, USER_FS_BUFFER)`, npages <= 512, **rifiuto W+X**; alloc
-    contiguo + copia per segmento + azzeramento buchi/bss; map per-pagina
-    (o run a flag uguali) `RX/RO/RW` + OWNED; entry = `e_entry`.
-  - [ ] 31.3 Refactor creazione: `setup_user_memory` → `load_elf` +
-    `setup_user_stack`; `create_user(name, prio, elf: &[u8], ...)`; rimozione
-    `map_user_region_owned_binary`/`entry()`; `user_binary!` espone
-    `&'static [u8]`; `spawn_user`/`spawn_image` passano l'ELF (slice dal
-    buffer del chiamante per lo spawn da disco). `spawn_image` bound e
-    validazione invariati.
-  - [ ] 31.4 Test: `USER_CODE` in `syscall-numbers` (single source);
+  - [x] 31.2 Kernel `kernel/src/elf.rs`: `validate(bytes) -> Option<Layout>`
+    (nessuna allocazione) + `load(cr3, bytes, &Layout)`. Validazione
+    (magic/class/LE/machine/e_phnum/e_phoff), `PT_LOAD` page-aligned,
+    `p_filesz <= p_memsz`, `p_vaddr` in `[USER_CODE, USER_FS_BUFFER)`,
+    npages <= 512, **rifiuto W+X** (flag per-pagina uniti); alloc contiguo +
+    copia per segmento + azzeramento buchi/bss; map per-pagina `RX/RO/RW` +
+    OWNED (`map_user_leaf`); entry = `e_entry`.
+  - [x] 31.3 Refactor creazione: `setup_user_memory` → `validate`+`load` +
+    `setup_user_stack`; `create_user(name, prio, elf: &[u8], ...)` (validazione
+    PRIMA di allocare: ELF malformato = nessun leak); rimozione
+    `map_user_region_owned_binary`/`copy_binary`/`entry()`/`Aligned`;
+    `user_binary!` espone `&'static [u8]`; `spawn_user`/`spawn_image` passano
+    l'ELF (slice dal buffer del chiamante per lo spawn da disco). `spawn_image`
+    bound e validazione invariati.
+  - [x] 31.4 Test: `USER_CODE` in `syscall-numbers` (single source);
     helper `MODE_FAULT_CODE` (scrive a `USER_CODE` → deve morire con
     `FAULT_EXIT_CODE`, prova RX) aggiunto a t45 (6 helper fault). Gate
-    atteso 5/5 + 7/7 + 46/46 + shell 30/30.
-  - [ ] 31.5 Docs: ADR-0021, `04-memory.md`, `11-testing.md` (t45 aggiornato),
-    questo file. Rischi da verificare: dimensione ELF embedded (guard
-    `_kernel_end` vs boot map 8 MiB; `userdisk` cala, `userfs` cresce),
-    alloc contiguo <= 2 MiB, bound 256 KiB dei test, `--strip-all` preserva
-    i phdrs.
+    5/5 + 7/7 + 46/46 + shell 30/30.
+  - [x] 31.5 Docs: ADR-0021, `04-memory.md`, `11-testing.md` (t45 aggiornato),
+    questo file, `00-introduzione.md`.
+  - Verifica: gate 5/5 + 7/7 + 46/46 + shell 30/30, zero FAIL/PANIC/FAULT; il
+    caso `code-write` fa `#PF (kill) @ 0x400000000000` (codice RX). Dimensione:
+    kernel 732→584 KiB, `userdisk.bin` 185→52 KiB (bss non materializzato),
+    ELF test max 88 KiB (< bound 256 KiB di `spawn_image`). Nessuna reloc a
+    runtime (caricamento al vaddr di link).
 
 ## Important Notes
 

@@ -10,6 +10,7 @@ mod boot_info;
 mod boot_tables;
 mod channels;
 mod context;
+mod elf;
 mod gdt;
 mod heap;
 mod idle;

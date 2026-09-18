@@ -175,6 +175,21 @@ con zero-fill lazy (stesso contratto di `sbrk`: VA subito, frame al fault).
 - Limite dichiarato: la creazione mai mappata resta finche' il processo non
   mappa (caso d'uso normale = create+map).
 
+## Caricamento ELF (Fase 31, ADR-0021)
+
+- I binari utente sono ELF stripped (non piu' flat `.bin`); il kernel li
+  carica **per-segmento** con `kernel/src/elf.rs`: `validate` (nessuna
+  allocazione) + `load` (mappa). I segmenti `PT_LOAD` diventano `RX` (codice),
+  `RO` (rodata) e `RW` (dati): W^X reale del binario.
+- Si carica al `p_vaddr` di link (`USER_CODE`): le `R_X86_64_RELATIVE` sono
+  gia' applicate dal linker → nessuna reloc a runtime. `entry` = `e_entry`.
+- Validazione stretta (input da disco via `spawn_image`): magic/classe/
+  macchina, bound, `p_filesz <= p_memsz`, `p_vaddr` in
+  `[USER_CODE, USER_FS_BUFFER)`, **rifiuto W+X**; un ELF malformato non
+  alloca nulla. Allocazione contigua ≤ 2 MiB (`MAX_PAGES` 512).
+- Il codice e' l'unico mapping eseguibile: scrivere a `USER_CODE` fa
+  protection-fault → kill del processo (test `code-write`).
+
 ## Riferimenti
 
 - [Writing an OS in Rust - Heap Allocation](https://os.phil-opp.com/heap-allocation/)
