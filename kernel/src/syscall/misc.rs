@@ -106,6 +106,20 @@ pub(super) fn sys_cbs_get_info(server_id: u64) -> i64 {
     }
 }
 
+/// Fase 32 — `text_stats()`: contatori shared text per il test (hits/misses/
+/// live). Multi-registro come `cbs_get_info`: rax = hits, rdi = misses,
+/// rsi = live.
+pub(super) fn sys_text_stats() -> i64 {
+    let (hits, misses, live) = crate::text::stats();
+    unsafe {
+        let p = addr_of_mut!(PERCPU);
+        (*p).ipc_override = 1;
+        (*p).ret_rdi = misses;
+        (*p).ret_rsi = live;
+    }
+    hits as i64
+}
+
 /// Fase 19.1 — `ps_info(pid)`: snapshot del processo per `ps`. 0 se lo slot e'
 /// vivo (campi nei registri, layout in `syscall-numbers`), -1 se vuoto o
 /// terminato (lo slot si salta, come `ps` salta i PID morti).

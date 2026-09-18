@@ -1191,6 +1191,27 @@ velordor/
     kernel 732→584 KiB, `userdisk.bin` 185→52 KiB (bss non materializzato),
     ELF test max 88 KiB (< bound 256 KiB di `spawn_image`). Nessuna reloc a
     runtime (caricamento al vaddr di link).
+- [x] Fase 32: shared text ELF (segmenti immutabili condivisi; ADR-0022).
+  - Il loader divide l'immagine a `rw_off` = `align_down(min p_vaddr`
+    scrivibile)`: `[base, rw_off)` immutabile (`RX`/`RO`) e condiviso,
+    `[rw_off, end)` privato (data/bss + coda della pagina a cavallo).
+  - `kernel/src/text.rs`: tabella statica di 16 `TextImage`
+    (`phys/pages/hash/base/rw_off/refs`); `acquire` = hash FNV-1a dell'ELF +
+    **verifica byte-per-byte** del contenuto immutabile su hit (input da disco
+    non fidato → il solo hash non basta); `release` a 0 libera i frame;
+    `map_shared` mappa read-only non-owned (`map_user_leaf_shared`). Slot
+    pieni/nessuna parte condivisibile → fallback al load privato.
+  - Scope **refcount-only** (condivide tra istanze concorrenti, libera a 0);
+    cache persistente = follow-up. Campo `text_id` nel PCB, rilasciato in
+    `reclaim_one` DOPO il teardown (il walk libera solo le foglie `owned`).
+  - `SYS_TEXT_STATS (44)` + `libr::text_stats` (hits/misses/live). t47: 3
+    helper concorrenti stesso binario → `hits` cresce, alla morte `live` -3
+    (delta attorno alle proprie op: il baseline assoluto di `live` non e'
+    stabile). Suite → 47/47.
+  - Verifica: gate 5/5 + 7/7 + 47/47 + shell 30/30, zero FAIL/PANIC/FAULT;
+    `heap_out` +256 (= `32×8`: padding del nuovo campo `text_id` in `Process`),
+    piatto e `heap_n=1` → nessun leak. Valore onesto: memoria/architetturale,
+    non throughput (lo spawn e' dominato da FS/disco).
 
 ## Important Notes
 
@@ -1366,9 +1387,9 @@ rg '\[bench\]' /tmp/bench-run1.log /tmp/bench-run2.log /tmp/bench-run3.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 7/7
-#   [usertests] PASS 46/46
+#   [usertests] PASS 47/47
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 46/46' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 47/47' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 

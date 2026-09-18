@@ -211,9 +211,9 @@ impl Scheduler {
             return;
         }
 
-        let (die_peers, npeer, name, stack_base, cr3, exit_code, tss_slot) = {
+        let (die_peers, npeer, name, stack_base, cr3, exit_code, tss_slot, text_id) = {
             let p = &self.processes[pid];
-            (p.die_peers, p.die_peer_count, name_buf(p), p.stack_base, p.cr3, p.exit_code, p.tss_slot)
+            (p.die_peers, p.die_peer_count, name_buf(p), p.stack_base, p.cr3, p.exit_code, p.tss_slot, p.text_id)
         };
 
         crate::phys_mem::free_contiguous(stack_base, crate::process::STACK_FRAMES);
@@ -222,6 +222,11 @@ impl Scheduler {
         let is_user = cr3 != crate::vmm_user::kernel_cr3();
         if is_user {
             unsafe { crate::vmm_user::teardown_user_space(cr3, pid) };
+        }
+        // Fase 32: rilascia la text image condivisa DOPO il teardown (il walk
+        // non libera le foglie non-owned; a refcount 0 i frame sono liberati).
+        if text_id != 0 {
+            crate::text::release(text_id);
         }
 
         // Notifica EXIT UNIFICATA a tutti i peer DOPO il teardown: parent,

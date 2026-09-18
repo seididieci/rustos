@@ -26,6 +26,7 @@ mod sched;
 mod cbs;
 mod serial;
 mod syscall;
+mod text;
 mod user_binary;
 mod vga;
 mod vmm;

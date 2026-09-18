@@ -203,6 +203,10 @@ pub struct Process {
     /// Tick timer consumati dal processo (Fase 19.1, colonna TIME di `ps`):
     /// incrementato in `on_tick` per il processo corrente.
     pub ticks_used: u64,
+    /// Id della text image condivisa usata da questo processo (Fase 32,
+    /// `crate::text`): 0 = nessuna (load privato o slot pieni). Rilasciato in
+    /// `reclaim_one` dopo il teardown (i frame condivisi non sono owned).
+    pub text_id: u32,
 }
 
 impl Process {
@@ -276,6 +280,7 @@ impl Process {
             reply_slot: None,
             pending_wake: false,
             cbs_server: None,
+            text_id: 0,
             exit_code: 0,
             waiting_pid: None,
             die_peers: [(0, 0); MAX_NOTIFY_PEERS],
@@ -316,7 +321,7 @@ impl Process {
 
         // Carica i segmenti ELF + stack user. La pagina FS per-processo viene
         // allocata/mappata lazy al primo uso (syscall 26).
-        unsafe { crate::elf::load(cr3, elf, &layout) };
+        let text_id = unsafe { crate::elf::load(cr3, elf, &layout) };
         let user_stack_top = unsafe { crate::vmm_user::setup_user_stack(cr3) };
 
         // Frame CPU ring 3 sul kernel stack (entry dall'ELF).
@@ -350,6 +355,7 @@ impl Process {
             reply_slot: None,
             pending_wake: false,
             cbs_server: None,
+            text_id,
             exit_code: 0,
             waiting_pid: None,
             die_peers: [(0, 0); MAX_NOTIFY_PEERS],

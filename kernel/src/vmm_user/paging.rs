@@ -219,6 +219,20 @@ pub unsafe fn map_user_leaf(cr3: u64, vaddr: u64, phys: u64, writable: bool, exe
     unsafe { map_user_region_flags(cr3, vaddr, phys, 1, flags) }
 }
 
+/// Mappa UNA pagina condivisa read-only (Fase 32, shared text): U=1, non
+/// owned, `RX` se `executable` altrimenti `RO` (mai scrivibile). I frame sono
+/// della text image, liberati a refcount da `crate::text`.
+///
+/// # Safety
+/// Come `map_user_region`.
+pub unsafe fn map_user_leaf_shared(cr3: u64, vaddr: u64, phys: u64, executable: bool) {
+    let mut flags = 0x4 | 0x1; // U + P (non-owned, read-only)
+    if !executable {
+        flags |= super::layout::PTE_NX;
+    }
+    unsafe { map_user_region_flags(cr3, vaddr, phys, 1, flags) }
+}
+
 /// Alloca e mappa lo stack user a `USER_STACK_TOP` (Fase 31: separato dal
 /// caricamento del codice, che ora e' `elf::load`). Ritorna il RSP iniziale.
 /// La pagina guard sotto lo stack (`USER_STACK_GUARD`) resta mai mappata.
