@@ -1,0 +1,142 @@
+// Split from sched_rt.rs (byte-identical move; see facade).
+use super::*;
+use crate::*;
+use alloc::vec::Vec;
+use crate::process::Process;
+
+pub(super) struct Scheduler {
+    pub(super) processes: Vec<Process>,
+    pub(super) current: Option<usize>,
+    pub(super) ticks_current: u64,
+    /// Cursore round-robin PER LIVELLO: ultimo PID scelto al livello p. La
+    /// rotazione riparte dal bit successivo all'ultimo scelto A QUESTO
+    /// LIVELLO (vero round-robin sul sottoinsieme presente). Un contatore
+    /// globale condiviso tra sottoinsiemi diversi NON e' equo: con cicli IPC
+    /// deterministici il cursore si aggancia in fase e un membro muore di fame
+    /// per sempre (osservato sotto KVM: pid 7 mai scelto tra {4,7}/{7,8}/{7,9}
+    /// per parita' bloccata — 968+484+484 pick senza mai 7 — mentre TCG, piu'
+    /// lento, rompeva la fase con i pick dei quanti e lo mascherava).
+    pub(super) rr_cursor: [u32; 32],
+    pub(super) next_id: usize,
+    /// free_pids: bit i = PID i libero (processo reclamato, riusabile).
+    pub(super) free_pids: u32,
+    /// Coda di reclaim (Fase 14): PID Terminated in attesa di teardown
+    /// differito. Fixed-size (max `MAX_PIDS`): nessuna allocazione nel
+    /// percorso di exit/kill.
+    pub(super) reclaim_q: [usize; MAX_PIDS],
+    pub(super) reclaim_head: usize,
+    pub(super) reclaim_len: usize,
+    /// ready_by_prio[p] : bit i = processo PID i pronto al livello p.
+    pub(super) ready_by_prio: [u32; 32],
+    /// ready_prio_mask : bit p = almeno un processo pronto al livello p.
+    pub(super) ready_prio_mask: u32,
+}
+
+impl Scheduler {
+    pub(super) fn new() -> Self {
+        Self {
+            // Pre-alloca la capacita' massima a init (unica alloc del Vec,
+            // mai piu' realloc a runtime): `place_process` sovrascrive a PID
+            // riusato e fa `push` solo in crescita, i PID sono ≤ MAX_PIDS-1
+            // riusati dal free-set (Fase 14) e mai rimossi → capacita'
+            // monotona, path spawn senza alloc dopo il warmup. Se MAX_PIDS
+            // cresce (growth path oltre 32, vedi AGENTS) la capacita' segue
+            // la costante da sola.
+            processes: Vec::with_capacity(MAX_PIDS),
+            current: None,
+            ticks_current: 0,
+            rr_cursor: [0u32; 32],
+            next_id: 0,
+            free_pids: 0,
+            reclaim_q: [0; MAX_PIDS],
+            reclaim_head: 0,
+            reclaim_len: 0,
+            ready_by_prio: [0u32; 32],
+            ready_prio_mask: 0,
+        }
+    }
+
+    /// Alloca un PID: riusa prima i PID liberati dal reclaim, poi cresce
+    /// fino a `MAX_PIDS`. `None` se tutti i 32 sono occupati.
+    pub(super) fn alloc_pid(&mut self) -> Option<usize> {
+        if self.free_pids != 0 {
+            let pid = self.free_pids.trailing_zeros() as usize;
+            self.free_pids &= !(1u32 << pid);
+            return Some(pid);
+        }
+        if self.next_id < MAX_PIDS {
+            let pid = self.next_id;
+            self.next_id += 1;
+            return Some(pid);
+        }
+        None
+    }
+
+    /// Inserisce (o sovrascrive, se il PID era riusato) il processo.
+    pub(super) fn place_process(&mut self, id: usize, process: Process) {
+        if id < self.processes.len() {
+            self.processes[id] = process;
+        } else {
+            self.processes.push(process);
+        }
+    }
+
+    /// Rimette a disposizione un PID allocato ma non utilizzato (spawn
+    /// fallito dopo `alloc_pid`).
+    pub(super) fn release_pid(&mut self, pid: usize) {
+        self.free_pids |= 1u32 << pid;
+    }
+
+    pub(super) fn push_reclaim(&mut self, pid: usize) {
+        if self.reclaim_len >= MAX_PIDS {
+            // Coda satura (cascata massiccia): libera subito i gia' pronti.
+            self.drain_reclaim();
+        }
+        if self.reclaim_len >= MAX_PIDS {
+            crate::serial_println!("[sched] reclaim queue piena (pid {})", pid);
+            return;
+        }
+        let tail = (self.reclaim_head + self.reclaim_len) % MAX_PIDS;
+        self.reclaim_q[tail] = pid;
+        self.reclaim_len += 1;
+    }
+
+    pub(super) fn set_ready(&mut self, pid: usize) {
+        if pid < 32 && pid < self.processes.len() {
+            let p = self.processes[pid].priority.0 as usize;
+            self.ready_by_prio[p] |= 1u32 << pid;
+            self.ready_prio_mask |= 1u32 << p;
+        }
+    }
+
+    pub(super) fn clear_ready(&mut self, pid: usize) {
+        if pid < 32 {
+            if let Some(proc) = self.processes.get(pid) {
+                let p = proc.priority.0 as usize;
+                self.ready_by_prio[p] &= !(1u32 << pid);
+                if self.ready_by_prio[p] == 0 {
+                    self.ready_prio_mask &= !(1u32 << p);
+                }
+            }
+        }
+    }
+
+    pub(super) fn pick_next(&mut self) -> Option<usize> {
+        if self.ready_prio_mask == 0 {
+            return None;
+        }
+        // Livello di priorita' piu' alto con almeno un processo pronto.
+        let p = 31 - self.ready_prio_mask.leading_zeros() as usize;
+        let mask = self.ready_by_prio[p];
+        // Rotazione dal bit successivo all'ultimo scelto a questo livello:
+        // ogni membro dell'insieme persistente viene scelto entro N pick.
+        // (mask != 0 per invariante: il bit p di ready_prio_mask e' alto solo
+        // se la word del livello non e' vuota — mantenuto sotto lock.)
+        let k = (self.rr_cursor[p] + 1) % 32;
+        let rot = mask.rotate_right(k);
+        let j = rot.trailing_zeros() as usize;
+        let bit = (j + k as usize) % 32;
+        self.rr_cursor[p] = bit as u32;
+        Some(bit)
+    }
+}
