@@ -49,3 +49,5 @@
 - [ADR-0020: Higher-half kernel + direct map](./adr/0020-higher-half-direct-map.md)
 - [ADR-0021: Loader ELF per-segmento (W^X)](./adr/0021-elf-loader.md)
 - [ADR-0022: Shared text ELF](./adr/0022-shared-text-elf.md)
+- [ADR-0023: COW a livello di frame (draft)](./adr/0023-cow-frame-refcount.md)
+- [ADR-0024: `fork` — COW dell'address space (draft)](./adr/0024-fork.md)

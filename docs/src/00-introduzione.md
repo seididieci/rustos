@@ -127,6 +127,8 @@ rustos/
 | 30 | Memoria condivisa tra processi (`shm_create`/`shm_map`) | ✅ Completata |
 | 31 | Loader ELF per-segmento (W^X del binario, ADR-0021) | ✅ Completata |
 | 32 | Shared text ELF (segmenti immutabili condivisi, ADR-0022) | ✅ Completata |
+| 33 | Infrastruttura COW (frame refcount + COW fault, ADR-0023) | 📋 Pianificata |
+| 34 | `fork` — COW dell'address space (ADR-0024) | 📋 Pianificata |
 
 ## Risorse
 
