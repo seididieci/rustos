@@ -59,6 +59,9 @@ pub mod task;
 /// Port I/O x86 in ring 3 (A4: prima duplicato in userdisk/userkbd).
 pub mod pio;
 
+/// Harness condiviso per la test suite (A4: traversal readdir).
+pub mod test;
+
 /// Esegue una syscall a 4 argomenti e ne restituisce il risultato in `rax`.
 ///
 /// # Safety

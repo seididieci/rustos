@@ -40,30 +40,15 @@ pub extern "C" fn _start() -> ! {
     let count = libr::readdir("/fat", &mut entries, 2048);
     println!("[testfat] readdir count={}", count);
     if count > 0 {
-        let mut i = 0;
+        // Raccoglie fino a 8 nomi (stesso bound del loop originario, A4).
         let mut names: [&str; 8] = [""; 8];
         let mut n_names = 0usize;
-        while i < entries.len() && n_names < 8 {
-            if entries[i] == 0 {
-                i += 1;
-                continue;
-            }
-            let start = i;
-            while i < entries.len() && entries[i] != 0 {
-                i += 1;
-            }
-            if i > start {
-                let s = core::str::from_utf8(&entries[start..i]).unwrap_or("?");
+        libr::test::each_name(&entries, count as usize, |s| {
+            if n_names < 8 {
                 names[n_names] = s;
                 n_names += 1;
             }
-            if i < entries.len() && entries[i] == 0 {
-                i += 1;
-            }
-            if i < entries.len() && entries[i] == 0 {
-                break;
-            }
-        }
+        });
         let has_hello = names[..n_names].contains(&"HELLO.TXT");
         let has_readme = names[..n_names].contains(&"README.TXT");
         let has_sub = names[..n_names].contains(&"SUB");
