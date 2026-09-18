@@ -83,8 +83,18 @@ extern "x86-interrupt" fn page_fault_handler(
     // (kill), MAI il kernel. Un fault di protezione da supervisor resta un bug
     // del kernel → log + halt in fondo. Stessa politica per un fault user non
     // recuperabile (fuori da ogni regione gestita: es. guard page dello stack).
-    if user && prot {
-        fault_kill(pid, fault_addr, error_code, &stack_frame);
+    // 33: prima di uccidere per protection-violation, tenta il COW fault
+    // (vale per fault user E supervisor: il kernel puo' scrivere buffer user
+    // COW). Le protection-violation su codice/rodata (senza COW) continuano a
+    // uccidere il processo (user) o ad haltare (supervisor, bug del kernel).
+    if prot {
+        let cr3 = crate::vmm_user::active_cr3();
+        if crate::vmm_user::cow_fault(cr3, fault_addr) {
+            return;
+        }
+        if user {
+            fault_kill(pid, fault_addr, error_code, &stack_frame);
+        }
     }
 
     // Demand-zero dell'heap on-demand (test lazy): una pagina sotto il
@@ -116,16 +126,16 @@ extern "x86-interrupt" fn page_fault_handler(
         if let Some((vb, vl, vprot, vshm)) = crate::vmm_user::vma_lookup(pid, fault_addr) {
             use syscall_numbers::{PROT_NONE, PROT_WRITE};
             // VMA condivisa (30): le pagine sono pre-materializzate a
-            // `shm_map`; un fault qui e' un edge (PTE staccata) → re-map
-            // idempotente della regione, mai un frame privato (romperebbe
-            // la condivisione).
+            // `shm_map`; un fault qui e' un edge (PTE staccata) → hole-fill
+            // idempotente (33.4: MAI re-map cieco dell'intera regione, che
+            // clobbererebbe le copie private delle VMA COW con il contenuto
+            // condiviso — le presenti si preservano, si riempiono solo i buchi).
             if vshm != 0 {
                 if let Some((phys, frames)) = crate::vmm_user::shm_region(vshm as u32) {
                     let writable = vprot & PROT_WRITE as u8 != 0;
                     let cr3 = crate::vmm_user::active_cr3();
-                    unsafe {
-                        crate::vmm_user::map_user_region_shared(cr3, vb, phys, frames as usize, writable);
-                    }
+                    let cow = crate::vmm_user::range_has_cow(cr3, vb, frames as usize);
+                    crate::vmm_user::remap_shared_holes(cr3, vb, phys, frames as usize, writable, cow);
                     let _ = vl;
                     return;
                 }

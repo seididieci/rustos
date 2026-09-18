@@ -39,26 +39,34 @@ pub(super) fn sys_shm_create(len: u64) -> i64 {
 /// shm_map(id, hint, prot, flags): mappa la regione condivisa `id` nello
 /// spazio del processo corrente come VMA (prot RW/RO), PTE non-owned
 /// pre-materializzate (le stesse pagine per tutti), refcount++. Ritorna la
-/// base o -1. `flags` 0 o `MMAP_FIXED`.
+/// base o -1. `flags` 0 o `MMAP_FIXED`. Con `MAP_COW` (33.4, solo
+/// `prot == PROT_READ`): le pagine sono mappate `RO`+`COW` (stessi frame per
+/// tutti finche' nessuno scrive; al primo write `cow_fault` materializza la
+/// copia privata) e ogni mappatura incrementa il refcount per-frame.
 pub(super) fn sys_shm_map(id: u64, hint: u64, prot: u64, flags: u64) -> i64 {
-    use syscall_numbers::{MMAP_FIXED, PROT_READ, PROT_WRITE};
+    use syscall_numbers::{MAP_COW, MMAP_FIXED, PROT_READ, PROT_WRITE};
     let id = id as u32;
     if id == 0 {
         return -1;
     }
-    // Solo R/RW: una regione condivisa PROT_NONE non ha senso (le pagine
-    // esistono) e PROT_WRITE-solo non e' ammesso come in `mmap`.
-    let prot_ok = prot == PROT_READ || prot == PROT_READ | PROT_WRITE;
+    if flags & !(MMAP_FIXED | MAP_COW) != 0 {
+        return -1;
+    }
+    let cow = flags & MAP_COW != 0;
+    // COW = read-only condiviso fino al primo write: solo PROT_READ (con RW
+    // la scrittura sarebbe condivisa, contraddicendo il COW).
+    let prot_ok = if cow {
+        prot == PROT_READ
+    } else {
+        prot == PROT_READ || prot == PROT_READ | PROT_WRITE
+    };
     if !prot_ok {
         return -1;
     }
-    if flags & !MMAP_FIXED != 0 {
+    if flags & MMAP_FIXED != 0 && hint == 0 {
         return -1;
     }
     let fixed = flags & MMAP_FIXED != 0;
-    if fixed && hint == 0 {
-        return -1;
-    }
     let (phys, frames) = match crate::vmm_user::shm_region(id) {
         Some(r) => r,
         None => return -1,
@@ -69,14 +77,33 @@ pub(super) fn sys_shm_map(id: u64, hint: u64, prot: u64, flags: u64) -> i64 {
         return -1;
     }
     let cur = current_id() as usize;
+    // Two-phase: se un frame e' saturo (ref 255, irraggiungibile con 32
+    // processi ma mai wrappare in silenzio) si fallisce PRIMA di registrare
+    // la VMA o mappare: nessun cambio di stato, nessun rollback.
+    if cow {
+        for i in 0..frames {
+            if !crate::phys_mem::ref_available(phys + i * 0x1000) {
+                return -1;
+            }
+        }
+    }
     // `id` (1..=16) entra nel campo shm (u8) del record VMA.
     let base = match crate::vmm_user::vma_map(cur, hint, len, fixed, prot as u8, id as u8) {
         Some(b) => b,
         None => return -1,
     };
-    let writable = prot & PROT_WRITE != 0;
-    unsafe {
-        crate::vmm_user::map_user_region_shared(cr3, base, phys, frames as usize, writable);
+    if cow {
+        for i in 0..frames {
+            assert!(crate::phys_mem::ref_inc(phys + i * 0x1000));
+        }
+        unsafe {
+            crate::vmm_user::map_user_region_cow(cr3, base, phys, frames as usize);
+        }
+    } else {
+        let writable = prot & PROT_WRITE != 0;
+        unsafe {
+            crate::vmm_user::map_user_region_shared(cr3, base, phys, frames as usize, writable);
+        }
     }
     for i in 0..frames {
         crate::vmm_user::flush_page(base + i * 0x1000);

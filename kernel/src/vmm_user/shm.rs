@@ -72,8 +72,10 @@ pub fn shm_ref(id: u32) {
     unsafe { *core::ptr::addr_of_mut!(SHM_TABLE[idx].2) += 1; }
 }
 
-/// Rilascia un riferimento alla regione `id`: a 0 libera i frame contigui e
-/// azzera lo slot. Idempotente su id invalido/gia' libero.
+/// Rilascia un riferimento alla regione `id`: a 0 rilascia i frame contigui e
+/// azzera lo slot. Idempotente su id invalido/gia' libero. Dalla Fase 33 via
+/// `deref_contiguous` (le mappature COW tengono ref per-frame: il frame
+/// condiviso sopravvive finche' almeno un sharer o la regione lo referenzia).
 pub fn shm_release(id: u32) {
     if id == 0 || id as usize > SHM_MAX {
         return;
@@ -85,7 +87,7 @@ pub fn shm_release(id: u32) {
     }
     let refs = e.2.saturating_sub(1);
     if refs == 0 {
-        crate::phys_mem::free_contiguous(e.0, e.1 as usize);
+        crate::phys_mem::deref_contiguous(e.0, e.1 as usize);
         unsafe { *core::ptr::addr_of_mut!(SHM_TABLE[idx]) = (0, 0, 0); }
     } else {
         unsafe { *core::ptr::addr_of_mut!(SHM_TABLE[idx].2) = refs; }

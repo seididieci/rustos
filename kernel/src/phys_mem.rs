@@ -15,6 +15,18 @@ static FREE: AtomicU64 = AtomicU64::new(0);
 static mut BITMAP_PTR: *mut u8 = core::ptr::null_mut();
 static mut BITMAP_BYTES: usize = 0;
 
+/// Refcount per-frame (Fase 33, COW): 1 byte per frame, allocato a boot
+/// subito dopo la bitmap (dinamico, stesso schema di `BITMAP_PTR`: evita un
+/// `.bss` enorme alle config grandi). `alloc`/`alloc_contiguous` impostano
+/// `ref = 1`; `deref` decrementa e libera a 0. `free` resta per i frame a
+/// ref 1 (page table, stack kernel, ring, text image, shm non-COW).
+static mut REFCOUNT_PTR: *mut u8 = core::ptr::null_mut();
+
+/// Fault COW gestiti (Fase 33): incrementato da `cow_fault`, letto dal test
+/// via `SYS_TEXT_STATS` (rdx). Contatore debug, mai su path critici oltre
+/// l'incremento atomico.
+static COW_COUNT: AtomicU64 = AtomicU64::new(0);
+
 static LOCK: Mutex<()> = Mutex::new(());
 
 // ── Funzioni bitmap ─────────────────────────────────────────────────
@@ -37,6 +49,16 @@ fn mark_free(frame: usize) {
     unsafe {
         let p = BITMAP_PTR.add(frame / 8);
         *p &= !(1 << (frame % 8));
+    }
+}
+
+fn ref_of(frame: usize) -> u8 {
+    unsafe { *REFCOUNT_PTR.add(frame) }
+}
+
+fn set_ref(frame: usize, v: u8) {
+    unsafe {
+        *REFCOUNT_PTR.add(frame) = v;
     }
 }
 
@@ -70,6 +92,12 @@ pub fn init(
     // (direct map) per accedervi. `bitmap_end` resta VIRT (base heap).
     let bitmap_phys = align_up(kernel_end, FRAME_SIZE);
 
+    // Refcount per-frame (33.1): 1 byte/frame subito dopo la bitmap
+    // (page-aligned). Zero = mai allocato / riservato (i riservati non passano
+    // mai da `deref`: il ref e' significativo solo per i frame allocati).
+    let refcount_phys = align_up(bitmap_phys + bitmap_bytes as u64, FRAME_SIZE);
+    let refcount_bytes = total as usize;
+
     unsafe {
         BITMAP_PTR = phys_to_virt(bitmap_phys) as *mut u8;
         BITMAP_BYTES = bitmap_bytes;
@@ -77,6 +105,10 @@ pub fn init(
         // 3. Fill 0xFF = tutti usati.
         let slice = core::slice::from_raw_parts_mut(BITMAP_PTR, BITMAP_BYTES);
         slice.fill(0xFF);
+
+        REFCOUNT_PTR = phys_to_virt(refcount_phys) as *mut u8;
+        let refs = core::slice::from_raw_parts_mut(REFCOUNT_PTR, refcount_bytes);
+        refs.fill(0);
     }
 
     // 4. Libera le regioni MEM_RAM.
@@ -160,6 +192,16 @@ pub fn init(
         }
     }
 
+    // Array refcount (33.1): riservato come la bitmap, mai allocato ai processi.
+    let rfn = (refcount_phys / FRAME_SIZE) as usize;
+    let rfe = (align_up(refcount_phys + refcount_bytes as u64, FRAME_SIZE) / FRAME_SIZE) as usize;
+    for f in rfn..rfe {
+        if !is_used(f) {
+            mark_used(f);
+            FREE.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
     // VGA buffer (0xB8000): frame 186
     if !is_used(186) {
         mark_used(186);
@@ -175,10 +217,11 @@ pub fn init(
 }
 
 /// Ritorna l'indirizzo di fine bitmap (page-aligned), utile per posizionare l'heap.
+/// Dalla Fase 33 include l'array refcount (sta subito dopo la bitmap).
 pub fn bitmap_end() -> u64 {
-    let start = unsafe { BITMAP_PTR as u64 };
-    let bytes = unsafe { BITMAP_BYTES } as u64;
-    align_up(start + bytes, FRAME_SIZE)
+    let start = unsafe { REFCOUNT_PTR as u64 };
+    let total = TOTAL.load(Ordering::Relaxed);
+    align_up(start + total, FRAME_SIZE)
 }
 
 /// Marca come USATI i frame nell'intervallo fisico [start, start+len): il
@@ -207,6 +250,7 @@ pub fn alloc() -> Option<u64> {
     for i in 1..total {
         if !is_used(i) {
             mark_used(i);
+            set_ref(i, 1);
             FREE.fetch_sub(1, Ordering::Relaxed);
             return Some((i as u64) * FRAME_SIZE);
         }
@@ -237,6 +281,7 @@ pub fn alloc_contiguous(n: usize) -> Option<u64> {
             if ok {
                 for j in 0..n {
                     mark_used(i + j);
+                    set_ref(i + j, 1);
                 }
                 FREE.fetch_sub(n as u64, Ordering::Relaxed);
                 return Some((i as u64) * FRAME_SIZE);
@@ -253,6 +298,8 @@ pub fn free(frame: u64) {
     let i = (frame / FRAME_SIZE) as usize;
     assert!((i as u64) < TOTAL.load(Ordering::Relaxed), "frame fuori range: {:#x}", frame);
     assert!(is_used(i), "frame già libero: {:#x}", frame);
+    assert!(ref_of(i) == 1, "free su frame condiviso (ref {}): {:#x}, usare deref", ref_of(i), frame);
+    set_ref(i, 0);
     mark_free(i);
     FREE.fetch_add(1, Ordering::Relaxed);
 }
@@ -267,9 +314,88 @@ pub fn free_contiguous(start: u64, count: usize) {
         let idx = f0 + i;
         assert!((idx as u64) < TOTAL.load(Ordering::Relaxed), "frame fuori range: {:#x}", start);
         assert!(is_used(idx), "frame già libero: {:#x}", (idx as u64) * FRAME_SIZE);
+        assert!(ref_of(idx) == 1, "free su frame condiviso (ref {})", ref_of(idx));
+        set_ref(idx, 0);
         mark_free(idx);
     }
     FREE.fetch_add(count as u64, Ordering::Relaxed);
+}
+
+/// Decrementa il refcount del frame; a 0 lo libera (Fase 33, COW). Per i
+/// frame a ref 1 equivale a `free`. Panic su frame libero o fuori range
+/// (stessa severita' di `free`: un refcount sbilanciato e' un bug del kernel).
+pub fn deref(frame: u64) {
+    let _lock = LOCK.lock();
+    let i = (frame / FRAME_SIZE) as usize;
+    assert!((i as u64) < TOTAL.load(Ordering::Relaxed), "frame fuori range: {:#x}", frame);
+    assert!(is_used(i), "deref su frame libero: {:#x}", frame);
+    let r = ref_of(i);
+    assert!(r >= 1, "deref su frame con ref 0: {:#x}", frame);
+    if r == 1 {
+        set_ref(i, 0);
+        mark_free(i);
+        FREE.fetch_add(1, Ordering::Relaxed);
+    } else {
+        set_ref(i, r - 1);
+    }
+}
+
+/// Come `deref` su `count` frame contigui (regioni shm COW, text image COW).
+pub fn deref_contiguous(start: u64, count: usize) {
+    let _lock = LOCK.lock();
+    let f0 = (start / FRAME_SIZE) as usize;
+    for i in 0..count {
+        let idx = f0 + i;
+        assert!((idx as u64) < TOTAL.load(Ordering::Relaxed), "frame fuori range: {:#x}", start);
+        assert!(is_used(idx), "deref su frame libero: {:#x}", (idx as u64) * FRAME_SIZE);
+        let r = ref_of(idx);
+        assert!(r >= 1, "deref su frame con ref 0");
+        if r == 1 {
+            set_ref(idx, 0);
+            mark_free(idx);
+            FREE.fetch_add(1, Ordering::Relaxed);
+        } else {
+            set_ref(idx, r - 1);
+        }
+    }
+}
+
+/// Incrementa il refcount del frame (condivisione COW): false se saturo
+/// (255, irraggiungibile con 32 processi ma mai wrappare in silenzio).
+pub fn ref_inc(frame: u64) -> bool {
+    let _lock = LOCK.lock();
+    let i = (frame / FRAME_SIZE) as usize;
+    assert!((i as u64) < TOTAL.load(Ordering::Relaxed), "frame fuori range: {:#x}", frame);
+    assert!(is_used(i), "ref_inc su frame libero: {:#x}", frame);
+    let r = ref_of(i);
+    if r == 255 {
+        return false;
+    }
+    set_ref(i, r + 1);
+    true
+}
+
+/// True se il frame e' condivisibile ancora una volta (usato e ref < 255).
+/// Pre-check read-only per il two-phase di `sys_shm_map` COW: fallire prima
+/// di registrare VMA/mappare evita qualunque rollback.
+pub fn ref_available(frame: u64) -> bool {
+    let _lock = LOCK.lock();
+    let i = (frame / FRAME_SIZE) as usize;
+    if (i as u64) >= TOTAL.load(Ordering::Relaxed) || !is_used(i) {
+        return false;
+    }
+    ref_of(i) < 255
+}
+
+/// Fault COW gestiti (Fase 33): incrementato da `cow_fault`, esposto via
+/// `SYS_TEXT_STATS` (rdx) per il test t48.
+pub fn cow_note() {
+    COW_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Fault COW gestiti finora.
+pub fn cow_count() -> u64 {
+    COW_COUNT.load(Ordering::Relaxed)
 }
 
 pub fn free_frames() -> u64 {

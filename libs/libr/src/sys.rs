@@ -140,6 +140,21 @@ pub fn shm_map(id: u32, hint: usize, prot: u64) -> Result<usize, ()> {
     }
 }
 
+/// Fase 33 — `shm_map_cow(id, hint)`: mappa la regione condivisa `id` in
+/// copy-on-write (sempre `PROT_READ`): le pagine sono gli STESSI frame per
+/// tutti finche' nessuno scrive; al primo write il kernel materializza una
+/// copia privata (il resto resta condiviso). `hint == 0` = scelta kernel.
+/// Ritorna la base o `Err` (id inesistente, saturazione ref — mai in pratica).
+#[inline]
+pub fn shm_map_cow(id: u32, hint: usize) -> Result<usize, ()> {
+    let r = unsafe { syscall4(SYS_SHM_MAP, id as u64, hint as u64, PROT_READ, MAP_COW) };
+    if r < 0 {
+        Err(())
+    } else {
+        Ok(r as usize)
+    }
+}
+
 
 /// Termina il processo corrente con il codice `code`. Non ritorna.
 #[inline]
@@ -297,4 +312,13 @@ pub fn cbs_get_info(server_id: i64) -> Option<CbsInfo> {
 pub fn text_stats() -> (u64, u64, u64) {
     let (rax, rdi, rsi, _, _) = unsafe { syscall4_out(SYS_TEXT_STATS, 0, 0, 0, 0) };
     (rax as u64, rdi, rsi)
+}
+
+/// Fase 33 — `cow_count()`: fault COW gestiti finora (stessa syscall di
+/// `text_stats`, registro `rdx`). Debug/test: t48 verifica `cow > 0` dopo
+/// write su mappatura COW.
+#[inline]
+pub fn cow_count() -> u64 {
+    let (_, _, _, rdx, _) = unsafe { syscall4_out(SYS_TEXT_STATS, 0, 0, 0, 0) };
+    rdx
 }

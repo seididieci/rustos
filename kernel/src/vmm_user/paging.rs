@@ -192,6 +192,51 @@ unsafe fn map_user_region_flags(cr3: u64, vaddr: u64, phys: u64, count: usize, f
     }
 }
 
+/// COW fault (Fase 33): se la PTE di `vaddr` in `cr3` e' `present && COW &&
+/// !W`, materializza la copia privata (alloca un frame, copia 4 KiB dal
+/// vecchio via direct map, rimappa `owned|RW|NX` senza COW, `deref` il vecchio,
+/// `invlpg`) e ritorna true. Altrimenti false (OOM, foglia assente, pagina
+/// non-COW: il chiamante uccide o halta come prima).
+pub fn cow_fault(cr3: u64, vaddr: u64) -> bool {
+    use super::layout::{PTE_ADDR_MASK, USER_COW, USER_LEAF_RW, USER_OWNED};
+    use super::teardown::raw_entry;
+    let page = vaddr & !(PAGE_SIZE - 1);
+    // Walk senza allocare livelli (come `flip_write_bit`: i buchi = false).
+    let l1 = unsafe { entry_at(cr3, pml4_index(page)) };
+    if l1 == 0 {
+        return false;
+    }
+    let l2 = unsafe { entry_at(l1, pdpt_index(page)) };
+    if l2 == 0 {
+        return false;
+    }
+    let l3 = unsafe { entry_at(l2, pd_index(page)) };
+    if l3 == 0 {
+        return false;
+    }
+    let e = unsafe { raw_entry(l3, pt_index(page)) };
+    if e & PTE_PRESENT == 0 || e & USER_COW == 0 || e & 0x2 != 0 {
+        return false; // assente, non-COW (codice/rodata → kill) o gia' W
+    }
+    let old = PTE_ADDR_MASK & e;
+    let new = match crate::phys_mem::alloc() {
+        Some(f) => f,
+        None => return false, // OOM: il chiamante uccide (mai halt per user)
+    };
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            crate::addr::phys_to_virt(old) as *const u8,
+            crate::addr::phys_to_virt(new) as *mut u8,
+            PAGE_SIZE as usize,
+        );
+        set_entry(l3, pt_index(page), new | USER_LEAF_RW | USER_OWNED);
+    }
+    flush_page(page);
+    crate::phys_mem::deref(old);
+    crate::phys_mem::cow_note();
+    true
+}
+
 /// Mapping di pagine condivise (30): U=1, NX, NON owned (i frame sono della
 /// regione condivisa, liberati a refcount da `shm.rs`), RW o RO.
 ///
@@ -200,6 +245,17 @@ unsafe fn map_user_region_flags(cr3: u64, vaddr: u64, phys: u64, count: usize, f
 pub unsafe fn map_user_region_shared(cr3: u64, vaddr: u64, phys: u64, count: usize, writable: bool) {
     let flags = if writable { super::layout::USER_LEAF_RW } else { super::layout::USER_LEAF_RO };
     unsafe { map_user_region_flags(cr3, vaddr, phys, count, flags) }
+}
+
+/// Mapping di pagine condivise in COW (33.4): U=1, NX, owned+COW, read-only.
+/// Il primo write fa protection-violation → `cow_fault` materializza la copia
+/// privata. I frame restano della regione (ref++ a carico del chiamante).
+///
+/// # Safety
+/// Come `map_user_region`.
+pub unsafe fn map_user_region_cow(cr3: u64, vaddr: u64, phys: u64, count: usize) {
+    use super::layout::{USER_COW, USER_LEAF_RO, USER_OWNED};
+    unsafe { map_user_region_flags(cr3, vaddr, phys, count, USER_LEAF_RO | USER_OWNED | USER_COW) }
 }
 
 /// Mappa UNA pagina user con flag espliciti W/X (Fase 31, loader ELF):
@@ -231,6 +287,84 @@ pub unsafe fn map_user_leaf_shared(cr3: u64, vaddr: u64, phys: u64, executable: 
         flags |= super::layout::PTE_NX;
     }
     unsafe { map_user_region_flags(cr3, vaddr, phys, 1, flags) }
+}
+
+/// Re-map dei buchi di una VMA condivisa (33.4): rimappa come condivise solo
+/// le pagine la cui PTE e' assente, preservando quelle presenti. Per le VMA
+/// COW e' l'unico re-map corretto: un re-map cieco dell'intera regione
+/// clobbererebbe le copie private gia' materializzate (owned senza COW) con
+/// il contenuto condiviso. Per le shm normali equivale al re-map totale (le
+/// PTE presenti puntano gia' ai frame della regione). `writable`/`cow`
+/// decidono i flag delle pagine riempite (mai entrambe: COW = RO+COW).
+pub fn remap_shared_holes(cr3: u64, vbase: u64, phys: u64, count: usize, writable: bool, cow: bool) {
+    use super::layout::{PTE_ADDR_MASK, USER_COW, USER_LEAF_RO, USER_LEAF_RW, USER_OWNED};
+    use super::teardown::raw_entry;
+    let mut addr = vbase;
+    for i in 0..count {
+        // Walk con allocazione livelli (come `map_user_region_flags`).
+        let l1 = unsafe { entry_at(cr3, pml4_index(addr)) };
+        let pdp = if l1 == 0 {
+            let f = crate::phys_mem::alloc().expect("oom page table");
+            unsafe { zero_frame(f); }
+            unsafe { set_entry(cr3, pml4_index(addr), f | USER_PRESENT_WRITABLE); }
+            f
+        } else { l1 };
+        let l2 = unsafe { entry_at(pdp, pdpt_index(addr)) };
+        let pd = if l2 == 0 {
+            let f = crate::phys_mem::alloc().expect("oom page table");
+            unsafe { zero_frame(f); }
+            unsafe { set_entry(pdp, pdpt_index(addr), f | USER_PRESENT_WRITABLE); }
+            f
+        } else { l2 };
+        let l3 = unsafe { entry_at(pd, pd_index(addr)) };
+        let pt = if l3 == 0 {
+            let f = crate::phys_mem::alloc().expect("oom page table");
+            unsafe { zero_frame(f); }
+            unsafe { set_entry(pd, pd_index(addr), f | USER_PRESENT_WRITABLE); }
+            f
+        } else { l3 };
+        let e = unsafe { raw_entry(pt, pt_index(addr)) };
+        if e & PTE_PRESENT == 0 {
+            let flags = if cow {
+                USER_LEAF_RO | USER_OWNED | USER_COW
+            } else if writable {
+                USER_LEAF_RW
+            } else {
+                USER_LEAF_RO
+            };
+            let _ = PTE_ADDR_MASK;
+            unsafe { set_entry(pt, pt_index(addr), phys + (i as u64) * PAGE_SIZE | flags); }
+            flush_page(addr);
+        }
+        addr += PAGE_SIZE;
+    }
+}
+
+/// True se almeno una PTE presente in `[vaddr, vaddr+count*4K)` ha il bit COW
+/// (33.4): usato da `mprotect` per rifiutare il passaggio a RW su VMA con
+/// pagine ancora condivise (flippare W renderebbe le scritture condivise,
+/// rompendo l'isolamento COW). Walk senza allocare.
+pub fn range_has_cow(cr3: u64, vaddr: u64, count: usize) -> bool {
+    use super::layout::USER_COW;
+    use super::teardown::raw_entry;
+    let mut addr = vaddr;
+    for _ in 0..count {
+        let l1 = unsafe { entry_at(cr3, pml4_index(addr)) };
+        if l1 != 0 {
+            let l2 = unsafe { entry_at(l1, pdpt_index(addr)) };
+            if l2 != 0 {
+                let l3 = unsafe { entry_at(l2, pd_index(addr)) };
+                if l3 != 0 {
+                    let e = unsafe { raw_entry(l3, pt_index(addr)) };
+                    if e & PTE_PRESENT != 0 && e & USER_COW != 0 {
+                        return true;
+                    }
+                }
+            }
+        }
+        addr += PAGE_SIZE;
+    }
+    false
 }
 
 /// Alloca e mappa lo stack user a `USER_STACK_TOP` (Fase 31: separato dal
