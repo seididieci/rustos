@@ -150,24 +150,7 @@ use libr::{req_frame_read, resp_frame_write};
 /// a boot e su EXIT_NOTIFY. Unbounded come `fs_chan`. Idempotente grazie al
 /// replace-on-register in userfs.
 fn ensure_mounted() {
-    // Prima i PROPRI ring (vedi devfs: map_in altrui li sovrascrive).
-    let _ = libr::fs_remap_self();
-    // Attende Fs via soli lookup (NESSUN frame scritto finche' userfs non
-    // c'e': niente spam nel ring che disallineerebbe gli altri client), poi
-    // UN tentativo; se fallisce ricomincia dal lookup. Stessa funzione a boot
-    // e su EXIT_NOTIFY (t28). Unbounded come `fs_chan`.
-    loop {
-        while libr::service_lookup(libr::Service::Fs).is_err() {
-            // Attesa in solo spin (IF=1): niente busy-loop su `get_ticks`, che
-            // terrebbe gli interrupt mascherati dentro le syscall.
-            for _ in 0..1_000_000 {
-                core::hint::spin_loop();
-            }
-        }
-        if libr::fs_register(b"/dev/console") == 0 {
-            return;
-        }
-    }
+    libr::ensure_fs_mount(|| libr::fs_register(b"/dev/console"));
 }
 
 #[unsafe(no_mangle)]
@@ -199,15 +182,8 @@ pub extern "C" fn _start() -> ! {
     // serve al supervisore init-restart (Fase 14). SUBITO dopo la registrazione
     // del servizio (non dopo /dev/console, che richiede userfs non ancora nato:
     // init aspetta questo ack a boot e attendere dopo sarebbe deadlock).
-    // Fire-and-forget (send_async): retry bounded, mai hang.
-    for _ in 0..100 {
-        if libr::send_async(libr::CHANNEL_PARENT, libr::SVC_READY, 1, 0).is_ok() {
-            break;
-        }
-        for _ in 0..10_000 {
-            core::hint::spin_loop();
-        }
-    }
+    // Fire-and-forget in `libr` (A3): retry bounded, mai hang.
+    libr::signal_ready(1);
 
     // 5. Registra /dev/console con userfs (IPC FS_REGISTER via libr::fs_register,
     //    che prima alloca e registra la pagina FS per-processo).

@@ -830,15 +830,8 @@ pub extern "C" fn _start() -> ! {
 
     // 5. READY al parent SUBITO (come console): userdisk parte PRIMA di userfs
     // (16.3) e l'ACK non puo' aspettare il mount (deadlock: il mount aspetta
-    // Fs che parte dopo). Fire-and-forget, retry bounded, mai hang.
-    for _ in 0..100 {
-        if libr::send_async(libr::CHANNEL_PARENT, libr::SVC_READY, 1, 0).is_ok() {
-            break;
-        }
-        for _ in 0..10_000 {
-            core::hint::spin_loop();
-        }
-    }
+    // Fs che parte dopo). Fire-and-forget in `libr` (A3), retry bounded, mai hang.
+    libr::signal_ready(1);
 
     // 6. Registrazione FS via SM async (mai sync: vedi doc in testa). DISK e
     // DEV funzionano anche a registrazione incompleta: userfs monta appena

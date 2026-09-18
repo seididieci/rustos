@@ -73,22 +73,8 @@ use libr::println;
 /// Stessa funzione a boot e su EXIT_NOTIFY: boot e restart sono la stessa
 /// condizione ("Fs non c'e'"). Unbounded come `fs_chan`: senza Fs il driver
 /// e' comunque inutile. Idempotente grazie al replace-on-register in userfs.
-fn ensure_mounted() -> bool {
-    // Prima i PROPRI ring: le injection map_in di userfs li hanno sovrascritti
-    // (stessa VA condivisa, mai ripristinata) — senza remap scriveremmo nelle
-    // pagine di un altro client (t28). No-op se mai allocati (fs_register poi
-    // alloca via fs_init).
-    let _ = libr::fs_remap_self();
-    loop {
-        while libr::service_lookup(libr::Service::Fs).is_err() {
-            for _ in 0..1_000_000 {
-                core::hint::spin_loop();
-            }
-        }
-        if libr::fs_register_multi(&[b"/dev/null", b"/dev/zero"]) == 0 {
-            return true;
-        }
-    }
+fn ensure_mounted() {
+    libr::ensure_fs_mount(|| libr::fs_register_multi(&[b"/dev/null", b"/dev/zero"]));
 }
 
 #[unsafe(no_mangle)]
@@ -108,16 +94,9 @@ pub extern "C" fn _start() -> ! {
 
     // Avvisa il parent (init) di essere pronto (SVC_READY, come userfs):
     // serve al supervisore init-restart per l'attesa prontezza (Fase 14).
-    // Fire-and-forget (send_async): a boot init non aspetta devfs → una
+    // Fire-and-forget in `libr` (A3): a boot init non aspetta devfs → una
     // send sync resterebbe bloccata per sempre. Retry bounded, mai hang.
-    for _ in 0..100 {
-        if libr::send_async(libr::CHANNEL_PARENT, libr::SVC_READY, 1, 0).is_ok() {
-            break;
-        }
-        for _ in 0..10_000 {
-            core::hint::spin_loop();
-        }
-    }
+    libr::signal_ready(1);
 
     let mut devtable = DevTable::new();
 

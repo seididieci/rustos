@@ -467,15 +467,8 @@ pub extern "C" fn _start() -> ! {
             // Prima pump: svuota eventuali tasti arrivati prima di noi (kbd li
             // accoda anche senza tty registrato).
             tty.pump_now = true;
-            // SVC_READY fire-and-forget (init aspetta a boot): retry bounded.
-            for _ in 0..100 {
-                if libr::send_async(libr::CHANNEL_PARENT, libr::SVC_READY, 1, 0).is_ok() {
-                    break;
-                }
-                for _ in 0..10_000 {
-                    core::hint::spin_loop();
-                }
-            }
+            // SVC_READY fire-and-forget in `libr` (A3, init aspetta a boot).
+            libr::signal_ready(1);
         }
 
         // 2. Pump + flush (solo Steady, mai bloccanti: tutto async).
