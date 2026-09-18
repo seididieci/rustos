@@ -100,6 +100,11 @@ const MODE_SHMDEMO: u64 = 18;
 const MODE_FAULT_CODE: u64 = 19;
 const MODE_COWDEMO: u64 = 20;
 const MODE_FORKDEMO: u64 = 21;
+// Fase 35 (hardening, t40): come KILLME ma alla morte del parent (EXIT_NOTIFY
+// sul canale di nascita) attende ~100 tick ed esce 0 da solo — igiene senza
+// kill (il kill diretto e' parent-scoped: nessuno puo' pulirlo da fuori dopo
+// il reparent a init).
+const MODE_ORPHAN: u64 = 22;
 
 // Tag DEV_* + errore IPC (A1): single source in `libr` (prima letterali qui).
 use libr::{DEV_CLOSE, DEV_OPEN, ERR};
@@ -141,6 +146,24 @@ pub extern "C" fn _start() -> ! {
             // idle, killabile, osservabile via `ps`.
             loop {
                 let _ = libr::recv();
+            }
+        }
+        MODE_ORPHAN => {
+            // Parcheggiato come KILLME (stesso costo zero), ma autonomo nella
+            // morte: alla prima EXIT_NOTIFY (il parent e' morto: unico peer
+            // possibile) attende ~100 tick (finestra di osservazione per chi
+            // verifica il reparent via `ps`) ed esce 0 da solo.
+            loop {
+                match libr::recv() {
+                    Ok(m) if libr::is_exit_notify(&m) => {
+                        libr::spin_ticks(100);
+                        libr::exit(0);
+                    }
+                    Ok(_) => {
+                        let _ = libr::reply(0, 0, 0);
+                    }
+                    Err(_) => libr::exit(1),
+                }
             }
         }
         MODE_SRVDIE => {
@@ -259,19 +282,20 @@ pub extern "C" fn _start() -> ! {
             libr::exit(0);
         }
         MODE_NEST => {
-            // Genitore intermedio (Fase 22, t40): spawna due KILLME parcheggiati
-            // (uno detached, uno normale), li riporta al parent e poi ESCE: la
-            // sua morte fa scattare il caso (cascata sul normale, reparent a
-            // init del detached). Qualunque spaw fallito: T_READY(w0=0) +
-            // exit(1), mai hang (il test fallisce rumoroso).
-            let det = match spawn_killme(true) {
+            // Genitore intermedio (Fase 22, t40): spawna due foglie parcheggiate
+            // (detached in ORPHAN, normale in KILLME), le riporta al parent e
+            // poi ESCE: la sua morte fa scattare il caso (cascata sul normale,
+            // reparent a init della detached, che poi esce da sola su notify).
+            // Qualunque spaw fallito: T_READY(w0=0) + exit(1), mai hang (il
+            // test fallisce rumoroso).
+            let det = match spawn_killme(true, MODE_ORPHAN) {
                 Some(c) => c,
                 None => {
                     let _ = libr::send(parent, T_READY, 0, 0);
                     libr::exit(1);
                 }
             };
-            let norm = match spawn_killme(false) {
+            let norm = match spawn_killme(false, MODE_KILLME) {
                 Some(c) => c,
                 None => {
                     let _ = libr::send(parent, T_READY, 0, 0);
@@ -474,14 +498,15 @@ fn run_fault(mode: u64) -> ! {
 /// Legge un file intero in heap (bound 256 KiB, chunk 4000 = RING_MAX_PAYLOAD).
 /// Spawna una foglia KILLME parcheggiata (Fase 22, NEST): come `spawn_cfg` di
 /// usertests ma eseguito da dentro l'helper (il MID e' parent delle foglie).
-/// `detached` = flag spawn (la foglia sopravvive alla morte del MID).
-/// Ritorna il pid della foglia (dall'ACK) o None.
-fn spawn_killme(detached: bool) -> Option<u64> {
+/// `detached` = flag spawn (la foglia sopravvive alla morte del MID), `mode`
+/// = modalita' della foglia (KILLME/ORPHAN). Ritorna il pid della foglia
+/// (dall'ACK) o None.
+fn spawn_killme(detached: bool, mode: u64) -> Option<u64> {
     let img = libr::load_file("/fat/test/testcli.bin")?;
     let base = libr::SpawnMeta::new("utcli", 16, &[])?;
     let meta = if detached { base.detached() } else { base };
     let chan = libr::spawn_image(&img, &meta).ok()? as u64;
-    let ack = libr::send(chan, T_CFG, MODE_KILLME, 0).ok()?;
+    let ack = libr::send(chan, T_CFG, mode, 0).ok()?;
     Some(ack.w0)
 }
 

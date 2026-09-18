@@ -141,20 +141,16 @@ pub fn t_neighbor() -> bool {
         helpers::stop_flooder(fchan);
         return false;
     }
-    let p1 = match libr::service_pid(libr::Service::Devfs) {
+    let p1 = match libr::init_bounce(libr::Service::Devfs) {
         Ok(p) => p,
         Err(_) => {
-            println!("[usertests] t30: service_pid(Devfs) FAILED");
+            println!("[usertests] t30: bounce devfs FAILED");
             helpers::stop_flooder(fchan);
             return false;
         }
     };
-    if libr::kill(p1, -15).is_err() {
-        println!("[usertests] t30: kill devfs pid={} FAILED", p1);
-        helpers::stop_flooder(fchan);
-        return false;
-    }
-    // Sparizione + ricomparsa (poll throttled, come t27).
+    // Sparizione + ricomparsa (poll throttled, come t27; il riuso PID puo'
+    // ridare lo stesso numero: si osserva sparizione → ricomparsa).
     if !libr::poll_wait(1000, libr::POLL_PERIOD_TICKS, || {
         libr::service_pid(libr::Service::Devfs).is_err()
     }) {
@@ -162,14 +158,15 @@ pub fn t_neighbor() -> bool {
         helpers::stop_flooder(fchan);
         return false;
     }
-    if libr::poll_value(1000, libr::POLL_PERIOD_TICKS, || {
+    match libr::poll_value(1000, libr::POLL_PERIOD_TICKS, || {
         libr::service_pid(libr::Service::Devfs).ok()
-    })
-    .is_none()
-    {
-        println!("[usertests] t30: devfs mai riapparso (timeout)");
-        helpers::stop_flooder(fchan);
-        return false;
+    }) {
+        Some(p2) => println!("[usertests] t30: devfs riavviato (pid {} -> {})", p1, p2),
+        None => {
+            println!("[usertests] t30: devfs mai riapparso (timeout)");
+            helpers::stop_flooder(fchan);
+            return false;
+        }
     }
     // Misura: operativita' sotto flood.
     let t_start = libr::get_ticks();

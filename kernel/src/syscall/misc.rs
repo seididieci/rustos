@@ -9,10 +9,21 @@ pub(super) fn sys_exit(code: i64) -> i64 {
 
 /// Fase 14 — `kill(pid, code)`: termina un processo user per la stessa via di
 /// exit (cleanup differito + cascata sulla discendenza + notifica al parent).
-/// Ritorna 0 se il processo e' stato terminato, -1 se il pid non esiste / non
-/// e' killabile (init, processi kernel, se stesso).
+/// Fase 35 (hardening): solo il parent (o init, pid 1) puo' killare — uccidere
+/// un server supervisionato e' operazione da supervisore (via init, vedi
+/// `INIT_BOUNCE`; kill diretto altrui = -1). Ritorna 0 se il processo e'
+/// stato terminato, -1 se il pid non esiste / non e' killabile (init,
+/// processi kernel, se stesso, non-figlio).
 pub(super) fn sys_kill(pid: u64, code: i64) -> i64 {
-    if crate::sched::kill(pid as usize, code) {
+    let me = current_id() as usize;
+    let target = pid as usize;
+    if me != 1 {
+        match crate::sched::process_ps(target) {
+            Some(s) if s.parent == Some(me) => {}
+            _ => return -1, // non-figlio (o morto/sconosciuto): rifiutato
+        }
+    }
+    if crate::sched::kill(target, code) {
         0
     } else {
         -1

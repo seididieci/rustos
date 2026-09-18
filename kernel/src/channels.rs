@@ -40,7 +40,11 @@ static SERVICE_OWNER: Mutex<[usize; syscall_numbers::SERVICE_COUNT]> =
     Mutex::new([0; syscall_numbers::SERVICE_COUNT]);
 
 /// Crea un canale bidirezionale tra `a` e `b`. Ritorna il channel id, o `None`
-/// se il pool e' esaurito.
+/// se il pool e' esaurito. Lo slot 0 NON si assegna mai: l'id 0 e' il
+/// sentinella `CHANNEL_PARENT` (canale di nascita) e un id numerico 0
+/// verrebbe risolto al canale del parent invece che al peer (osservato:
+/// lookup che ritorna 0 → messaggi al processo sbagliato + reply fantasma
+/// da chi li scarta come stray). 127 slot utili su 128, bound invariato.
 pub fn alloc(a: usize, b: usize) -> Option<usize> {
     if let Some(id) = find(a, b) {
         return Some(id);
@@ -48,6 +52,9 @@ pub fn alloc(a: usize, b: usize) -> Option<usize> {
     let mut pool = CHANNELS.lock();
     for _ in 0..MAX_CHANNELS {
         let id = CHAN_NEXT.fetch_add(1, Ordering::Relaxed) % MAX_CHANNELS;
+        if id == 0 {
+            continue; // sentinella CHANNEL_PARENT: mai assegnare
+        }
         if pool[id].is_none() {
             pool[id] = Some(Channel { a, b, alive: true });
             return Some(id);

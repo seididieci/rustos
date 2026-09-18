@@ -1,12 +1,14 @@
 use super::*;
 
 /// t40 — detach + reparent a init (Fase 22). usertests spawna un MID (NEST)
-/// che spawna due foglie KILLME parcheggiate (una detached via flag spawn,
-/// una normale) e poi esce: la sua morte fa scattare cascata sulla normale e
-/// reparent a init della detached. Osservazione SOLO via `ps` (usertests non
-/// e' peer delle foglie, quindi niente EXIT_NOTIFY diretta): normale sparita,
-/// detached viva con parent == init (pid 1); poi cleanup-kill della detached
-/// e attesa sparizione. Bound 500 tick per fase, mai hang.
+/// che spawna due foglie parcheggiate (detached in ORPHAN, normale in KILLME)
+/// e poi esce: la sua morte fa scattare cascata sulla normale e reparent a
+/// init della detached. Osservazione SOLO via `ps` (usertests non e' peer
+/// delle foglie, quindi niente EXIT_NOTIFY diretta): normale sparita,
+/// detached viva con parent == init (pid 1); poi la detached esce DA SOLA
+/// (~100 tick dopo la notify di morte del MID, igiene senza kill: il kill
+/// diretto e' parent-scoped dal Fase 35 e nessuno fuori puo' pulirla).
+/// Bound 500 tick per fase, mai hang.
 pub fn t_detach() -> bool {
     helpers::drain_stray();
     let (mid_chan, _mid_pid) = match helpers::spawn_cfg("/fat/test/testcli.bin", "utcli", 16, helpers::M_NEST, 0) {
@@ -44,14 +46,10 @@ pub fn t_detach() -> bool {
             return false;
         }
     }
-    // Cleanup: kill della detached + sparizione (nessuna EXIT_NOTIFY: non
-    // siamo peer — si osserva solo via ps).
-    if libr::kill(det as i64, 0).is_err() {
-        println!("[usertests] t40: kill detached pid={} FAILED", det);
-        return false;
-    }
+    // Cleanup senza kill (Fase 35): la detached esce da sola ~100 tick dopo
+    // la notify (ORPHAN); qui si attende solo la sparizione via ps.
     if !helpers::poll_gone(det, 500) {
-        println!("[usertests] t40: detached ancora viva dopo kill");
+        println!("[usertests] t40: detached ancora viva (self-exit mancato)");
         return false;
     }
     true
