@@ -379,8 +379,8 @@ pub fn t_client_death_purge() -> bool {
     true
 }
 
-/// t27 — init-restart di devfs (Fase 14). Uccide devfs (pid via `service_pid`,
-/// non suo figlio) e attende che init lo riavvii: prima sparizione dallo slot,
+/// t27 — init-restart di devfs (Fase 14). Bounce via init (`init_bounce`:
+/// init e' parent e riavvia per la via normale) e attesa: prima sparizione dallo slot,
 /// poi ricomparsa, poi /dev/null di nuovo operativo. Bound: la sparizione e'
 /// solo registry (1000 tick larghi); la ricomparsa include il RELOAD DA DISCO
 /// del binario (Fase 21: ~8 read FS × ~15 round-trip DISK l'uno, ognuno dei
@@ -397,17 +397,16 @@ pub fn t_devfs_restart() -> bool {
         return false;
     }
     let _ = libr::close(fd);
-    let p1 = match libr::service_pid(libr::Service::Devfs) {
+    // Fase 35 (hardening): i servizi supervisionati si uccidono tramite init
+    // (bounce: init e' parent e riavvia per la via normale). Il kill diretto
+    // e' parent-scoped e qui fallirebbe (devfs e' figlio di init, non nostro).
+    let p1 = match libr::init_bounce(libr::Service::Devfs) {
         Ok(p) => p,
         Err(_) => {
-            println!("[usertests] t27: service_pid(Devfs) FAILED");
+            println!("[usertests] t27: bounce devfs FAILED");
             return false;
         }
     };
-    if libr::kill(p1, -13).is_err() {
-        println!("[usertests] t27: kill devfs pid={} FAILED", p1);
-        return false;
-    }
     // Fase A: attendi sparizione dallo slot (morte osservata dal registry).
     // Poll throttled (Livello 1, buon vicinato): vedi `libr::poll_wait`.
     if !libr::poll_wait(1000, libr::POLL_PERIOD_TICKS, || {
@@ -492,18 +491,15 @@ pub fn t_userfs_restart() -> bool {
         return false;
     }
     let _ = libr::close(fp);
-    // Kill + sparizione + ricomparsa (come t27).
-    let p1 = match libr::service_pid(libr::Service::Fs) {
+    // Bounce via init (Fase 35: userfs e' figlio di init, kill diretto qui
+    // fallirebbe col kill parent-scoped).
+    let p1 = match libr::init_bounce(libr::Service::Fs) {
         Ok(p) => p,
         Err(_) => {
-            println!("[usertests] t28: service_pid(Fs) FAILED");
+            println!("[usertests] t28: bounce userfs FAILED");
             return false;
         }
     };
-    if libr::kill(p1, -14).is_err() {
-        println!("[usertests] t28: kill userfs pid={} FAILED", p1);
-        return false;
-    }
     // Kill + sparizione + ricomparsa (come t27, poll throttled Livello 1).
     if !libr::poll_wait(1000, libr::POLL_PERIOD_TICKS, || {
         libr::service_pid(libr::Service::Fs).is_err()

@@ -72,7 +72,7 @@ pub use syscall_numbers::{
 /// duplicati qui, in userfs/userdisk/init/tty/kbd e come letterali nei test).
 /// `libr` li riesporta: i server/test usano i path `libr::`, mai i valori.
 pub use syscall_numbers::{
-    FS_BUF_REG, FS_NOTIFY, FS_REGISTER, KBD_NOTIFY, SVC_READY, TEST_DONE,
+    FS_BUF_REG, FS_NOTIFY, FS_REGISTER, INIT_BOUNCE, KBD_NOTIFY, SVC_READY, TEST_DONE,
 };
 /// Tag DEV_* op + device type (DocsD): stesso pattern, prima duplicati in
 /// userfs/userdisk/devfs/console/kbd/tty.
