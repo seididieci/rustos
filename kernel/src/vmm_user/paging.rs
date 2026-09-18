@@ -204,6 +204,16 @@ unsafe fn map_user_region_flags(cr3: u64, vaddr: u64, phys: u64, count: usize, f
     }
 }
 
+/// Mapping di pagine condivise (M3): U=1, NX, NON owned (i frame sono della
+/// regione condivisa, liberati a refcount da `shm.rs`), RW o RO.
+///
+/// # Safety
+/// Come `map_user_region`.
+pub unsafe fn map_user_region_shared(cr3: u64, vaddr: u64, phys: u64, count: usize, writable: bool) {
+    let flags = if writable { super::layout::USER_LEAF_RW } else { super::layout::USER_LEAF_RO };
+    unsafe { map_user_region_flags(cr3, vaddr, phys, count, flags) }
+}
+
 /// Prepara la memoria di un processo user: mappa il codice `code_phys` (per
 /// `code_frames` frame) a `USER_CODE`, alloca+mappa lo stack user a
 /// `USER_STACK_TOP`. Le due pagine ring (`USER_FS_BUFFER` = request,

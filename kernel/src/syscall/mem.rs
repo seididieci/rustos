@@ -21,10 +21,68 @@ pub(super) fn sys_mmap(hint: u64, len: usize, prot: u64, flags: u64) -> i64 {
         return -1; // FIXED senza hint non ha senso
     }
     let cur = current_id() as usize;
-    match crate::vmm_user::vma_map(cur, hint, len as u64, fixed, prot as u8) {
+    match crate::vmm_user::vma_map(cur, hint, len as u64, fixed, prot as u8, 0) {
         Some(base) => base as i64,
         None => -1,
     }
+}
+
+/// shm_create(len): crea una regione di memoria condivisa (Fase M3) di `len`
+/// byte (frame contigui azzerati, max 256 KiB), ritorna l'id (>= 1) o -1.
+pub(super) fn sys_shm_create(len: u64) -> i64 {
+    match crate::vmm_user::shm_create(len) {
+        Some(id) => id as i64,
+        None => -1,
+    }
+}
+
+/// shm_map(id, hint, prot, flags): mappa la regione condivisa `id` nello
+/// spazio del processo corrente come VMA (prot RW/RO), PTE non-owned
+/// pre-materializzate (le stesse pagine per tutti), refcount++. Ritorna la
+/// base o -1. `flags` 0 o `MMAP_FIXED`.
+pub(super) fn sys_shm_map(id: u64, hint: u64, prot: u64, flags: u64) -> i64 {
+    use syscall_numbers::{MMAP_FIXED, PROT_READ, PROT_WRITE};
+    let id = id as u32;
+    if id == 0 {
+        return -1;
+    }
+    // Solo R/RW: una regione condivisa PROT_NONE non ha senso (le pagine
+    // esistono) e PROT_WRITE-solo non e' ammesso come in `mmap`.
+    let prot_ok = prot == PROT_READ || prot == PROT_READ | PROT_WRITE;
+    if !prot_ok {
+        return -1;
+    }
+    if flags & !MMAP_FIXED != 0 {
+        return -1;
+    }
+    let fixed = flags & MMAP_FIXED != 0;
+    if fixed && hint == 0 {
+        return -1;
+    }
+    let (phys, frames) = match crate::vmm_user::shm_region(id) {
+        Some(r) => r,
+        None => return -1,
+    };
+    let len = frames * 0x1000;
+    let cr3 = unsafe { (*(addr_of!(PERCPU))).current_cr3 };
+    if cr3 == 0 {
+        return -1;
+    }
+    let cur = current_id() as usize;
+    // `id` (1..=16) entra nel campo shm (u8) del record VMA.
+    let base = match crate::vmm_user::vma_map(cur, hint, len, fixed, prot as u8, id as u8) {
+        Some(b) => b,
+        None => return -1,
+    };
+    let writable = prot & PROT_WRITE != 0;
+    unsafe {
+        crate::vmm_user::map_user_region_shared(cr3, base, phys, frames as usize, writable);
+    }
+    for i in 0..frames {
+        crate::vmm_user::flush_page(base + i * 0x1000);
+    }
+    crate::vmm_user::shm_ref(id);
+    base as i64
 }
 
 /// mprotect(addr, len, prot): cambia le protezioni di VMA intere (Fase M1).

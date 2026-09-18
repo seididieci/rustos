@@ -372,6 +372,66 @@ pub fn t_mprotect() -> bool {
     true
 }
 
+/// Fase M3 — memoria condivisa: il parent crea una regione, ci scrive un
+/// pattern, un helper la mappa e (a) verifica il pattern, (b) scrive un
+/// marker che il parent deve vedere (visibilita' bidirezionale, pagine
+/// fisiche condivise). Poi refcount/teardown e riuso dello slot.
+pub fn t_shm() -> bool {
+    let id = match libr::shm_create(8192) {
+        Ok(i) => i,
+        Err(_) => return false,
+    };
+    let base = match libr::shm_map(id, 0, libr::PROT_READ | libr::PROT_WRITE) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    for i in 0..8192usize {
+        unsafe { core::ptr::write_volatile((base + i) as *mut u8, (i % 251) as u8); }
+    }
+    // Helper: mappa la stessa regione (id in param), verifica, scrive marker.
+    helpers::drain_stray();
+    let (chan, _pid) = match helpers::spawn_cfg(
+        "/fat/test/testcli.bin", "utcli", 16, helpers::M_SHMDEMO, id as u64,
+    ) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t47: spawn helper FAILED");
+            return false;
+        }
+    };
+    let (ok, _) = helpers::recv_done(&[chan]);
+    if !ok {
+        println!("[usertests] t47: helper shm FAIL");
+        return false;
+    }
+    // Visibilita': il marker scritto dall'helper (offset 4096) e' visibile.
+    if unsafe { core::ptr::read_volatile((base + 4096) as *const u8) } != 0xAB {
+        return false;
+    }
+    if libr::munmap(base, 8192).is_err() {
+        return false;
+    }
+    // Error path: id inesistente rifiutato.
+    if libr::shm_map(9999, 0, libr::PROT_READ).is_ok() {
+        return false;
+    }
+    // Riuso: la regione e' stata liberata (helper morto + munmap), un nuovo
+    // `shm_create` deve riuscire.
+    match libr::shm_create(4096) {
+        Ok(id2) => {
+            let b2 = match libr::shm_map(id2, 0, libr::PROT_READ | libr::PROT_WRITE) {
+                Ok(b) => b,
+                Err(_) => return false,
+            };
+            // Fresca = zeri (frame nuovi azzerati alla creazione).
+            let zero = unsafe { core::ptr::read_volatile(b2 as *const u8) } == 0;
+            let _ = libr::munmap(b2, 4096);
+            zero
+        }
+        Err(_) => false,
+    }
+}
+
 pub fn t_map_alias() -> bool {    if libr::map_physical(libr::MAP_TEST_PHYS, helpers::VA_A, 1).is_err() {
         return false;
     }

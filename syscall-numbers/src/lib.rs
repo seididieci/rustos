@@ -93,6 +93,11 @@ pub const SYS_MUNMAP: u64 = 40;
 /// Cambia le protezioni di `[addr, addr+len)` (Fase M1, mprotect):
 /// `(addr, len, prot)`. Solo VMA intere (come `munmap`). Ritorna 0 o -1.
 pub const SYS_MPROTECT: u64 = 41;
+/// Crea una regione di memoria condivisa (Fase M3): `(len)` → id (>= 1) o -1.
+pub const SYS_SHM_CREATE: u64 = 42;
+/// Mappa una regione condivisa (Fase M3): `(id, hint, prot, flags)` → base o
+/// -1. Le pagine sono le stesse per tutti i mappatori (zero-copy tra processi).
+pub const SYS_SHM_MAP: u64 = 43;
 /// Protezioni `mmap`/`mprotect` (M1: NONE/R/RW con enforcement; W solo e
 /// PROT_EXEC rifiutati — eseguibile solo il codice di spawn).
 pub const PROT_NONE: u64 = 0x0;

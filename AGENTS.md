@@ -1140,6 +1140,22 @@ velordor/
     RO/NONE/NX/guard/port-GP → `FAULT_EXIT_CODE` via EXIT_NOTIFY). Suite → 45/45.
   - Limite onesto: W^X del binario rimandato (M1b: confini `.text`/`.data`
     all'embed-time). File-backed (M2a) e shared (M3) ancora da fare.
+- [x] Fase M3: memoria condivisa tra processi (shm_create/shm_map).
+  - `SYS_SHM_CREATE (42)`: frame contigui azzerati (max 256 KiB) + slot in
+    `SHM_TABLE` statica (16), ritorna id >= 1. `SYS_SHM_MAP (43)`: mappa la
+    regione come VMA con PTE non-owned **pre-materializzate** (stesse pagine
+    per tutti i mappatori, zero-copy), refcount++.
+  - Record VMA esteso a `(base, len, prot, shm)` (shm = id+1, 0 anonima);
+    `munmap`/teardown rilasciano il ref (a 0 `free_contiguous`), `mprotect`
+    su condivise ammette RO↔RW (NONE rifiutato senza stato). Fault su VMA
+    condivisa = re-map idempotente, mai un frame privato.
+  - `libr::shm_create`/`shm_map`. t46: pattern parent + helper che mappa la
+    stessa regione, verifica e scrive un marker visibile al parent (prova
+    bidirezionale), id inesistente rifiutato, riuso slot a zeri. Suite → 46/46.
+  - NOTA onesta: M2a (file-backed) NON fattibile come pianificato — il kernel
+    non ha un FS (e' in userfs) e non puo' leggere file; servirebbe COW o IPC
+    FS dal kernel (fuori ADR-0005). La parte "errore del processo → muore il
+    processo" e' stata fatta in M1b (OOM e #GP → kill).
 
 ## Important Notes
 
@@ -1315,9 +1331,9 @@ rg '\[bench\]' /tmp/bench-run1.log /tmp/bench-run2.log /tmp/bench-run3.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 7/7
-#   [usertests] PASS 45/45
+#   [usertests] PASS 46/46
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 45/45' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 46/46' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 

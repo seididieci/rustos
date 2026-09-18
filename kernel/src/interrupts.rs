@@ -113,8 +113,24 @@ extern "x86-interrupt" fn page_fault_handler(
     if !prot && fault_addr >= crate::vmm_user::MMAP_BASE
         && fault_addr < crate::vmm_user::MMAP_END
     {
-        if let Some((_b, _l, vprot)) = crate::vmm_user::vma_lookup(pid, fault_addr) {
+        if let Some((vb, vl, vprot, vshm)) = crate::vmm_user::vma_lookup(pid, fault_addr) {
             use syscall_numbers::{PROT_NONE, PROT_WRITE};
+            // VMA condivisa (M3): le pagine sono pre-materializzate a
+            // `shm_map`; un fault qui e' un edge (PTE staccata) → re-map
+            // idempotente della regione, mai un frame privato (romperebbe
+            // la condivisione).
+            if vshm != 0 {
+                if let Some((phys, frames)) = crate::vmm_user::shm_region(vshm as u32) {
+                    let writable = vprot & PROT_WRITE as u8 != 0;
+                    let cr3 = crate::vmm_user::active_cr3();
+                    unsafe {
+                        crate::vmm_user::map_user_region_shared(cr3, vb, phys, frames as usize, writable);
+                    }
+                    let _ = vl;
+                    return;
+                }
+                fault_kill(pid, fault_addr, error_code, &stack_frame);
+            }
             if vprot == PROT_NONE as u8 || (write && vprot & PROT_WRITE as u8 == 0) {
                 fault_kill(pid, fault_addr, error_code, &stack_frame);
             }
