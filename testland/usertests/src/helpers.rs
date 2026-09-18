@@ -40,6 +40,9 @@ pub const M_FORKDEMO: u64 = 21;
 // Fase 35: come KILLME ma alla morte del parent esce 0 da solo dopo ~100
 // tick (igiene senza kill parent-scoped, per t40 dopo il reparent a init).
 pub const M_ORPHAN: u64 = 22;
+// Fase 35 (t50): tentativi ostili che devono fallire (kill non-figlio,
+// register servizio di sistema). w1 = pid target del kill.
+pub const M_HARDEN: u64 = 23;
 
 // VA per i test map_physical/aliasing (zona libera tra USER_FS_BUFFER e lo
 // heap: 0x4000_0020_0000..0x4000_0040_0000).

@@ -215,3 +215,66 @@ pub fn t_disk() -> bool {
     true
 }
 
+/// t50 — hardening (Fase 35, ADR-0026): i cancelli kernel/FS respingono i
+/// tentativi ostili di un processo locale. (A) un helper prova a killare un
+/// fratello (non suo figlio) e a registrare un servizio di sistema (`Init`):
+/// entrambi rifiutati. (B) usertests prova a mappare RAM del kernel con
+/// `map_physical`: rifiutato. (C) usertests prova a killare un servizio che
+/// non e' suo figlio (devfs): rifiutato (il servizio resta vivo).
+pub fn t_hardening() -> bool {
+    helpers::drain_stray();
+    // Vittima: un KILLME parcheggiato, figlio di usertests (fratello
+    // dell'helper HARDEN, quindi NON suo figlio).
+    let (b_chan, b_pid) = match helpers::spawn_cfg(
+        "/fat/test/testcli.bin", "utcli", 16, helpers::M_KILLME, 0,
+    ) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t50: spawn vittima FAILED");
+            return false;
+        }
+    };
+    let (h_chan, _) = match helpers::spawn_cfg(
+        "/fat/test/testcli.bin", "utcli", 16, helpers::M_HARDEN, b_pid,
+    ) {
+        Some(x) => x,
+        None => {
+            let _ = libr::kill(b_pid as i64, 0);
+            let _ = helpers::wait_exit(b_chan);
+            println!("[usertests] t50: spawn harden FAILED");
+            return false;
+        }
+    };
+    let (ok, detail) = helpers::recv_done(&[h_chan]);
+    if !ok {
+        println!("[usertests] t50: helper harden FAIL (detail={})", detail);
+        let _ = libr::kill(b_pid as i64, 0);
+        let _ = helpers::wait_exit(b_chan);
+        return false;
+    }
+    // La vittima deve essere ancora viva (il kill ostile non e' passato).
+    if libr::ps_info(b_pid as u32).is_none() {
+        println!("[usertests] t50: vittima uccisa da kill non-figlio!");
+        return false;
+    }
+    // (B) map_physical di RAM del kernel (0x100000) rifiutato.
+    if libr::map_physical(0x10_0000, helpers::VA_A, 1).is_ok() {
+        println!("[usertests] t50: map_physical RAM kernel NON rifiutato!");
+        let _ = libr::kill(b_pid as i64, 0);
+        let _ = helpers::wait_exit(b_chan);
+        return false;
+    }
+    // (C) kill di un servizio non-figlio (devfs, figlio di init) rifiutato.
+    if let Ok(devfs_pid) = libr::service_pid(libr::Service::Devfs) {
+        if libr::kill(devfs_pid, 0).is_ok() {
+            println!("[usertests] t50: kill di un servizio non-figlio NON rifiutato!");
+            let _ = libr::kill(b_pid as i64, 0);
+            let _ = helpers::wait_exit(b_chan);
+            return false;
+        }
+    }
+    // Cleanup: la vittima e' nostra figlia (kill consentito).
+    let _ = libr::kill(b_pid as i64, 0);
+    let _ = helpers::wait_exit(b_chan);
+    true
+}
