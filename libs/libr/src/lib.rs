@@ -56,6 +56,9 @@ pub mod scratch;
 /// Kernel invariato; vincoli Fase 13 invariati (vedi modulo).
 pub mod task;
 
+/// Port I/O x86 in ring 3 (A4: prima duplicato in userdisk/userkbd).
+pub mod pio;
+
 /// Esegue una syscall a 4 argomenti e ne restituisce il risultato in `rax`.
 ///
 /// # Safety

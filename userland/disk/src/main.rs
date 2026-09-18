@@ -39,7 +39,6 @@ extern crate alloc;
 mod block;
 mod cache;
 mod detect;
-mod io;
 mod part;
 
 use alloc::collections::BTreeMap;
