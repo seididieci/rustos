@@ -1,0 +1,74 @@
+// Split from syscall.rs (byte-identical move; see facade).
+use core::ptr::addr_of_mut;
+use super::entry::PERCPU;
+use super::ipc::{sys_send, sys_send_async, sys_recv, sys_recv_nonblock, sys_reply};
+use super::service::{sys_service_register, sys_service_lookup, sys_service_pid};
+use super::spawn::{sys_spawn, sys_spawn_image};
+use super::mem::{sys_mmap, sys_munmap, sys_map_physical, sys_sbrk, sys_ring_alloc, sys_map_in};
+use super::misc::{sys_exit, sys_write, sys_getpid, sys_kill, sys_get_ticks, sys_cbs_create, sys_cbs_attach, sys_cbs_get_info, sys_ps_info};
+
+/// Handler di dispatch: legge gli argomenti riempiti dall'entry e chiama la
+/// syscall richiesta. Firmato `extern "C" fn() -> i64` per essere invocabile
+/// dall'assembly; il risultato torna in RAX a `sysretq`.
+#[unsafe(no_mangle)]
+pub(super) extern "C" fn syscall_handler() -> i64 {
+    unsafe {
+        let p = addr_of_mut!(PERCPU);
+        // Reset del flag di ritorno multi-register: di default restituiamo i
+        // registri user preservati (solo RAX cambia). Le syscall IPC lo
+        // impostano per svuotare rdi/rsi/rdx/r10 con i valori di risposta.
+        (*p).ipc_override = 0;
+        match (*p).number {
+            syscall_numbers::SYS_EXIT => sys_exit((*p).arg1 as i64),
+            syscall_numbers::SYS_WRITE => sys_write((*p).arg1, (*p).arg2 as *const u8, (*p).arg3 as usize),
+            syscall_numbers::SYS_GETPID => sys_getpid(),
+            syscall_numbers::SYS_SEND => sys_send((*p).arg1 as usize, (*p).arg2, (*p).arg3, (*p).arg4),
+            syscall_numbers::SYS_SEND_ASYNC => sys_send_async((*p).arg1 as usize, (*p).arg2, (*p).arg3, (*p).arg4),
+            syscall_numbers::SYS_RECV => sys_recv(),
+            syscall_numbers::SYS_RECV_NONBLOCK => sys_recv_nonblock(),
+            syscall_numbers::SYS_REPLY => sys_reply((*p).arg1, (*p).arg2, (*p).arg3),
+            syscall_numbers::SYS_SERVICE_REGISTER => sys_service_register((*p).arg1),
+            syscall_numbers::SYS_SERVICE_LOOKUP => sys_service_lookup((*p).arg1),
+            syscall_numbers::SYS_SPAWN => sys_spawn((*p).arg1, (*p).arg2 as usize),
+            syscall_numbers::SYS_MAP_PHYSICAL => sys_map_physical((*p).arg1, (*p).arg2, (*p).arg3 as usize),
+            syscall_numbers::SYS_GET_TICKS => sys_get_ticks(),
+            syscall_numbers::SYS_SBRK => sys_sbrk((*p).arg1),
+            // Ring buffer SPSC per-processo (Fase 10.2).
+            syscall_numbers::SYS_RING_ALLOC => sys_ring_alloc(),
+            syscall_numbers::SYS_MAP_IN => sys_map_in((*p).arg1 as usize, (*p).arg2, (*p).arg3, (*p).arg4 as usize),
+            // CBS bandwidth reservation (Fase 11.4).
+            syscall_numbers::SYS_CBS_CREATE => sys_cbs_create((*p).arg1, (*p).arg2),
+            syscall_numbers::SYS_CBS_ATTACH => sys_cbs_attach(),
+            syscall_numbers::SYS_CBS_GET_INFO => sys_cbs_get_info((*p).arg1),
+            // Fase 14 (ADR-0010): kill di un processo user.
+            syscall_numbers::SYS_KILL => sys_kill((*p).arg1, (*p).arg2 as i64),
+            // Fase 14 (init-restart): pid dell'owner di un servizio.
+            syscall_numbers::SYS_SERVICE_PID => sys_service_pid((*p).arg1),
+            // Fase 19.1: snapshot `ps` di un processo.
+            syscall_numbers::SYS_PS_INFO => sys_ps_info((*p).arg1 as usize),
+            // Fase 21: spawn dal binario in memoria (servizi da disco).
+            syscall_numbers::SYS_SPAWN_IMAGE => {
+                sys_spawn_image((*p).arg1, (*p).arg2 as usize, (*p).arg3, (*p).arg4 as usize)
+            }
+            // Fase M0: mmap/munmap anonimi nel basso canonico.
+            syscall_numbers::SYS_MMAP => sys_mmap((*p).arg1, (*p).arg2 as usize, (*p).arg3, (*p).arg4),
+            syscall_numbers::SYS_MUNMAP => sys_munmap((*p).arg1, (*p).arg2 as usize),
+            _ => -1,
+        }
+    }
+}
+
+/// Applica il risultato di una primitiva IPC ai registri di ritorno della
+/// syscall: imposta i valori di ritorno e il flag `ipc_override` perche'
+/// l'entry riempia rdi/rsi/rdx/r10. Ritorna il valore di `rax` (stato).
+pub(super) fn apply_ipc(r: crate::sched::IpcResult) -> i64 {
+    unsafe {
+        let p = addr_of_mut!(PERCPU);
+        (*p).ipc_override = 1;
+        (*p).ret_rdi = r.rdi;
+        (*p).ret_rsi = r.rsi;
+        (*p).ret_rdx = r.rdx;
+        (*p).ret_r10 = r.r10;
+    }
+    r.rax
+}
