@@ -37,21 +37,11 @@ use libr::println;
 const REQ_RING_VA: u64 = 0x0000_4000_0020_0000;
 /// Response ring virtuale (USER_FS_BUFFER + 0x1000).
 const RESP_RING_VA: u64 = 0x0000_4000_0021_0000;
-/// Capacita' dati per ring: l'area dati occupa [0x0000, 0xFF8) = 4088 byte;
-/// head/tail vivono a 0xFF8/0xFFC (fuori dall'area dati).
-const RING_DATA_CAP: usize = 4088;
-/// Offset head nel ring page.
-const RING_HEAD: usize = 0xFF8;
-/// Offset tail nel ring page.
-const RING_TAIL: usize = 0xFFC;
-
-/// Valore di errore IPC: tutti i bit a 1 (equivalente unsigned di -1).
-const ERR: u64 = !0u64;
-/// Il client non ha (piu') l'handshake ring presso questo server (es. server
-/// riavviato dopo la registrazione: t28). Il client deve rifare FS_BUF_REG e
-/// ripetere l'operazione UNA volta. Riservato: nessun result legittimo (fd,
-/// conteggi) puo' assumere questo valore in pratica.
-const ERR_NOHANDSHAKE: u64 = !0u64 - 1;
+// Geometria ring + errori IPC (A1): single source in `libr`.
+use libr::{
+    ERR, ERR_NOHANDSHAKE, RING_DATA_CAP, RING_HEAD, RING_TAIL, ring_available,
+    ring_positions,
+};
 
 // ── Tag delle operazioni (nei frame del ring) ─────────────────────
 // Single source in `syscall-numbers` (Fase 17): include R_RIGHTS_DROP/GET.
@@ -1073,18 +1063,7 @@ fn handle_rights_get(
 }
 
 // ── Ring I/O (Fase 10.2) ─────────────────────────────────────────
-
-/// Legge head e tail dal ring a `ring_va`.
-unsafe fn ring_positions(ring_va: u64) -> (u32, u32) {
-    let head = unsafe { core::ptr::read_volatile((ring_va + RING_HEAD as u64) as *const u32) };
-    let tail = unsafe { core::ptr::read_volatile((ring_va + RING_TAIL as u64) as *const u32) };
-    (head, tail)
-}
-
-/// Byte disponibili nel ring.
-fn ring_available(head: u32, tail: u32) -> usize {
-    ((head + RING_DATA_CAP as u32 - tail) % RING_DATA_CAP as u32) as usize
-}
+// `ring_positions`/`ring_available` da `libr` (import sopra, A1).
 
 /// Legge `count` byte dal ring a `ring_va` dalla posizione `pos`.
 unsafe fn ring_read_at(ring_va: u64, pos: u32, dst: &mut [u8], count: usize) {

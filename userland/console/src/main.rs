@@ -140,15 +140,8 @@ unsafe fn vga_write_char(vga: *mut Buffer, byte: u8, cursor: &mut usize) {
 
 const REQ_RING_VA: u64 = libr::CLI_REQ_VA;
 const RESP_RING_VA: u64 = libr::CLI_RESP_VA;
-const RING_DATA_CAP: usize = 4088;
-const RING_HEAD: usize = 0xFF8;
-const RING_TAIL: usize = 0xFFC;
-
-unsafe fn ring_positions(ring_va: u64) -> (u32, u32) {
-    let head = unsafe { core::ptr::read_volatile((ring_va + RING_HEAD as u64) as *const u32) };
-    let tail = unsafe { core::ptr::read_volatile((ring_va + RING_TAIL as u64) as *const u32) };
-    (head, tail)
-}
+// Geometria ring (A1) + `ring_positions` (A1): single source in `libr`.
+use libr::{RING_DATA_CAP, RING_HEAD, RING_TAIL, ring_positions};
 
 /// Scrive dati nella response ring del client (a RESP_RING_VA).
 unsafe fn resp_ring_write_client(data: &[u8]) {

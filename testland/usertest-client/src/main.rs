@@ -90,10 +90,8 @@ const MODE_MAPHAMMER: u64 = 10;
 const MODE_FLOOD: u64 = 11;
 const MODE_NEST: u64 = 12;
 
-// Tag DEV_* (driver IPC, speculari a userfs/devfs).
-const DEV_OPEN: u64 = 0x20;
-const DEV_CLOSE: u64 = 0x23;
-const ERR: u64 = !0u64;
+// Tag DEV_* + errore IPC (A1): single source in `libr` (prima letterali qui).
+use libr::{DEV_CLOSE, DEV_OPEN, ERR};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {

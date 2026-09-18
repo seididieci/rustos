@@ -44,15 +44,12 @@ use libr::KBD_NOTIFY;
 /// Device type per DEV_OPEN (stesso di prima: il path non cambia; valore in
 /// `syscall-numbers`, importato sopra).
 
-const ERR: u64 = !0u64;
-
 // ── Ring I/O (Fase 10.2, pattern console/devfs: servire i client) ───
 
 const CLI_REQ: u64 = libr::CLI_REQ_VA;
 const CLI_RESP: u64 = libr::CLI_RESP_VA;
-const RING_DATA_CAP: usize = 4088;
-const RING_HEAD: usize = 0xFF8;
-const RING_TAIL: usize = 0xFFC;
+// Geometria ring + errore IPC (A1): single source in `libr`.
+use libr::{ERR, RING_DATA_CAP, RING_HEAD, RING_TAIL};
 
 /// Scrive dati nella response ring del client (a CLI_RESP).
 unsafe fn resp_ring_write_client(data: &[u8]) {
