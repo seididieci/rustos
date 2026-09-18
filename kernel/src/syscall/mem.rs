@@ -148,11 +148,31 @@ pub(super) fn sys_munmap(addr: u64, len: usize) -> i64 {
     }
 }
 
+/// True se il frame `phys` e' mappabile via `map_physical`/`map_in` (Fase 35,
+/// hardening): solo frame del sistema legittimi — ring page registrata (di
+/// qualunque processo: data-plane FS), scratch dei test (`MAP_TEST_PHYS`),
+/// frame VGA. Qualunque altro frame (kernel, page table, heap, bitmap,
+/// pagine private di altri processi) e' rifiutato: senza questo, la syscall
+/// era un sandbox escape totale (RW su qualunque RAM).
+fn is_mappable_phys(phys: u64) -> bool {
+    const VGA_PHYS: u64 = 0xB8000;
+    if phys == VGA_PHYS {
+        return true;
+    }
+    let test_start = syscall_numbers::MAP_TEST_PHYS;
+    let test_end = test_start + syscall_numbers::MAP_TEST_FRAMES * 0x1000;
+    if phys >= test_start && phys < test_end {
+        return true;
+    }
+    crate::vmm_user::is_ring_page(phys)
+}
+
 /// map_physical(phys_addr, virt_addr, count): mappa `count` pagine fisiche
 /// a partire da `phys_addr` all'indirizzo virtuale `virt_addr` nello spazio
 /// del chiamante. Usato dal console server (VGA), da userfs (ring req/resp
 /// di un client, dai phys registrati via `FS_BUF_REG`) e dalla test suite
-/// (pagina scratch MAP_TEST_PHYS).
+/// (pagina scratch MAP_TEST_PHYS). Fase 35: solo frame del sistema (vedi
+/// `is_mappable_phys`), mai RAM arbitraria.
 pub(super) fn sys_map_physical(phys_addr: u64, virt_addr: u64, count: usize) -> i64 {
     const PAGE_SIZE: u64 = 0x1000;
     const MAX_PAGES: usize = 256;
@@ -165,6 +185,16 @@ pub(super) fn sys_map_physical(phys_addr: u64, virt_addr: u64, count: usize) -> 
     }
     if count == 0 || count > MAX_PAGES {
         return -1;
+    }
+    // Ogni pagina deve essere un frame del sistema (Fase 35).
+    for i in 0..count {
+        if !is_mappable_phys(phys_addr + (i as u64) * PAGE_SIZE) {
+            crate::serial_println!(
+                "[syscall] map_physical: frame non mappabile {:#x} rifiutato",
+                phys_addr + (i as u64) * PAGE_SIZE
+            );
+            return -1;
+        }
     }
 
     let cr3 = unsafe { (*(addr_of!(PERCPU))).current_cr3 };
@@ -267,6 +297,17 @@ pub(super) fn sys_map_in(chan: usize, phys: u64, virt_addr: u64, count: usize) -
     }
     if count == 0 || count > MAX_PAGES {
         return -1;
+    }
+    // Fase 35: `map_in` inietta solo ring page (il data-plane FS); mai RAM
+    // arbitraria nello spazio di un altro processo.
+    for i in 0..count {
+        if !crate::vmm_user::is_ring_page(phys + (i as u64) * PAGE_SIZE) {
+            crate::serial_println!(
+                "[syscall] map_in: frame non-ring {:#x} rifiutato",
+                phys + (i as u64) * PAGE_SIZE
+            );
+            return -1;
+        }
     }
     // Il target e' il peer del canale: deve essere un processo user esistente
     // (page table propria). Channel 0 = canale di nascita.

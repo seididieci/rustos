@@ -13,6 +13,22 @@ const RING_PAIRS_MAX: usize = 4;
 static mut RING_PHYS: [u64; RING_MAX_PROCS * RING_PAIRS_MAX * 2] =
     [0; RING_MAX_PROCS * RING_PAIRS_MAX * 2];
 
+/// True se `phys` e' una pagina ring registrata da QUALUNQUE processo (Fase
+/// 35, hardening `map_physical`/`map_in`): le ring sono il data-plane FS e
+/// vengono mappate/iniettate legittimamente tra client, userfs e driver.
+pub fn is_ring_page(phys: u64) -> bool {
+    if phys == 0 {
+        return false;
+    }
+    let n = RING_MAX_PROCS * RING_PAIRS_MAX * 2;
+    for i in 0..n {
+        if unsafe { core::ptr::addr_of!(RING_PHYS[i]).read() } == phys {
+            return true;
+        }
+    }
+    false
+}
+
 /// Alloca una coppia FRESCA di pagine ring del processo `pid` (Fase 16: mai
 /// cache-hit — ogni chiamata da' pagine nuove). Ritorna `(req_phys, resp_phys)`
 /// oppure `None` se mancano frame o slot record. Le pagine vengono zero-fill.
