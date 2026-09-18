@@ -55,7 +55,7 @@ use libr::{
     DEV_READDIR, DEV_WRITE, DEV_ZERO,
 };
 // Tag IPC FS/boot (DocsB): single source in `syscall-numbers`, via `libr`.
-use libr::{FS_BUF_REG, FS_NOTIFY, FS_REGISTER, SVC_READY};
+use libr::{FS_BUF_REG, FS_NOTIFY, FS_REGISTER};
 
 const MAX_PATH: usize = 256;
 
@@ -1754,14 +1754,7 @@ pub extern "C" fn _start() -> ! {
     // pronto" (vale anche per i restart: init procede a filesystem completo).
     // READY fire-and-forget (send_async, init-restart): init consuma senza
     // reply → una send sync resterebbe bloccata. Retry bounded, mai hang.
-    for _ in 0..100 {
-        if libr::send_async(libr::CHANNEL_PARENT, SVC_READY, reg_ok as u64, 0).is_ok() {
-            break;
-        }
-        for _ in 0..10_000 {
-            core::hint::spin_loop();
-        }
-    }
+    libr::signal_ready(reg_ok as u64);
 
     // P1.2-diagnosi: contatore rimosso (era temporaneo); heap_stats resta in
     // libr per future diagnosi.

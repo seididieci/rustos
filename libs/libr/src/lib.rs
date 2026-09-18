@@ -1195,6 +1195,49 @@ pub fn fs_remap_self() -> bool {
     map_physical(resp_phys, RESP_RING_VA, 1).is_ok()
 }
 
+// ── Boot/handshake helpers lato server (A3) ─────────────────────────
+// Prima identici nei server userland (devfs/console/kbd + SVC_READY anche in
+// fs/tty/disk): differivano solo nella chiamata di registrazione (A3) o nel
+// payload w0 (signal_ready).
+
+/// Attende il servizio Fs via soli lookup (spin puri IF=1, mai `get_ticks`
+/// che maschera gli interrupt), poi UN tentativo via `register` (nessun frame
+/// scritto finche' userfs non c'e': niente spam nel ring che disallineerebbe
+/// gli altri client); se fallisce (race: userfs rimorto nel mentre) ricomincia
+/// dal lookup. Unbounded come `fs_chan`: senza Fs il driver e' comunque
+/// inutile. Idempotente grazie al replace-on-register in userfs.
+pub fn ensure_fs_mount(register: fn() -> i64) {
+    // Prima i PROPRI ring: le injection map_in di userfs li hanno sovrascritti
+    // (stessa VA condivisa, mai ripristinata) — senza remap scriveremmo nelle
+    // pagine di un altro client (t28). No-op se mai allocati.
+    let _ = fs_remap_self();
+    loop {
+        while service_lookup(Service::Fs).is_err() {
+            for _ in 0..1_000_000 {
+                core::hint::spin_loop();
+            }
+        }
+        if register() == 0 {
+            return;
+        }
+    }
+}
+
+/// Segnala SVC_READY al parent in fire-and-forget: a boot init potrebbe non
+/// essere ancora in recv (una send sync resterebbe bloccata per sempre), su
+/// restart nessuno aspetta. Retry bounded con spin puri, mai hang.
+/// `w0` = payload prontezza (1 = pronto; userfs passa `reg_ok`).
+pub fn signal_ready(w0: u64) {
+    for _ in 0..100 {
+        if send_async(CHANNEL_PARENT, SVC_READY, w0, 0).is_ok() {
+            break;
+        }
+        for _ in 0..10_000 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
 /// Alloca una coppia di pagine ring (request, response) SENZA handshake
 /// (Fase 16, data-plane `DISK_*` di userdisk): il server riporta i fisici al
 /// client nel frame di `DISK_HELLO`, il client li mappa nelle proprie finestre

@@ -201,17 +201,7 @@ use libr::resp_frame_write;
 /// `ensure_mounted`): attende Fs via soli lookup, poi UN tentativo; se
 /// fallisce ricomincia. Unbounded: senza Fs il driver e' comunque inutile.
 fn ensure_mounted() {
-    let _ = libr::fs_remap_self();
-    loop {
-        while libr::service_lookup(libr::Service::Fs).is_err() {
-            for _ in 0..1_000_000 {
-                core::hint::spin_loop();
-            }
-        }
-        if libr::fs_register(b"/dev/kbd") == 0 {
-            return;
-        }
-    }
+    libr::ensure_fs_mount(|| libr::fs_register(b"/dev/kbd"));
 }
 
 #[unsafe(no_mangle)]
@@ -235,14 +225,7 @@ pub extern "C" fn _start() -> ! {
 
     // Avvisa il parent (init) di essere pronto (SVC_READY fire-and-forget,
     // come devfs: a boot init aspetta, su restart nessuno — mai sync).
-    for _ in 0..100 {
-        if libr::send_async(libr::CHANNEL_PARENT, libr::SVC_READY, 1, 0).is_ok() {
-            break;
-        }
-        for _ in 0..10_000 {
-            core::hint::spin_loop();
-        }
-    }
+    libr::signal_ready(1);
 
     let mut queue = ScanQueue::new();
     let mut next_fd: u32 = 1;
