@@ -5,24 +5,47 @@ use super::dispatch::apply_ipc;
 
 /// mmap(hint, len, prot, flags): mappa anonima privata nel basso canonico
 /// (Fase M0, zero-fill lazy come `sbrk`: VA subito, frame al primo fault).
-/// Ritorna la base o -1. Solo anonimo in M0: `prot` deve essere RW,
+/// Ritorna la base o -1. M1: `prot` = NONE/R/RW (W solo ed EXEC rifiutati);
 /// `flags` 0 (hint consigliato, 0 = scelta kernel) o `MMAP_FIXED`.
 pub(super) fn sys_mmap(hint: u64, len: usize, prot: u64, flags: u64) -> i64 {
-    use syscall_numbers::{MMAP_FIXED, PROT_READ, PROT_WRITE};
-    if prot != PROT_READ | PROT_WRITE {
-        return -1; // M0: solo RW (RO/NX in M1 con enforcement)
+    use syscall_numbers::{MMAP_FIXED, PROT_NONE, PROT_READ, PROT_WRITE};
+    let prot_ok = prot == PROT_NONE || prot == PROT_READ || prot == PROT_READ | PROT_WRITE;
+    if !prot_ok {
+        return -1; // M1: NONE/R/RW (W solo, EXEC e altri bit rifiutati)
     }
     if flags & !MMAP_FIXED != 0 {
-        return -1; // flag sconosciuti (file-backed rimandato)
+        return -1; // flag sconosciuti (file-backed in M2a, shared in M3)
     }
     let fixed = flags & MMAP_FIXED != 0;
     if fixed && hint == 0 {
         return -1; // FIXED senza hint non ha senso
     }
     let cur = current_id() as usize;
-    match crate::vmm_user::vma_map(cur, hint, len as u64, fixed) {
+    match crate::vmm_user::vma_map(cur, hint, len as u64, fixed, prot as u8) {
         Some(base) => base as i64,
         None => -1,
+    }
+}
+
+/// mprotect(addr, len, prot): cambia le protezioni di VMA intere (Fase M1).
+/// Stesse regole di `munmap` (copertura esatta, parziali = -1 senza stato) +
+/// `prot` validato come `mmap`. A NONE le pagine cadono (smappa+libera) e il
+/// riuso rimaterializza zero; RO↔RW flippa il bit W in place. 0 o -1.
+pub(super) fn sys_mprotect(addr: u64, len: usize, prot: u64) -> i64 {
+    use syscall_numbers::{PROT_NONE, PROT_READ, PROT_WRITE};
+    let prot_ok = prot == PROT_NONE || prot == PROT_READ || prot == PROT_READ | PROT_WRITE;
+    if !prot_ok {
+        return -1;
+    }
+    let cr3 = unsafe { (*(addr_of!(PERCPU))).current_cr3 };
+    if cr3 == 0 {
+        return -1; // cr3 non impostata
+    }
+    let cur = current_id() as usize;
+    if crate::vmm_user::vma_protect(cur, cr3, addr, len as u64, prot as u8) {
+        0
+    } else {
+        -1
     }
 }
 

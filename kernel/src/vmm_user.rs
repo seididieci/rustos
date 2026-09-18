@@ -19,9 +19,9 @@ mod teardown;
 pub use layout::{USER_BASE, USER_CODE, USER_FS_BUFFER, USER_RESP_RING, USER_HEAP_BASE, USER_HEAP_LIMIT, MMAP_BASE, MMAP_END};
 // Compat: erano `pub` prima dello split (nessun uso interno attuale).
 #[allow(unused_imports)]
-pub use layout::{USER_STACK_TOP, USER_STACK_FRAMES};
+pub use layout::{USER_STACK_TOP, USER_STACK_FRAMES, USER_STACK_GUARD};
 pub use heap_brk::{heap_brk, set_heap_brk};
-pub use vma::{vma_lookup, vma_map, vma_unmap, is_user_range};
+pub use vma::{vma_lookup, vma_map, vma_unmap, vma_protect, is_user_range};
 pub use rings::alloc_ring_pages;
-pub use paging::{active_cr3, flush_page, init, kernel_cr3, new_address_space, map_user_region, map_user_region_owned, setup_user_memory};
+pub use paging::{active_cr3, flush_page, init, kernel_cr3, new_address_space, map_user_region, map_user_region_owned, map_user_region_owned_ro, setup_user_memory};
 pub use teardown::teardown_user_space;

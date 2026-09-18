@@ -89,6 +89,11 @@ const MODE_OPENDIE: u64 = 9;
 const MODE_MAPHAMMER: u64 = 10;
 const MODE_FLOOD: u64 = 11;
 const MODE_NEST: u64 = 12;
+// Fase M1: fault di protezione (il kernel deve terminare il processo).
+const MODE_FAULT_RO: u64 = 13;
+const MODE_FAULT_NONE: u64 = 14;
+const MODE_FAULT_NX: u64 = 15;
+const MODE_FAULT_GUARD: u64 = 16;
 
 // Tag DEV_* + errore IPC (A1): single source in `libr` (prima letterali qui).
 use libr::{DEV_CLOSE, DEV_OPEN, ERR};
@@ -271,6 +276,9 @@ pub extern "C" fn _start() -> ! {
             let _ = libr::send(parent, T_READY, det, norm);
             libr::exit(0);
         }
+        MODE_FAULT_RO | MODE_FAULT_NONE | MODE_FAULT_NX | MODE_FAULT_GUARD => {
+            run_fault(mode);
+        }
         _ => {
             let (ok, detail) = match mode {
                 MODE_ECHO => run_echo(parent, rounds),
@@ -286,6 +294,41 @@ pub extern "C" fn _start() -> ! {
             libr::exit(0);
         }
     }
+}
+
+/// Fase M1: provoca un fault di memoria non recuperabile (write su RO,
+/// accesso a NONE, exec su NX, accesso alla guard page). Il kernel deve
+/// terminare il processo con `FAULT_EXIT_CODE` (osservato dal parent via
+/// EXIT_NOTIFY). Se questa funzione ritorna, il fault NON e' stato
+/// intercettato: exit(1) → il test fallisce rumoroso.
+fn run_fault(mode: u64) -> ! {
+    match mode {
+        MODE_FAULT_RO => {
+            let p = libr::mmap(0, 4096).expect("mmap");
+            unsafe { core::ptr::write_volatile(p as *mut u8, 0x41); }
+            let _ = libr::mprotect(p, 4096, libr::PROT_READ);
+            unsafe { core::ptr::write_volatile(p as *mut u8, 0x42); } // #PF
+        }
+        MODE_FAULT_NONE => {
+            let p = libr::mmap(0, 4096).expect("mmap");
+            unsafe { core::ptr::write_volatile(p as *mut u8, 0x41); }
+            let _ = libr::mprotect(p, 4096, libr::PROT_NONE);
+            let _ = unsafe { core::ptr::read_volatile(p as *const u8) }; // #PF
+        }
+        MODE_FAULT_NX => {
+            let p = libr::mmap(0, 4096).expect("mmap");
+            unsafe { core::ptr::write_volatile(p as *mut u8, 0xC3); } // ret
+            let f: extern "C" fn() = unsafe { core::mem::transmute(p) };
+            f(); // fetch su pagina NX → #PF
+        }
+        MODE_FAULT_GUARD => {
+            let g = libr::USER_STACK_GUARD as *mut u8;
+            unsafe { core::ptr::write_volatile(g, 0x41); } // #PF (guard)
+        }
+        _ => {}
+    }
+    println!("[utcli] fault mode={} NON ha faultato", mode);
+    libr::exit(1);
 }
 
 /// Legge un file intero in heap (bound 256 KiB, chunk 4000 = RING_MAX_PAYLOAD).

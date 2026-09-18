@@ -23,6 +23,11 @@ pub const M_OPENDIE: u64 = 9;
 pub const M_MAPHAMMER: u64 = 10;
 pub const M_FLOOD: u64 = 11;
 pub const M_NEST: u64 = 12;
+// Fase M1: fault di protezione (helper muore con FAULT_EXIT_CODE).
+pub const M_FAULT_RO: u64 = 13;
+pub const M_FAULT_NONE: u64 = 14;
+pub const M_FAULT_NX: u64 = 15;
+pub const M_FAULT_GUARD: u64 = 16;
 
 // VA per i test map_physical/aliasing (zona libera tra USER_FS_BUFFER e lo
 // heap: 0x4000_0020_0000..0x4000_0040_0000).

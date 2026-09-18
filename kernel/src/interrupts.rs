@@ -63,24 +63,34 @@ extern "x86-interrupt" fn page_fault_handler(
     let addr = x86_64::registers::control::Cr2::read();
     let fault_addr = addr.map(|a| a.as_u64()).unwrap_or(0);
     let pid = crate::syscall::current_id() as usize;
+    let user = error_code.contains(PageFaultErrorCode::USER_MODE);
+    let prot = error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION);
+    let write = error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
 
     // H2 selftest NULL-#PF: fault basso atteso (PML4[0] = 0) con flag armato
     // = prova che il basso e' libero. PASS loggato qui, run congelata qui.
     #[cfg(feature = "selftest")]
     if EXPECT_NULL_PF.load(core::sync::atomic::Ordering::SeqCst)
         && fault_addr < 0x1000
-        && !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
+        && !prot
     {
         crate::serial_println!("[test] NULL-#PF ok: il basso e' libero (PML4[0] = 0)");
         halt();
     }
 
+    // M1: un fault di protezione da USER MODE e' un abuso del processo (write
+    // su RO, exec su NX, accesso a PROT_NONE): il processo viene terminato
+    // (kill), MAI il kernel. Un fault di protezione da supervisor resta un bug
+    // del kernel → log + halt in fondo. Stessa politica per un fault user non
+    // recuperabile (fuori da ogni regione gestita: es. guard page dello stack).
+    if user && prot {
+        fault_kill(pid, fault_addr, error_code, &stack_frame);
+    }
+
     // Demand-zero dell'heap on-demand (test lazy): una pagina sotto il
     // `heap_brk` del processo non ancora materializzata viene mappata lazy con
     // un frame zero (vale anche per fault supervisor).
-    if !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
-        && fault_addr >= crate::vmm_user::USER_HEAP_BASE
-    {
+    if !prot && fault_addr >= crate::vmm_user::USER_HEAP_BASE {
         let brk = crate::vmm_user::heap_brk(pid);
         if fault_addr < brk {
             let page = fault_addr & !0xfff;
@@ -96,25 +106,38 @@ extern "x86-interrupt" fn page_fault_handler(
         }
     }
 
-    // mmap anonimo (Fase M0): fault dentro una VMA viva del basso canonico
-    // (senza protection-violation: pagina mai materializzata, non un abuso)
-    // → demand-zero owned come l'heap (il teardown esistente la libera).
-    if !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
-        && fault_addr >= crate::vmm_user::MMAP_BASE
+    // mmap anonimo (Fase M0/M1): fault dentro una VMA viva del basso canonico
+    // → materializza con i flag del prot. PROT_NONE o write su RO senza PTE =
+    // abuso → kill. Altrimenti demand-zero owned (RW o RO) come l'heap.
+    if !prot && fault_addr >= crate::vmm_user::MMAP_BASE
         && fault_addr < crate::vmm_user::MMAP_END
     {
-        if crate::vmm_user::vma_lookup(pid, fault_addr).is_some() {
+        if let Some((_b, _l, vprot)) = crate::vmm_user::vma_lookup(pid, fault_addr) {
+            use syscall_numbers::{PROT_NONE, PROT_WRITE};
+            if vprot == PROT_NONE as u8 || (write && vprot & PROT_WRITE as u8 == 0) {
+                fault_kill(pid, fault_addr, error_code, &stack_frame);
+            }
             let page = fault_addr & !0xfff;
             if let Some(frame) = crate::phys_mem::alloc() {
                 unsafe { core::ptr::write_bytes(crate::addr::phys_to_virt(frame) as *mut u8, 0, 4096); }
                 let cr3 = crate::vmm_user::active_cr3();
-                unsafe { crate::vmm_user::map_user_region_owned(cr3, page, frame, 1); }
+                if vprot & PROT_WRITE as u8 != 0 {
+                    unsafe { crate::vmm_user::map_user_region_owned(cr3, page, frame, 1); }
+                } else {
+                    unsafe { crate::vmm_user::map_user_region_owned_ro(cr3, page, frame, 1); }
+                }
                 unsafe { flush_page(page) };
                 return;
             }
             crate::serial_println!("[int ] mmap demand-zero: OOM @ {:#x}", fault_addr);
             halt();
         }
+    }
+
+    // Fault user non gestito (es. guard page dello stack, indirizzo fuori
+    // regione): il processo muore, il kernel resta vivo.
+    if user {
+        fault_kill(pid, fault_addr, error_code, &stack_frame);
     }
 
     crate::serial_println!(
@@ -132,6 +155,30 @@ extern "x86-interrupt" fn page_fault_handler(
         pname,
     );
     halt();
+}
+
+/// Termina il processo `pid` che ha provocato un fault di memoria non
+/// recuperabile (M1), loggando indirizzo/errore/rip. Usa `exit_current`
+/// (morte logica + switch via, teardown differito): il fault handler gira sul
+/// kernel stack del processo e non ci ritorna mai — come il timer handler che
+/// fa `switch_to` da IRQ. Non ritorna.
+fn fault_kill(
+    pid: usize,
+    fault_addr: u64,
+    error_code: PageFaultErrorCode,
+    stack_frame: &InterruptStackFrame,
+) -> ! {
+    let (pnb, pnl) = crate::sched::process_name(pid);
+    let pname = core::str::from_utf8(&pnb[..pnl as usize]).unwrap_or("???");
+    crate::serial_println!(
+        "[int ] #PF (kill) @ {:#x}, err={:?} rip={:#x} pid={} '{}'",
+        fault_addr,
+        error_code,
+        stack_frame.instruction_pointer.as_u64(),
+        pid,
+        pname,
+    );
+    crate::sched::exit_current(syscall_numbers::FAULT_EXIT_CODE)
 }
 
 /// Invalida la TLB per una singola pagina (dopo un demand-map).

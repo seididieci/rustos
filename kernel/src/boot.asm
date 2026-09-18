@@ -46,6 +46,8 @@ _start:
     mov ecx, 0xC0000080             ; MSR EFER
     rdmsr
     or  eax, 1 << 8                 ; LME
+    or  eax, 1 << 11                ; NXE (M1: PTE NX enforced; x86-64 lo
+                                    ; richiede, QEMU/KVM lo supportano sempre)
     wrmsr
 
     ; Pseudo-descrittore LGDT sullo stack: limit noto, base = LMA della GDT
