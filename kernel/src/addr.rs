@@ -1,8 +1,8 @@
-//! Conversione indirizzi fisico <-> virtuale (Higher-half, H1).
+//! Conversione indirizzi fisico <-> virtuale (Higher-half, 27.2).
 //!
-//! H1: kernel alto (VMA `KERN_VIRT_BASE`) caricato basso (LMA `KERN_PHYS_BASE`)
+//! 27.2: kernel alto (VMA `KERN_VIRT_BASE`) caricato basso (LMA `KERN_PHYS_BASE`)
 //! + direct map di tutta la RAM a `DIRECT_MAP_BASE`. Tutti i siti che
-//! dereferenziano memoria fisica passano da questi helper (introdotti in H0
+//! dereferenziano memoria fisica passano da questi helper (introdotti in 27.1
 //! a offset zero); qui solo le costanti sono cambiate.
 //!
 //! Domini (da non confondere):
@@ -17,19 +17,19 @@
 /// Indirizzo fisico di caricamento (LMA): base ELF + nota PVH (`linker.ld`).
 pub const KERN_PHYS_BASE: u64 = 0x0010_0000;
 
-/// Indirizzo virtuale del kernel (VMA). H1: -2 GiB + 1M, cioe'
+/// Indirizzo virtuale del kernel (VMA). 27.2: -2 GiB + 1M, cioe'
 /// `0xFFFF_FFFF_8010_0000` (come Linux, che parte a `0xFFFFFFFF81000000`):
 /// lo scarto VMA-phys di 1M rende le entry PD a 2M allineate (la PD_K mappa
 /// VMA [KERN-1M+i*2M) -> phys [i*2M): basi pari). VMA tonda a -2G con LMA a
 /// 1M darebbe basi 2M-disallineate (bit 20 riservato -> #PF con RSVD,
-/// osservato al primo boot H1).
+/// osservato al primo boot 27.2).
 pub const KERN_VIRT_BASE: u64 = 0xFFFF_FFFF_8010_0000;
 
-/// Scarto VMA - LMA dell'immagine kernel. H1 = 0xFFFF_FFFF_8000_0000.
+/// Scarto VMA - LMA dell'immagine kernel. 27.2 = 0xFFFF_FFFF_8000_0000.
 /// Gate-0 `readelf` verifica VMA - LMA == questo per ogni PT_LOAD.
 pub const KERNEL_OFFSET: u64 = KERN_VIRT_BASE - KERN_PHYS_BASE;
 
-/// Base della direct map di tutta la RAM. H1: stile Linux direct mapping.
+/// Base della direct map di tutta la RAM. 27.2: stile Linux direct mapping.
 pub const DIRECT_MAP_BASE: u64 = 0xFFFF_8880_0000_0000;
 
 /// Frame fisico del buffer testo VGA.
@@ -51,7 +51,7 @@ pub const fn kern_phys_to_virt(p: u64) -> u64 {
     p + KERNEL_OFFSET
 }
 
-/// La PD_K (H1) mappa VMA [PDBASE+i*2M) -> phys [i*2M] con PDBASE = base 1G
+/// La PD_K (27.2) mappa VMA [PDBASE+i*2M) -> phys [i*2M] con PDBASE = base 1G
 /// della regione di KERN: l'immagine (VMA = LMA+OFFSET) cade su basi pari
 /// sse KERN e LMA sono congrui mod 1G (qui entrambi a 1M). Invariante
 /// verificata dal compilatore (basi dispari = bit 20 riservato -> #PF RSVD).

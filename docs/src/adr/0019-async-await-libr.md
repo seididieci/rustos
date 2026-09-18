@@ -1,7 +1,7 @@
 # ADR-0019: async/await in libr sopra l'IPC asincrona
 
 **Status**: In corso (Passi 1-4 completati e verificati; userdisk rimandato
-alla fase server-run, vedi Passo 4)
+alla fase server-run, vedi 26.4)
 **Data**: 2026-09-17
 
 ## Contesto
@@ -39,11 +39,11 @@ Livelli:
    qualunque N, zero heap): polla i non-finiti; se nessuno → `recv()`
    bloccante → instrada a tutti gli accettanti (una reply ha un solo
    proprietario; un EXIT_NOTIFY pertinente sveglia ogni waiter).
-4. **`Join` compositivo** (Passo 4) — vedi sotto: con router-esterno solo i
+4. **`Join` compositivo** (26.4) — vedi sotto: con router-esterno solo i
    combinatori trasparenti compongono.
 4. **Waker custom** (`RawWaker`: wake = marca task ready; single-thread,
    niente lock). Pinning contenuto (`new_unchecked` su stack/array fermi, mai
-   heap per-op, regola P1.2/scratch).
+   heap per-op, regola 24.2/scratch).
 
 Vincoli ereditati dalla Fase 13 (NON rilassati qui): no mix sync/async per
 processo; routing FIFO per `req_id` (niente riordino); FS 1-in-volo
@@ -54,20 +54,20 @@ processo; routing FIFO per `req_id` (niente riordino); FS 1-in-volo
 Ogni passo finisce con gate verde e review; se ci si ferma, la suite resta
 verde al passo precedente.
 
-- [x] **Passo 1 — `libr::task`** (Future `WaitReply`/`RecvMsg`, tratto
+- [x] **26.1 — `libr::task`** (Future `WaitReply`/`RecvMsg`, tratto
       `Receivable`, Waker no-op, `block_on`, `run` const-generic). Solo
       `libr`, nessun chiamante migrato. Verifica: build userland/testland,
       gate invariato 40/40 (rete di sicurezza come la Fase 13).
-- [x] **Passo 2 — test t41/t42** (suite 40/40 → 42/42). t41: `block_on` +
+- [x] **26.2 — test t41/t42** (suite 40/40 → 42/42). t41: `block_on` +
       echo async verso helper `MODE_SRV` (reply routing per req_id). t42:
       `run()` con 2 task concorrenti + path morte server (`ServerDied`).
       Aggiornare run-tests.sh/AGENTS/docs-testing come nelle fasi passate.
-- [x] **Passo 3 — client reale**: `FsRead` (compone `WaitReply::on_chan`:
+- [x] **26.3 — client reale**: `FsRead` (compone `WaitReply::on_chan`:
       invio `read_async` a costruzione, attesa via router, `fs_collect_msg`
       non-bloccante al poll; stessi guard/formato/chan-filter). Copertura
       estendendo t20 (stessa lettura via collect manuale e via wrapper,
       confronto byte; fd riaperto: la prima lettura avanza la posizione).
-- [x] **Passo 4 — composizione `Join` + t43; userdisk NON convertito.**
+- [x] **26.4 — composizione `Join` + t43; userdisk NON convertito.**
       `Join<A,B>` (Future+Receivable, delega ai figli, annidabile:
       con router-esterno solo i combinatori trasparenti compongono — un
       blocco `async` e' opaco ai waiter interni, gli `async fn` arrivano con
@@ -90,7 +90,7 @@ verde al passo precedente.
 - Negative: `libr` cresce di poche centinaia di righe linkate in OGNI binario;
   `RawWaker` e' codice delicato (review + test dedicati); i vincoli Fase 13
   restano e vanno documentati per non illudere i chiamanti.
-- Neutrali: i server esistenti non cambiano (tranne il pilota, Passo 4).
+- Neutrali: i server esistenti non cambiano (tranne il pilota, 26.4).
 
 ## Alternative scartate
 
@@ -107,7 +107,7 @@ verde al passo precedente.
 
 ## Sviluppi futuri (non qui)
 
-- `join`/`select` sopra le Future del Passo 1; timeout via `get_ticks`.
+- `join`/`select` sopra le Future del 26.1; timeout via `get_ticks`.
 - Rewrite loop server completi in stile async (tty, userdisk data-plane).
 - Rilassamento vincoli Fase 13 (mix sync/async, riordino locale, N-in-volo
   FS): richiede formato frame con lunghezza e/o `reply_to` esplicita.

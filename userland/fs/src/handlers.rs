@@ -137,7 +137,7 @@ pub fn handle_read(
 
     let (path, kind, offset, mnt) = ftable.get(chan, fd)?;
 
-    // P1.2 — buffer di risposta sullo stack (count ≤ 4096 per il check in
+    // 24.2 — buffer di risposta sullo stack (count ≤ 4096 per il check in
     // testa): niente `to_vec()`/`Vec` temporanei per-op (la free-list
     // dell'heap di userfs cresceva di ~1 blocco a op FAT → scansioni O(n)
     // su tutte le op successive; vedi read_dir in fat32.rs).

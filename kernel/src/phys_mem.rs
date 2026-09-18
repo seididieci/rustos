@@ -49,7 +49,7 @@ pub fn init(
 ) {
     use crate::addr::{kern_virt_to_phys, phys_to_virt};
     // I bound dell'immagine arrivano come VIRT (linker); la contabilita'
-    // frame e' in PHYS (H0: identici; H1: scarto KERNEL_OFFSET).
+    // frame e' in PHYS (27.1: identici; 27.2: scarto KERNEL_OFFSET).
     let kernel_start = kern_virt_to_phys(kernel_start_virt);
     let kernel_end = kern_virt_to_phys(kernel_end_virt);
     // 1. Trova l'indirizzo fisico più alto dalla memory map.
@@ -121,7 +121,7 @@ pub fn init(
     // devono cadere in RAM vera (il buco PCI/VGA sotto 1M ha insegnato).
     // Fail-loud se la memmap non le contiene.
     use crate::boot_tables::{TABLES_HIGH_END, TABLES_HIGH_PAGES, TABLES_HIGH_START};
-    // Invariante anti-collisione (H2): la scratch dei test non deve MAI
+    // Invariante anti-collisione (27.3): la scratch dei test non deve MAI
     // sovrapporsi alle tabelle (t12 ci scriveva pattern sopra le PD direct).
     // Verificata dal compilatore: chi sposta una delle due e rompe l'altra
     // non compila.

@@ -3,7 +3,7 @@ use super::*;
 impl<B: BlockSource> Fat32<B> {
     /// Legge fino a `count` byte del file a partire da `offset`, copiandoli in
     /// `out`. Ritorna i byte letti (puo' essere < count a fine file).
-    /// P1.1 — legge SOLO i settori coperti da [offset, offset+to_read): il
+    /// 24.1 — legge SOLO i settori coperti da [offset, offset+to_read): il
     /// walk dei cluster saltati costa solo FAT (memo), mai dati. Prima si
     /// leggeva ogni cluster intero (spc settori) anche per 25 byte.
     pub fn read_file(&self, info: &FileInfo, offset: usize, count: usize, out: &mut [u8]) -> usize {
@@ -25,7 +25,7 @@ impl<B: BlockSource> Fat32<B> {
             }
         }
         let mut done = 0usize;
-        // P1.2 — un solo run per cluster a chunk da ≤8 settori in buffer
+        // 24.2 — un solo run per cluster a chunk da ≤8 settori in buffer
         // stack (niente Vec temporanei: vedi read_dir). `spc` resta qualunque
         // (potenza di 2 da BPB), il chunking interno regge spc > 8.
         let mut run = [0u8; 8 * 512];
@@ -91,7 +91,7 @@ impl<B: BlockSource> Fat32<B> {
             file_pos += csize;
         }
         let mut done = 0usize;
-        // P1.2 — read-modify-write per run di cluster a chunk da ≤8 settori
+        // 24.2 — read-modify-write per run di cluster a chunk da ≤8 settori
         // in buffer stack (niente Vec: vedi read_dir). Un solo PIO + flush
         // per chunk invece di N coppie singolo-settore + N flush.
         let mut run = [0u8; 8 * 512];
@@ -141,7 +141,7 @@ impl<B: BlockSource> Fat32<B> {
     }
 
     /// Azzera un intero cluster (sicurezza: niente stale leggibile dopo grow).
-    /// P1.2 — scritture multi a chunk da ≤8 in buffer stack (1 flush a
+    /// 24.2 — scritture multi a chunk da ≤8 in buffer stack (1 flush a
     /// chunk), niente Vec.
     fn zero_cluster(&self, c: u32) -> bool {
         let zero = [0u8; 8 * 512];
@@ -158,7 +158,7 @@ impl<B: BlockSource> Fat32<B> {
         true
     }
     /// Azzera il range [a, b) del file (catena da `first`, size logica `end`):
-    /// read-modify-write per run di cluster a chunk stack (P1.2, come
+    /// read-modify-write per run di cluster a chunk stack (24.2, come
     /// `write_file`). Usato per la coda [old_size, new_end).
     fn zero_range(&self, first: u32, a: usize, b: usize) -> bool {
         if b <= a || first < 2 {

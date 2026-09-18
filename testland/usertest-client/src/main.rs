@@ -89,7 +89,7 @@ const MODE_OPENDIE: u64 = 9;
 const MODE_MAPHAMMER: u64 = 10;
 const MODE_FLOOD: u64 = 11;
 const MODE_NEST: u64 = 12;
-// Fase M1: fault di protezione (il kernel deve terminare il processo).
+// Fase 29: fault di protezione (il kernel deve terminare il processo).
 const MODE_FAULT_RO: u64 = 13;
 const MODE_FAULT_NONE: u64 = 14;
 const MODE_FAULT_NX: u64 = 15;
@@ -299,7 +299,7 @@ pub extern "C" fn _start() -> ! {
     }
 }
 
-/// Fase M3: mappa la regione condivisa `id` (passata dal parent in `param`),
+/// Fase 30: mappa la regione condivisa `id` (passata dal parent in `param`),
 /// verifica il pattern scritto dal parent, scrive un marker a offset 4096
 /// (che il parent deve vedere: prova la visibilita' bidirezionale) e riporta
 /// l'esito. Le pagine sono le stesse del parent: zero-copy tra processi.
@@ -317,7 +317,7 @@ fn run_shmdemo(id: u32) -> (bool, usize) {
     (true, 0)
 }
 
-/// Fase M1: provoca un fault di memoria non recuperabile (write su RO,
+/// Fase 29: provoca un fault di memoria non recuperabile (write su RO,
 /// accesso a NONE, exec su NX, accesso alla guard page). Il kernel deve
 /// terminare il processo con `FAULT_EXIT_CODE` (osservato dal parent via
 /// EXIT_NOTIFY). Se questa funzione ritorna, il fault NON e' stato

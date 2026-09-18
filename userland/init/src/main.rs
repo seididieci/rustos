@@ -327,7 +327,7 @@ const SVC_SHELL: SvcMeta = SvcMeta {
 const TEST_FS: SvcMeta = SvcMeta { bin: b"usertestfs", path: Some("/fat/test/testfs.bin"), prio: 16, io: &[] };
 const TEST_FAT: SvcMeta = SvcMeta { bin: b"usertestfat", path: Some("/fat/test/testfat.bin"), prio: 16, io: &[] };
 const TESTS: SvcMeta = SvcMeta { bin: b"usertests", path: Some("/fat/test/tests.bin"), prio: 16, io: &[] };
-/// Bench throughput (Fase P0): `/test` su /fat, solo con feature `bench`
+/// Bench throughput (Fase 23): `/test` su /fat, solo con feature `bench`
 /// (scripts/bench.sh). Ortogonale alla suite: gira anche in produzione
 /// (skip_tests attivo), mai nel gate di regressione.
 #[cfg(feature = "bench")]
@@ -442,7 +442,7 @@ pub extern "C" fn _start() -> ! {
         run_test(&TESTS, &mut supervised);
     }
 
-    // Bench throughput (Fase P0, feature `bench`): dopo l'eventuale suite,
+    // Bench throughput (Fase 23, feature `bench`): dopo l'eventuale suite,
     // prima della shell. Mai nel gate (rumore di timing + log dedicato).
     #[cfg(feature = "bench")]
     {

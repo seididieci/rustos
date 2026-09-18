@@ -42,7 +42,7 @@ const DISK_MAX_NAME: usize = 16;
 use libr::{ERR, RING_DATA_CAP, RING_HEAD, RING_TAIL};
 /// Bound attesa userdisk a boot/restart (~5 s, come `wait_ready` di init).
 const HELLO_BOUND_TICKS: i64 = 500;
-/// P1.2 — settori max per IPC DISK (bound del ring: 8 + 7*512 = 3592 nella
+/// 24.2 — settori max per IPC DISK (bound del ring: 8 + 7*512 = 3592 nella
 /// request, 16 + 7*512 = 3600 nella response, entrambi < 4087).
 const DISK_MAX_SECTORS: usize = 7;
 
@@ -87,7 +87,7 @@ impl IpcDisk {
 
     /// Legge un response frame DISK dalla finestra mappata (consumer SPSC:
     /// si legge a `tail`, il producer avanza `head`) e ne copia `expect` byte
-    /// in `out`. P1.2 — l'header porta la lunghezza (`len == expect`, prima
+    /// in `out`. 24.2 — l'header porta la lunghezza (`len == expect`, prima
     /// era fissa a 512): resync difensivo come prima a mismatch.
     unsafe fn frame_read(out: &mut [u8], expect: usize) -> bool {
         if out.len() < expect {
@@ -212,7 +212,7 @@ impl IpcDisk {
     }
 
     /// Un tentativo di lettura multi (nessun retry qui: lo fa il chiamante).
-    /// P1.2 — frame di richiesta `[count:8]` (1..=7), risposta con `n*512`
+    /// 24.2 — frame di richiesta `[count:8]` (1..=7), risposta con `n*512`
     /// byte: 1 IPC invece di n.
     fn try_read_multi(&self, chan: u64, lba: u64, n: usize, out: &mut [u8]) -> bool {
         if n == 0 || n > DISK_MAX_SECTORS || out.len() < n * 512 {
@@ -240,7 +240,7 @@ impl IpcDisk {
     }
 
     /// Scrive un frame di richiesta read `[count:8]` nel DISK_REQ ring
-    /// (P1.2). Ritorna false se non c'e' spazio (disciplina sync + reset a
+    /// (24.2). Ritorna false se non c'e' spazio (disciplina sync + reset a
     /// ogni connessione: non dovrebbe mai accadere).
     unsafe fn req_write_count(n: usize) -> bool {
         unsafe {
@@ -262,7 +262,7 @@ impl IpcDisk {
     }
 
     /// Scrive un frame di write `[count:8][settori]` nel DISK_REQ ring
-    /// (P1.2, generalizza il vecchio `[512:8][settore]`). Ritorna false se
+    /// (24.2, generalizza il vecchio `[512:8][settore]`). Ritorna false se
     /// non c'e' spazio o count fuori bound.
     unsafe fn req_write_sectors(n: usize, data: &[u8]) -> bool {
         if n == 0 || n > DISK_MAX_SECTORS || data.len() < n * 512 {
@@ -289,7 +289,7 @@ impl IpcDisk {
         }
     }
 
-    /// Un tentativo di scrittura multi (P1.2, nessun retry qui: lo fa il
+    /// Un tentativo di scrittura multi (24.2, nessun retry qui: lo fa il
     /// chiamante). Reply senza frame: w0 = 0 ok, ERR fallito (canale intatto:
     /// niente retry). Send fallita = driver morto: invalida.
     fn try_write_multi(&self, chan: u64, lba: u64, n: usize, data: &[u8]) -> bool {
@@ -387,7 +387,7 @@ impl BlockSource for IpcDisk {
         self.write_sectors(lba, 1, data)
     }
 
-    /// P1.2 — run di `n` settori in chunk da ≤7 IPC (stessa disciplina del
+    /// 24.2 — run di `n` settori in chunk da ≤7 IPC (stessa disciplina del
     /// singolo: un retry solo a canale caduto). `out` lungo almeno `n*512`.
     fn read_sectors(&self, lba: u64, n: usize, out: &mut [u8]) -> bool {
         if out.len() < n * 512 {
@@ -422,7 +422,7 @@ impl BlockSource for IpcDisk {
         true
     }
 
-    /// P1.2 — come `read_sectors` in scrittura (1 comando PIO + 1 flush per
+    /// 24.2 — come `read_sectors` in scrittura (1 comando PIO + 1 flush per
     /// chunk nel driver).
     fn write_sectors(&self, lba: u64, n: usize, data: &[u8]) -> bool {
         if data.len() < n * 512 {

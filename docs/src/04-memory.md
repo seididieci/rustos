@@ -3,7 +3,7 @@
 ## Panoramica
 
 Il gestore della memoria ha tre strati fondamentali (Fase 4) + il flip
-higher-half (ADR-0020, H0/H1/H2):
+higher-half (ADR-0020, 27.1/27.2/27.3):
 
 1. **Kernel alto + direct map** — kernel a `-2G+1M`
    (`0xFFFF_FFFF_8010_0000`, LMA 1M), direct map di tutta la RAM a
@@ -13,7 +13,7 @@ higher-half (ADR-0020, H0/H1/H2):
 
 ```
 Ordine di inizializzazione:
-  guard H1           → finestra immagine + pagine 1G (no: 2M, sempre) + CR3
+  guard 27.2           → finestra immagine + pagine 1G (no: 2M, sempre) + CR3
   unmap_low()        → PML4[0] = 0: da qui solo alto + direct map
   boot_info::memmap()→ legge le regioni fisiche da hvm_start_info (via direct)
   max_addr           → tetto RAM = max(addr + size) delle regioni MEM_RAM
@@ -46,7 +46,7 @@ ogni x86-64: niente PDPE1GB, niente flag QEMU); tetto statico 64G fail-loud
 oltre (config test ≤ 32G); VGA UC via split 4K (PAT di reset).
 
 La pagina scratch dei test (`MAP_TEST_PHYS`, 64M) sta altrove per invariante
-compilata: scriverci sopra le PD direct fu il fault ritardato di H2.
+compilata: scriverci sopra le PD direct fu il fault ritardato di 27.3.
 
 ## Physical Frame Allocator — Bitmap dinamica
 
@@ -115,7 +115,7 @@ let b = alloc::boxed::Box::new(42); // funziona!
 
 ## Higher-half (fatto, ADR-0020)
 
-Il **kernel higher-half** e' atterrato in H0/H1/H2 (vedi sopra + ADR-0020):
+Il **kernel higher-half** e' atterrato in 27.1/27.2/27.3 (vedi sopra + ADR-0020):
 kernel a `-2G+1M`, direct map 2M, `PML4[0] = 0` a runtime. La protezione U/S
 resta (pagine kernel supervisor-only), ma il basso canonico e' ora libero:
 NULL-deref faulta, lo spazio user basso e' pulito per futuri mmap/brk.
@@ -124,7 +124,7 @@ Nota storica: era rimandato dalla Fase 6 (costo alto, benefici prematuri);
 la condizione ("processi user che richiedono spazio basso pulito") e' maturata
 con i servizi da disco e gli helper `spawn_image` (Fase 21).
 
-## mmap anonimo nel basso canonico (Fase M0)
+## mmap anonimo nel basso canonico (Fase 28)
 
 Il payoff dell'higher-half: il basso canonico (`[0x10_0000, 0x4000_0000)`,
 1M–1G; i primi 64K mai assegnati → NULL faulta) ospita mappe anonime private
@@ -136,11 +136,11 @@ con zero-fill lazy (stesso contratto di `sbrk`: VA subito, frame al fault).
   `munmap` solo su VMA intere (two-phase: valida tutto, poi muta).
 - `is_user_range` esteso alle VMA vive: ogni syscall con buffer user
   (spawn, write, …) accetta memoria mappata senza cambi puntuali.
-- Solo RW in M0 (`prot` diverso = `-1`); niente split, niente file-backed
+- Solo RW in 28 (`prot` diverso = `-1`); niente split, niente file-backed
   (page-in su fault verso userfs e' deadlock-prone: sua fase propria).
 - `libr::mmap` / `mmap_fixed` / `munmap`; `sbrk`/heap/scratch invariati.
 
-## Protezioni di memoria (Fase M1)
+## Protezioni di memoria (Fase 29)
 
 - Ogni VMA ha un `prot` (`PROT_NONE`/`PROT_READ`/`PROT_READ|PROT_WRITE`);
   `mmap` lo applica alla materializzazione, `mprotect` (syscall 41) lo cambia
@@ -148,7 +148,7 @@ con zero-fill lazy (stesso contratto di `sbrk`: VA subito, frame al fault).
 - EFER.NXE abilitato a boot: heap, stack, `mmap` e pagine iniettate sono
   non-eseguibili. Il binario user e' ancora RWX perche' flat (codice + dati in
   un'unica regione copiata): il W^X richiede i confini `.text`/`.data`
-  all'embed-time (M1b).
+  all'embed-time (29b).
 - Il page-fault handler distingue: protection-violation da USER MODE (write su
   RO, exec su NX, accesso a NONE) o fault fuori regione (guard page sotto lo
   stack) → **kill del processo** (`FAULT_EXIT_CODE` 139, mai halt del kernel);
@@ -160,7 +160,7 @@ con zero-fill lazy (stesso contratto di `sbrk`: VA subito, frame al fault).
 - Estrazione del phys da una PTE SEMPRE con `PTE_ADDR_MASK` (bit 12..51): mai
   `& !0xFFF`, che con NX lascerebbe il bit 63 e corromperebbe il frame address.
 
-## Memoria condivisa (Fase M3)
+## Memoria condivisa (Fase 30)
 
 - `shm_create(len)` (syscall 42) alloca frame contigui azzerati (max 256 KiB)
   e ritorna un id; `shm_map(id, hint, prot)` (43) li mappa come VMA del

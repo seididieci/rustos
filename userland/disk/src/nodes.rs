@@ -92,7 +92,7 @@ pub(crate) fn locate(handle: u32, disk_sectors: &[u64], parts: &[Vec<PartLoc>]) 
 }
 
 /// Legge il settore `lba` del nodo `handle` (bound check sul nodo).
-/// Attraversa la cache settoriale (Fase P2/C1): hit = niente PIO.
+/// Attraversa la cache settoriale (Fase 25): hit = niente PIO.
 pub(crate) fn node_read(
     disks: &[block::AtaDisk],
     disk_sectors: &[u64],
@@ -125,7 +125,7 @@ pub(crate) fn node_read(
 }
 
 /// Scrive il settore `lba` del nodo `handle` (bound check sul nodo, come read).
-/// Write-through (Fase P2/C1): prima il PIO stabile, poi la cache; a
+/// Write-through (Fase 25): prima il PIO stabile, poi la cache; a
 /// fallimento la entry e' invalidata (mai dati sporchi in cache).
 fn node_write(
     disks: &[block::AtaDisk],
@@ -157,13 +157,13 @@ fn node_write(
         None => false,
     }
 }
-/// P1.2 — bound del protocollo (frame nel ring: 8 + 7*512 in request,
+/// 24.2 — bound del protocollo (frame nel ring: 8 + 7*512 in request,
 /// 16 + 7*512 in response, entrambi < 4087).
 pub(crate) const DISK_MAX_SECTORS: usize = 7;
 
 /// Legge `out.len()/512` settori contigui del nodo (bound sul nodo + bound
 /// protocollo, 1 comando PIO per run di miss). Gli hit di cache sono copiati
-/// senza PIO; i miss contigui restano UN solo `read_sectors` (P1.2 preservato).
+/// senza PIO; i miss contigui restano UN solo `read_sectors` (24.2 preservato).
 /// `false` a parametri invalidi o errore IO (le entry del run fallito restano
 /// intoccate: niente fill parziale sotto errore).
 pub(crate) fn node_read_multi(

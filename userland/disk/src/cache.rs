@@ -1,4 +1,4 @@
-//! Cache settoriale write-through in `userdisk` (Fase P2/C1).
+//! Cache settoriale write-through in `userdisk` (Fase 25).
 //!
 //! Un solo strato di cache, nel driver che possiede i blocchi — mai nel
 //! filesystem: due strati cacherebbero gli stessi 512 byte due volte (RAM
@@ -14,7 +14,7 @@
 //! `dirty` e l'enum `Policy` esistono come hook per un futuro write-back
 //! configurabile, oggi inutilizzati.
 //!
-//! Vincoli rispettati (lezioni P1.2): **zero allocazioni heap nel percorso
+//! Vincoli rispettati (lezioni 24.2): **zero allocazioni heap nel percorso
 //! per-op** (array statico, niente `Vec`/`BTreeMap`), `userdisk` e'
 //! single-threaded quindi `static mut` basta (stesso pattern dei ring,
 //! nessun lock). Gli accessi usano raw pointer (`addr_of!`) perche' l'edition

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bench throughput client→block su KVM (Fase P0).
+# Bench throughput client→block su KVM (Fase 23).
 #
 # Esegue N boot con userbench (RUN_BENCH=1: init lo spawna prima della shell,
 # senza suite) e raccoglie le righe `[bench]`. QEMU gira per sempre dopo il

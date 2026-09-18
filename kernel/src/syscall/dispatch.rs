@@ -50,12 +50,12 @@ pub(super) extern "C" fn syscall_handler() -> i64 {
             syscall_numbers::SYS_SPAWN_IMAGE => {
                 sys_spawn_image((*p).arg1, (*p).arg2 as usize, (*p).arg3, (*p).arg4 as usize)
             }
-            // Fase M0: mmap/munmap anonimi nel basso canonico.
+            // Fase 28: mmap/munmap anonimi nel basso canonico.
             syscall_numbers::SYS_MMAP => sys_mmap((*p).arg1, (*p).arg2 as usize, (*p).arg3, (*p).arg4),
             syscall_numbers::SYS_MUNMAP => sys_munmap((*p).arg1, (*p).arg2 as usize),
-            // Fase M1: mprotect su VMA intere.
+            // Fase 29: mprotect su VMA intere.
             syscall_numbers::SYS_MPROTECT => sys_mprotect((*p).arg1, (*p).arg2 as usize, (*p).arg3),
-            // Fase M3: memoria condivisa tra processi.
+            // Fase 30: memoria condivisa tra processi.
             syscall_numbers::SYS_SHM_CREATE => sys_shm_create((*p).arg1),
             syscall_numbers::SYS_SHM_MAP => sys_shm_map((*p).arg1, (*p).arg2, (*p).arg3, (*p).arg4),
             _ => -1,

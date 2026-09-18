@@ -29,7 +29,7 @@ pub fn t_fs_async() -> bool {
         println!("[usertests] t_fs_async: collect n={} (atteso >= {})", n, helpers::HELLO.len());
         return false;
     }
-    // ADR-0019 Passo 3: stessa lettura via wrapper async `FsRead` (stesso
+    // ADR-0019 26.3: stessa lettura via wrapper async `FsRead` (stesso
     // file, fd riaperto perche' la prima lettura ha avanzato la posizione).
     // Deve coincidere byte per byte con la collect manuale sopra.
     let fd2 = libr::open("hello.txt", 0);
@@ -199,7 +199,7 @@ pub fn t_ipc_async() -> bool {
     helpers::recv_expect(chan, helpers::T_DONE)
 }
 
-/// ADR-0019 Passo 2, t41 — `block_on` + echo async verso helper MODE_SRV.
+/// ADR-0019 26.2, t41 — `block_on` + echo async verso helper MODE_SRV.
 /// Stesso scenario di t21-sottocaso-1 ma con `WaitReply` + router invece di
 /// `wait_reply`: 1 send_async, raccolta con `block_on`, teardown identico
 /// (T_STOP + T_DONE). Filtro canale (`on_chan`): le EXIT_NOTIFY stale di
@@ -242,7 +242,7 @@ pub fn t_task_block_on() -> bool {
     ok && helpers::recv_expect(chan, helpers::T_DONE)
 }
 
-/// ADR-0019 Passo 2, t42 — `run` con 2 task concorrenti + morte server.
+/// ADR-0019 26.2, t42 — `run` con 2 task concorrenti + morte server.
 /// Parte A (routing): DUE helper MODE_SRV, una send_async ciascuno (alla B
 /// prima, per mescolare l'ordine di arrivo), raccolta con `run([..])`: ogni
 /// risultato deve matchare il PROPRIO req (non FIFO) — la prova che il router
@@ -331,7 +331,7 @@ pub fn t_task_run() -> bool {
     }
 }
 
-/// ADR-0019 Passo 4, t43 — composizione annidata `Join<Join<W,W>,W>` su TRE
+/// ADR-0019 26.4, t43 — composizione annidata `Join<Join<W,W>,W>` su TRE
 /// helper MODE_SRV, guidata da `block_on`. Gli invii sono in ordine INVERSO
 /// all'albero dei task (C, B, A) per mescolare l'arrivo: ogni risultato deve
 /// comunque matchare il PROPRIO req — prova di routing multi-livello (il

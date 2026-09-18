@@ -1,4 +1,4 @@
-; boot.asm H1 — tutto-alto dual-map: PM32 (LMA) -> long mode (VMA) -> rust_main
+; boot.asm 27.2 — tutto-alto dual-map: PM32 (LMA) -> long mode (VMA) -> rust_main
 ;
 ; Il loader PVH di QEMU (-kernel ELF con nota XEN_ELFNOTE_PHYS32_ENTRY)
 ; carica il kernel alle LMA e trasferisce il controllo qui (_start, LMA 1M)
@@ -7,7 +7,7 @@
 ; Le page table e la GDT sono statiche Rust const-valutate in
 ; src/boot_tables.rs (sezione .pagetables, LMA 0x90000). Il PML4 contiene sia
 ; l'identity di transizione [0, 8M) (PML4[0]) che la mappa alta (kernel +
-; direct map): dopo `mov cr3` si salta HIGH e il basso resta solo fino a H2.
+; direct map): dopo `mov cr3` si salta HIGH e il basso resta solo fino a 27.3.
 ;
 ; Vincolo reloc 32-bit: in un oggetto elf64 `mov eax, SIMBOLO' emette
 ; R_X86_64_32, valida solo per valori < 4G — i simboli VMA alti non ci stanno.
@@ -15,7 +15,7 @@
 ; `BOOT_GDT_LMA`: valori < 4G garantiti) e, per il proprio salto, la LMA letta
 ; da EIP a runtime (`call/pop` + delta stessa-sezione, sempre piccolo).
 ; OFFSET resta in `linker.ld`/`addr.rs`: gate-0 readelf (VMA - LMA di ogni
-; PT_LOAD) lo verifica prima di ogni boot H1.
+; PT_LOAD) lo verifica prima di ogni boot 27.2.
 ;
 ; NB: le entry delle page table in long mode sono LARGHE 8 BYTE.
 
@@ -26,7 +26,7 @@ extern BOOT_PML4_LMA
 extern BOOT_GDT_LMA
 extern BOOT_HIGH_STACK
 
-; Stack di transizione (LOW, identity fino all'unmap H2).
+; Stack di transizione (LOW, identity fino all'unmap 27.3).
 STACK_TOP equ 0x0009F000
 
 section .text.boot exec
@@ -46,7 +46,7 @@ _start:
     mov ecx, 0xC0000080             ; MSR EFER
     rdmsr
     or  eax, 1 << 8                 ; LME
-    or  eax, 1 << 11                ; NXE (M1: PTE NX enforced; x86-64 lo
+    or  eax, 1 << 11                ; NXE (29: PTE NX enforced; x86-64 lo
                                     ; richiede, QEMU/KVM lo supportano sempre)
     wrmsr
 
@@ -83,7 +83,7 @@ high_entry:
     mov es, dx
     mov ss, dx
     ; Stack alto (.bss, VMA alta): da qui rust_main non tocca piu' il basso.
-    ; H2 fa unmap di PML4[0] a inizio rust_main — lo stack LOW di transizione
+    ; 27.3 fa unmap di PML4[0] a inizio rust_main — lo stack LOW di transizione
     ; (STACK_TOP) resta valido solo per lo stub fin qui.
     lea rax, [rel BOOT_HIGH_STACK]
     add rax, 16384                  ; top (base 16-allineata, 16384 % 16 == 0)

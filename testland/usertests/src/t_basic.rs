@@ -174,7 +174,7 @@ pub fn t_dev_zero() -> bool {
     ok
 }
 
-/// t44 — mmap anonimo nel basso canonico (Fase M0): pattern R/W, multi-PT,
+/// t44 — mmap anonimo nel basso canonico (Fase 28): pattern R/W, multi-PT,
 /// fixed/overlap, munmap intero + riuso, integrazione syscall (write da
 /// buffer mappato). Solo path suite-safe (rifiuti = -1, mai fault): i
 /// negativi-con-fault fermerebbero il sistema, come il NULL test kernel.
@@ -234,7 +234,7 @@ pub fn t_mmap() -> bool {
     }
     // 4. Munmap: parziale rifiutato senza stato, interi ok + riuso fixed.
     if libr::munmap(a + 4096, 4096).is_ok() {
-        return false; // split = Err in M0
+        return false; // split = Err in 28
     }
     if unsafe { core::ptr::read_volatile(a as *const u8) } != 0 {
         return false; // ancora intatta (pattern[0] = 0)
@@ -279,7 +279,7 @@ pub fn t_mmap() -> bool {
     true
 }
 
-/// Fase M1 — protezioni: `mmap_prot`/`mprotect` in-process (transizioni
+/// Fase 29 — protezioni: `mmap_prot`/`mprotect` in-process (transizioni
 /// RO/RW/NONE, error paths) + fault di protezione che termina il processo
 /// (helper, osservato via EXIT_NOTIFY con FAULT_EXIT_CODE).
 pub fn t_mprotect() -> bool {
@@ -372,7 +372,7 @@ pub fn t_mprotect() -> bool {
     true
 }
 
-/// Fase M3 — memoria condivisa: il parent crea una regione, ci scrive un
+/// Fase 30 — memoria condivisa: il parent crea una regione, ci scrive un
 /// pattern, un helper la mappa e (a) verifica il pattern, (b) scrive un
 /// marker che il parent deve vedere (visibilita' bidirezionale, pagine
 /// fisiche condivise). Poi refcount/teardown e riuso dello slot.

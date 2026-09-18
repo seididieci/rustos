@@ -1,4 +1,4 @@
-//! Executor async minimale sopra l'IPC asincrona (ADR-0019, Passo 1).
+//! Executor async minimale sopra l'IPC asincrona (ADR-0019, 26.1).
 //!
 //! Sintassi `async/await` (solo `core::future`, niente dipendenze) sopra le
 //! syscall 33/34 invariate. Disegno a **router centrale**: i task non chiamano
@@ -148,7 +148,7 @@ impl Future for RecvMsg {
     }
 }
 
-// ── Client FS reale (ADR-0019, Passo 3) ─────────────────────────────
+// ── Client FS reale (ADR-0019, 26.3) ─────────────────────────────
 // Prova che la sintassi scala al protocollo FS sopra `read_async`/
 // `fs_collect_msg` INVARIATI (stesso guard `FS_PENDING`, stesso formato
 // frame, stesso chan-filter `wait_reply_chan`).
@@ -244,7 +244,7 @@ unsafe fn pin_stack<T>(v: &mut T) -> Pin<&mut T> {
     unsafe { Pin::new_unchecked(v) }
 }
 
-// ── Composizione (ADR-0019, Passo 4) ────────────────────────────────
+// ── Composizione (ADR-0019, 26.4) ────────────────────────────────
 // Con router-esterno solo i combinatori TRASPARENTI compongono: il router deve
 // VEDERE i waiter foglia per instradarli, e un blocco `async` e' opaco (i suoi
 // waiter interni sono inaccessibili → non instradabile). `Join` espone i figli

@@ -9,7 +9,7 @@ use x86_64::structures::idt::{
     InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode,
 };
 
-/// H2 (solo build `selftest`): il test NULL-#PF arma questo flag prima di
+/// 27.3 (solo build `selftest`): il test NULL-#PF arma questo flag prima di
 /// leggere l'indirizzo 0. L'handler, invece di stampare il fault e fermarsi,
 /// certifica il PASS e congela qui (il selftest finisce in questo handler per
 /// disegno: niente chirurgia sul RIP di ritorno, solo log-check).
@@ -67,7 +67,7 @@ extern "x86-interrupt" fn page_fault_handler(
     let prot = error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION);
     let write = error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
 
-    // H2 selftest NULL-#PF: fault basso atteso (PML4[0] = 0) con flag armato
+    // 27.3 selftest NULL-#PF: fault basso atteso (PML4[0] = 0) con flag armato
     // = prova che il basso e' libero. PASS loggato qui, run congelata qui.
     #[cfg(feature = "selftest")]
     if EXPECT_NULL_PF.load(core::sync::atomic::Ordering::SeqCst)
@@ -78,7 +78,7 @@ extern "x86-interrupt" fn page_fault_handler(
         halt();
     }
 
-    // M1: un fault di protezione da USER MODE e' un abuso del processo (write
+    // 29: un fault di protezione da USER MODE e' un abuso del processo (write
     // su RO, exec su NX, accesso a PROT_NONE): il processo viene terminato
     // (kill), MAI il kernel. Un fault di protezione da supervisor resta un bug
     // del kernel → log + halt in fondo. Stessa politica per un fault user non
@@ -102,12 +102,12 @@ extern "x86-interrupt" fn page_fault_handler(
                 return;
             }
             crate::serial_println!("[int ] heap demand-zero: OOM @ {:#x}", fault_addr);
-            // OOM del processo: muore il processo, mai il kernel (come M1).
+            // OOM del processo: muore il processo, mai il kernel (come 29).
             fault_kill(pid, fault_addr, error_code, &stack_frame);
         }
     }
 
-    // mmap anonimo (Fase M0/M1): fault dentro una VMA viva del basso canonico
+    // mmap anonimo (Fase 28/29): fault dentro una VMA viva del basso canonico
     // → materializza con i flag del prot. PROT_NONE o write su RO senza PTE =
     // abuso → kill. Altrimenti demand-zero owned (RW o RO) come l'heap.
     if !prot && fault_addr >= crate::vmm_user::MMAP_BASE
@@ -115,7 +115,7 @@ extern "x86-interrupt" fn page_fault_handler(
     {
         if let Some((vb, vl, vprot, vshm)) = crate::vmm_user::vma_lookup(pid, fault_addr) {
             use syscall_numbers::{PROT_NONE, PROT_WRITE};
-            // VMA condivisa (M3): le pagine sono pre-materializzate a
+            // VMA condivisa (30): le pagine sono pre-materializzate a
             // `shm_map`; un fault qui e' un edge (PTE staccata) → re-map
             // idempotente della regione, mai un frame privato (romperebbe
             // la condivisione).
@@ -147,7 +147,7 @@ extern "x86-interrupt" fn page_fault_handler(
                 return;
             }
             crate::serial_println!("[int ] mmap demand-zero: OOM @ {:#x}", fault_addr);
-            // OOM del processo: muore il processo, mai il kernel (come M1).
+            // OOM del processo: muore il processo, mai il kernel (come 29).
             fault_kill(pid, fault_addr, error_code, &stack_frame);
         }
     }
@@ -176,7 +176,7 @@ extern "x86-interrupt" fn page_fault_handler(
 }
 
 /// Termina il processo `pid` che ha provocato un fault di memoria non
-/// recuperabile (M1), loggando indirizzo/errore/rip. Usa `exit_current`
+/// recuperabile (29), loggando indirizzo/errore/rip. Usa `exit_current`
 /// (morte logica + switch via, teardown differito): il fault handler gira sul
 /// kernel stack del processo e non ci ritorna mai — come il timer handler che
 /// fa `switch_to` da IRQ. Non ritorna.
@@ -221,7 +221,7 @@ extern "x86-interrupt" fn gpf_handler(stack_frame: InterruptStackFrame, error_co
     );
     if user {
         // Errore del processo (es. `in`/`out` su una porta non concessa dalla
-        // sua I/O bitmap TSS): muore il processo, mai il kernel (come M1).
+        // sua I/O bitmap TSS): muore il processo, mai il kernel (come 29).
         crate::sched::exit_current(syscall_numbers::FAULT_EXIT_CODE)
     }
     halt();

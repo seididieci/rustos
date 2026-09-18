@@ -83,29 +83,29 @@ pub const SYS_PS_INFO: u64 = 37;
 /// (vedi sotto); ritorna il channel di nascita o -1.
 pub const SYS_SPAWN_IMAGE: u64 = 38;
 /// Mappa `len` byte anonimi privati (zero-fill lazy) nel basso canonico
-/// (Fase M0, mmap): `(hint, len, prot, flags)`. Ritorna la base o -1.
-/// Solo anonimo in M0: `prot` deve essere `PROT_READ|PROT_WRITE`, `flags`
+/// (Fase 28, mmap): `(hint, len, prot, flags)`. Ritorna la base o -1.
+/// Solo anonimo in 28: `prot` deve essere `PROT_READ|PROT_WRITE`, `flags`
 /// 0 (hint consigliato, 0 = scelta kernel) o `MMAP_FIXED` (hint obbligatorio).
 pub const SYS_MMAP: u64 = 39;
-/// Smappa `[addr, addr+len)`: solo VMA intere in M0 (parziali = -1 senza
+/// Smappa `[addr, addr+len)`: solo VMA intere in 28 (parziali = -1 senza
 /// cambiare stato). Ritorna 0 o -1.
 pub const SYS_MUNMAP: u64 = 40;
-/// Cambia le protezioni di `[addr, addr+len)` (Fase M1, mprotect):
+/// Cambia le protezioni di `[addr, addr+len)` (Fase 29, mprotect):
 /// `(addr, len, prot)`. Solo VMA intere (come `munmap`). Ritorna 0 o -1.
 pub const SYS_MPROTECT: u64 = 41;
-/// Crea una regione di memoria condivisa (Fase M3): `(len)` → id (>= 1) o -1.
+/// Crea una regione di memoria condivisa (Fase 30): `(len)` → id (>= 1) o -1.
 pub const SYS_SHM_CREATE: u64 = 42;
-/// Mappa una regione condivisa (Fase M3): `(id, hint, prot, flags)` → base o
+/// Mappa una regione condivisa (Fase 30): `(id, hint, prot, flags)` → base o
 /// -1. Le pagine sono le stesse per tutti i mappatori (zero-copy tra processi).
 pub const SYS_SHM_MAP: u64 = 43;
-/// Protezioni `mmap`/`mprotect` (M1: NONE/R/RW con enforcement; W solo e
+/// Protezioni `mmap`/`mprotect` (29: NONE/R/RW con enforcement; W solo e
 /// PROT_EXEC rifiutati — eseguibile solo il codice di spawn).
 pub const PROT_NONE: u64 = 0x0;
 pub const PROT_READ: u64 = 0x1;
 pub const PROT_WRITE: u64 = 0x2;
 /// Flag `mmap`: piazza esattamente a `hint` (o fallisci), niente fallback.
 pub const MMAP_FIXED: u64 = 0x1;
-/// Layout stack user condiviso kernel+test (Fase M1, single source qui):
+/// Layout stack user condiviso kernel+test (Fase 29, single source qui):
 /// lo stack vive a `USER_STACK_TOP` (cresce verso il basso, 4 frame);
 /// la pagina a `USER_STACK_GUARD` (subito sotto) NON e' mai mappata:
 /// lo stack overflow fa #PF li' → kill (mai corruzione silenziosa).
@@ -114,7 +114,7 @@ pub const USER_STACK_TOP: u64 = 0x0000_4000_0040_0000;
 pub const USER_STACK_FRAMES: usize = 4;
 pub const USER_STACK_GUARD: u64 = 0x0000_4000_0040_0000 - 5 * 0x1000;
 /// Codice di uscita con cui il kernel termina un processo user che provoca
-/// un fault di memoria non recuperabile (Fase M1: #PF di protezione, accesso
+/// un fault di memoria non recuperabile (Fase 29: #PF di protezione, accesso
 /// a PROT_NONE, stack overflow nella guard). Il parent lo osserva via
 /// EXIT_NOTIFY (w0). 139 = 128 + 11 (SIGSEGV, convenzione POSIX).
 pub const FAULT_EXIT_CODE: i64 = 139;
@@ -246,7 +246,7 @@ pub const RIGHTS_ALL: u32 = 0xFF;
 // usata dalla test suite per verificare `map_physical` (aliasing write/read)
 // senza toccare memoria di altri processi. 64M: oltre immagine, heap, bitmap
 // e tabelle statiche (16M) in ogni config; sempre RAM nei config test.
-// (Prima a 16M: collideva con le tabelle `.tables_high` dell'higher-half H2
+// (Prima a 16M: collideva con le tabelle `.tables_high` dell'higher-half 27.3
 // — t12 scriveva pattern sopra le PD direct → fault ritardato. Mai piu':
 // invariante di non-sovrapposizione verificata dal compilatore in kernel.)
 pub const MAP_TEST_PHYS: u64 = 0x4_000000;

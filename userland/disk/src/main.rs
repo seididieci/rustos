@@ -18,7 +18,7 @@
 //! Due protocolli serviti, entrambi con reply implicita (ADR-0008):
 //! - `DISK_*` (canale diretto userfs→userdisk, service_lookup(Disk)): HELLO
 //!   (fisici nelle reply: w0 = req_phys del DISK_REQ ring, w1 = resp_phys),
-//!   OPEN/READ multi-settore (P1.2, count≤7 per IPC), CLOSE, RESOLVE
+//!   OPEN/READ multi-settore (24.2, count≤7 per IPC), CLOSE, RESOLVE
 //!   chiave→handle (Fase 16c: userdisk e' l'unico proprietario della mappa;
 //!   16d: chiave = nome (`sda`), UUID hex 8 char (seriale volume FAT) o label
 //!   (priorità in quest'ordine).

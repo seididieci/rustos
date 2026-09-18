@@ -36,7 +36,7 @@ use x86_64::instructions::hlt;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_main(boot_info_phys: u64) -> ! {
-    // Guard H1 a stadi (PRIMA di qualunque print): ogni indirizzo sbagliato
+    // Guard 27.2 a stadi (PRIMA di qualunque print): ogni indirizzo sbagliato
     // nel flip e' triple-fault muto — questi sono l'unica diagnostica. Raw
     // serial (porta diretta, niente TICKS, niente heap, niente format): solo
     // immediati e indirizzi linker.
@@ -84,7 +84,7 @@ pub extern "C" fn rust_main(boot_info_phys: u64) -> ! {
         }
     }
 
-    // H2: il basso canonico finisce qui. Da ora solo alto + direct map:
+    // 27.3: il basso canonico finisce qui. Da ora solo alto + direct map:
     // un NULL-deref faulta invece di leggere spazzatura (lo stack e' gia'
     // alto dallo stub; nessun processo user esiste ancora, quindi nessun
     // walk sui PML4 vivi — i futuri ereditano il PML4 pulito).
@@ -97,9 +97,9 @@ pub extern "C" fn rust_main(boot_info_phys: u64) -> ! {
     pit::init();
     syscall::init();
 
-    // H2 (solo build `selftest`): prova del basso libero PRIMA di qualunque
+    // 27.3 (solo build `selftest`): prova del basso libero PRIMA di qualunque
     // preemption. Il thread di boot non riprende piu' dopo il primo tick
-    // (magra pre-esistente scoperta in H2: tutto il codice post-BOOT_OK in
+    // (magra pre-esistente scoperta in 27.3: tutto il codice post-BOOT_OK in
     // rust_main — Welcome, selftests(), halt loop — non esegue mai; vedi
     // ADR-0020), quindi la prova regina vive qui, single-thread garantito:
     // IDT installata (riga sopra) + unmap gia' fatto = fault pulito.
@@ -124,7 +124,7 @@ pub extern "C" fn rust_main(boot_info_phys: u64) -> ! {
 
     serial_println!("[boot] max_addr RAM: {:#x} ({} MiB)", max_addr, max_addr / (1024 * 1024));
 
-    // Fase 4 + HH: direct map 64G (verificata) → frame allocator → heap
+    // Fase 4 + 27: direct map 64G (verificata) → frame allocator → heap
     vmm::init(max_addr);
     vmm_user::init();
 
@@ -186,12 +186,12 @@ pub extern "C" fn rust_main(boot_info_phys: u64) -> ! {
 
 #[cfg(feature = "selftest")]
 fn selftests() {
-    // NOTA (H2): questo corpo non esegue mai — il thread di boot viene
+    // NOTA (27.3): questo corpo non esegue mai — il thread di boot viene
     // deschedulato per sempre al primo tick (pre-esistente, vedi ADR-0020:
     // feature `selftest` marcita in silenzio, Welcome mai mostrata). La prova
-    // H2 vive in `selftest_low_unmap()` (pre-preemption). Il resto sotto resta
+    // 27.3 vive in `selftest_low_unmap()` (pre-preemption). Il resto sotto resta
     // come documentazione del vecchio harness finche' il ciclo vita del thread
-    // di boot non viene ridisegnato (follow-up scheduler, fuori H2).
+    // di boot non viene ridisegnato (follow-up scheduler, fuori 27.3).
     use x86_64::instructions::interrupts::int3;
 
     serial_println!("[test] int3 -> atteso #BREAKPOINT e continuazione");
@@ -236,7 +236,7 @@ fn selftests() {
     serial_println!("[test] frame alloc ok");
 }
 
-/// H2, solo build `selftest`: prova regina del basso libero, eseguita qui
+/// 27.3, solo build `selftest`: prova regina del basso libero, eseguita qui
 /// (pre-preemption, vedi nota sopra) invece che in `selftests()` (mai
 /// raggiunto). Prima l'invariante strutturale (`PML4[0] == 0` dopo l'unmap),
 /// poi la prova comportamentale: leggere NULL deve faultare. L'handler

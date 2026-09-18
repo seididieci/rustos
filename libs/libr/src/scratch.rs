@@ -3,7 +3,7 @@
 //! Temporanei con lifetime = una richiesta (payload IPC, split di path,
 //! liste di nomi) NON vanno sullo heap globale: anche piccoli, ogni
 //! alloc+free attraversa la free-list (e prima del passo A pagava coalesce
-//! O(n²) a ogni free — il cliff P1.2). Qui: bump-pointer O(1), `reset()` O(1)
+//! O(n²) a ogni free — il cliff 24.2). Qui: bump-pointer O(1), `reset()` O(1)
 //! a fine richiesta, zero free individuali, zero frammentazione possibile.
 //!
 //! Backing: regione `sbrk` DEDICATA (mai free-list, mai heap globale), lazy

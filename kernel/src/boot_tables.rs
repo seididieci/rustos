@@ -1,4 +1,4 @@
-//! Tabelle di boot H1: dual-map di transizione + kernel alto + direct map.
+//! Tabelle di boot 27.2: dual-map di transizione + kernel alto + direct map.
 //!
 //! Sono `static` const-valutate: il compilatore le emette gia' pronte nell'ELF
 //! (LMA basse, VMA alte) e il loader PVH le carica in RAM insieme al resto.
@@ -7,7 +7,7 @@
 //!
 //! PML4 (LMA 0x90000, via CR3 phys):
 //!   [0]    → PDPT_LOW: identity [0, 8M) di TRANSIZIONE (stub LOW, stack di
-//!             transizione, tabelle stesse). Rimossa in H2 (`PML4[0] = 0`).
+//!             transizione, tabelle stesse). Rimossa in 27.3 (`PML4[0] = 0`).
 //!   [511]  → PDPT_K: immagine kernel alta (VMA `KERN_VIRT_BASE`, pagine 2M,
 //!             finestra VMA [base1G, +16M) -> phys [0, 16M)).
 //!   [DIR]  → PDPT_DIRECT: direct map [0, 64G) a pagine 1G (top-up oltre i
@@ -43,7 +43,7 @@ pub const PDPT_DIRECT_ADDR: u64 = 0x0009_6000;
 /// con PT_VGA a 0xB7000). 16M e' oltre heap+bitmap per ogni config testata
 /// (<= 32G; max 64G) ed e' verificata RAM da `phys_mem::init` (fail-loud).
 /// La pagina scratch dei test (MAP_TEST_PHYS) sta ALTROVE per invariante
-/// compilata (vedi sotto): scriverci sopra le PD fu il fault ritardato di H2.
+/// compilata (vedi sotto): scriverci sopra le PD fu il fault ritardato di 27.3.
 pub const TABLES_HIGH_START: u64 = 0x100_0000;
 /// Pagine `.tables_high`: 32 PD + 1 PT VGA.
 pub const TABLES_HIGH_PAGES: u64 = 33;
@@ -198,7 +198,7 @@ pub static BOOT_PD_DIRECT: [PageTable; DIRECT_STATIC_PDS] = {
     arr
 };
 
-/// PT dello split VGA (H2): 512 pagine 4K per VMA [DIRBASE, +2M) -> phys
+/// PT dello split VGA (27.3): 512 pagine 4K per VMA [DIRBASE, +2M) -> phys
 /// [0, 2M), tutte WB tranne la pagina del buffer (UC). Una pagina da 4K,
 /// statica, zero codice: il prezzo dell'MMIO corretto su HW reale.
 #[unsafe(link_section = ".tables_high.pt_vga")]
@@ -217,7 +217,7 @@ pub static BOOT_PT_VGA: PageTable = {
     PageTable(t)
 };
 
-/// Stack alto di boot (H2): 16 KiB in .bss (VMA alta, finestra PD_K).
+/// Stack alto di boot (27.3): 16 KiB in .bss (VMA alta, finestra PD_K).
 /// Lo stub vi commuta RSP subito dopo il jump-high, prima di `rust_main`:
 /// dopo l'unmap di PML4[0] lo stack LOW di transizione non e' piu' mappato.
 #[repr(C, align(16))]

@@ -73,7 +73,7 @@ impl<B: BlockSource> Fat32<B> {
         &self.disk
     }
 
-    /// Settore della PRIMA copia FAT a `lba` (P2/C1: via cache del driver in
+    /// Settore della PRIMA copia FAT a `lba` (25: via cache del driver in
     /// `userdisk`, niente memo locale — vedi campo `Fat32`).
     pub(crate) fn fat_sector(&self, lba: u32) -> Option<[u8; 512]> {
         let mut sec = [0u8; 512];

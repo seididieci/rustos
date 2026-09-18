@@ -1,4 +1,4 @@
-//! Shared memory (Fase M3): regioni fisiche condivise tra processi.
+//! Shared memory (Fase 30): regioni fisiche condivise tra processi.
 //!
 //! `shm_create` alloca frame contigui azzerati e ritorna un id (>= 1);
 //! `shm_map` mappa la regione in una VMA del processo (PTE non-owned,

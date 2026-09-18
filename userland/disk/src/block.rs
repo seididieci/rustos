@@ -153,7 +153,7 @@ impl AtaDisk {
         }
     }
 
-    /// P1.2 — legge `n` (1..=255) settori contigui con UN solo comando PIO
+    /// 24.2 — legge `n` (1..=255) settori contigui con UN solo comando PIO
     /// (count=n): una fase di setup invece di n. `out` deve contenere almeno
     /// `n*512` byte. Ritorna `false` (e dati parziali in `out`) su
     /// errore/timeout/fuori range.
@@ -313,7 +313,7 @@ impl AtaDisk {
         }
     }
 
-    /// P1.2 — scrive `n` (1..=255) settori contigui con UN solo comando PIO e
+    /// 24.2 — scrive `n` (1..=255) settori contigui con UN solo comando PIO e
     /// UN solo FLUSH CACHE alla fine (prima: un comando + un flush a settore).
     /// Durabilita' per-richiesta invariata (il flush chiude l'intero run);
     /// `data` deve contenere almeno `n*512` byte. `false` su errore/timeout.
