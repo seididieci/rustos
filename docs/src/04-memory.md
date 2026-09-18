@@ -190,6 +190,20 @@ con zero-fill lazy (stesso contratto di `sbrk`: VA subito, frame al fault).
 - Il codice e' l'unico mapping eseguibile: scrivere a `USER_CODE` fa
   protection-fault → kill del processo (test `code-write`).
 
+## Shared text (Fase 32, ADR-0022)
+
+- Il loader divide l'immagine a `rw_off` = `align_down(min p_vaddr` scrivibile)`:
+  `[base, rw_off)` e' immutabile (codice `RX` + rodata `RO`), `[rw_off, end)`
+  e' privato (data/bss + coda immutabile della pagina a cavallo).
+- Le pagine immutabili sono **condivise** tra le istanze dello stesso binario
+  (`kernel/src/text.rs`, tabella statica, refcount), mappate read-only e
+  non-owned; a refcount 0 i frame sono liberati. Identita' = hash FNV-1a
+  dell'ELF + **verifica byte-per-byte** (input da disco non fidato).
+- Il riferimento sta nel PCB (`text_id`) e si rilascia in `reclaim_one` dopo il
+  teardown (il walk libera solo le foglie `owned`). Scope refcount-only:
+  condivide tra istanze **concorrenti**; una cache persistente e' un follow-up.
+- `text_stats` (syscall 44) espone `hits/misses/live` (debug/test).
+
 ## Riferimenti
 
 - [Writing an OS in Rust - Heap Allocation](https://os.phil-opp.com/heap-allocation/)

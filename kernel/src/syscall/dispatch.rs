@@ -5,7 +5,7 @@ use super::ipc::{sys_send, sys_send_async, sys_recv, sys_recv_nonblock, sys_repl
 use super::service::{sys_service_register, sys_service_lookup, sys_service_pid};
 use super::spawn::{sys_spawn, sys_spawn_image};
 use super::mem::{sys_mmap, sys_munmap, sys_mprotect, sys_shm_create, sys_shm_map, sys_map_physical, sys_sbrk, sys_ring_alloc, sys_map_in};
-use super::misc::{sys_exit, sys_write, sys_getpid, sys_kill, sys_get_ticks, sys_cbs_create, sys_cbs_attach, sys_cbs_get_info, sys_ps_info};
+use super::misc::{sys_exit, sys_write, sys_getpid, sys_kill, sys_get_ticks, sys_cbs_create, sys_cbs_attach, sys_cbs_get_info, sys_ps_info, sys_text_stats};
 
 /// Handler di dispatch: legge gli argomenti riempiti dall'entry e chiama la
 /// syscall richiesta. Firmato `extern "C" fn() -> i64` per essere invocabile
@@ -58,6 +58,8 @@ pub(super) extern "C" fn syscall_handler() -> i64 {
             // Fase 30: memoria condivisa tra processi.
             syscall_numbers::SYS_SHM_CREATE => sys_shm_create((*p).arg1),
             syscall_numbers::SYS_SHM_MAP => sys_shm_map((*p).arg1, (*p).arg2, (*p).arg3, (*p).arg4),
+            // Fase 32: contatori shared text (debug/test).
+            syscall_numbers::SYS_TEXT_STATS => sys_text_stats(),
             _ => -1,
         }
     }

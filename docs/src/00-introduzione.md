@@ -126,6 +126,7 @@ rustos/
 | 29 | Protezioni di memoria (`mprotect`/NX, fault→kill del processo) | ✅ Completata |
 | 30 | Memoria condivisa tra processi (`shm_create`/`shm_map`) | ✅ Completata |
 | 31 | Loader ELF per-segmento (W^X del binario, ADR-0021) | ✅ Completata |
+| 32 | Shared text ELF (segmenti immutabili condivisi, ADR-0022) | ✅ Completata |
 
 ## Risorse
 

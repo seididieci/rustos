@@ -98,6 +98,9 @@ pub const SYS_SHM_CREATE: u64 = 42;
 /// Mappa una regione condivisa (Fase 30): `(id, hint, prot, flags)` → base o
 /// -1. Le pagine sono le stesse per tutti i mappatori (zero-copy tra processi).
 pub const SYS_SHM_MAP: u64 = 43;
+/// Contatori shared text (Fase 32, debug/test): ritorna `hits` in rax,
+/// `misses` in rdi, `live` in rsi (nessun argomento).
+pub const SYS_TEXT_STATS: u64 = 44;
 /// Protezioni `mmap`/`mprotect` (29: NONE/R/RW con enforcement; W solo e
 /// PROT_EXEC rifiutati — eseguibile solo il codice di spawn).
 pub const PROT_NONE: u64 = 0x0;

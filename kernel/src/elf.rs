@@ -1,26 +1,29 @@
-//! Loader ELF64 (Fase 31): carica i segmenti `PT_LOAD` di un ELF x86_64 nello
-//! spazio user `cr3` con i flag dell'ELF (W^X: `R E`→RX, `R`→RO, `RW`→RW, NX
-//! su tutto tranne il codice), all'indirizzo di link (`p_vaddr`). Carichiamo
-//! sempre al vaddr di link, quindi le `R_X86_64_RELATIVE` (gia' applicate dal
-//! linker con `--apply-dynamic-relocs`) restano valide: **nessuna reloc a
-//! runtime**.
+//! Loader ELF64 (Fase 31) + split condiviso/privato (Fase 32): carica i
+//! segmenti `PT_LOAD` di un ELF x86_64 nello spazio user `cr3` con i flag
+//! dell'ELF (W^X: `R E`→RX, `R`→RO, `RW`→RW, NX su tutto tranne il codice),
+//! all'indirizzo di link (`p_vaddr`). Carichiamo sempre al vaddr di link,
+//! quindi le `R_X86_64_RELATIVE` (gia' applicate dal linker con
+//! `--apply-dynamic-relocs`) restano valide: **nessuna reloc a runtime**.
 //!
-//! Due fasi separate per non leakare frame su un ELF malformato:
-//! `validate` (nessuna allocazione) e `load` (mappa; OOM = panic come il resto
-//! dello spawn). Usato sia dai binari embedded sia da `spawn_image` (ELF letto
-//! da disco: input non fidato → validazione stretta).
+//! Fase 32: i segmenti immutabili (`RX`/`RO`) sotto `rw_off` (la prima pagina
+//! scrivibile) sono **condivisi** tra le istanze dello stesso binario
+//! (`crate::text`); `[rw_off, end)` resta privato (data/bss + coda immutabile
+//! della pagina a cavallo). Due fasi separate per non leakare frame su un ELF
+//! malformato: `validate` (nessuna allocazione) e `load` (mappa; OOM = panic
+//! come il resto dello spawn). Usato sia dai binari embedded sia da
+//! `spawn_image` (ELF letto da disco: input non fidato → validazione stretta).
 
 use crate::vmm_user::{USER_CODE, USER_FS_BUFFER};
 
-const PT_LOAD: u32 = 1;
 const ELFCLASS64: u8 = 2;
 const ELFDATA2LSB: u8 = 1;
 const EM_X86_64: u16 = 62;
 const ET_EXEC: u16 = 2;
 const ET_DYN: u16 = 3;
-const PF_X: u32 = 1;
-const PF_W: u32 = 2;
-const PAGE: u64 = 0x1000;
+pub(crate) const PF_X: u32 = 1;
+pub(crate) const PF_W: u32 = 2;
+const PT_LOAD: u32 = 1;
+pub(crate) const PAGE: u64 = 0x1000;
 /// Program header massimi accettati (i nostri binari ne hanno 4-7).
 const MAX_PHNUM: usize = 16;
 /// Pagine massime dell'immagine (2 MiB: regione [USER_CODE, USER_FS_BUFFER)).
@@ -28,21 +31,26 @@ const MAX_PAGES: usize = 512;
 
 /// Un segmento `PT_LOAD` validato.
 #[derive(Clone, Copy)]
-struct Segment {
-    offset: usize,
-    vaddr: u64,
-    filesz: usize,
-    memsz: u64,
-    flags: u32,
+pub(crate) struct Segment {
+    pub(crate) offset: usize,
+    pub(crate) vaddr: u64,
+    pub(crate) filesz: usize,
+    pub(crate) memsz: u64,
+    pub(crate) flags: u32,
 }
 
 /// Immagine ELF validata (nessuna allocazione fatta).
 pub struct Layout {
-    entry: u64,
-    base: u64,
-    npages: usize,
-    segments: [Segment; MAX_PHNUM],
-    nseg: usize,
+    pub(crate) entry: u64,
+    /// Base page-aligned dell'immagine.
+    pub(crate) base: u64,
+    /// Fine page-aligned dell'immagine.
+    pub(crate) end: u64,
+    /// Prima pagina scrivibile: `[base, rw_off)` e' immutabile (condivisibile),
+    /// `[rw_off, end)` e' privato. `rw_off == end` se non c'e' alcun segmento W.
+    pub(crate) rw_off: u64,
+    pub(crate) segments: [Segment; MAX_PHNUM],
+    pub(crate) nseg: usize,
 }
 
 fn rd16(b: &[u8], off: usize) -> u16 {
@@ -141,8 +149,7 @@ pub fn validate(bytes: &[u8]) -> Option<Layout> {
     }
 
     // Rifiuto W+X: nessuna pagina puo' essere scrivibile ed eseguibile insieme
-    // (invariante di sicurezza; un ELF che lo chiede e' rifiutato). Le pagine
-    // coperte da un segmento sono [vaddr, vaddr+memsz) (include il bss).
+    // (invariante di sicurezza; un ELF che lo chiede e' rifiutato).
     let mut page_flags = [0u8; MAX_PAGES];
     for s in &segments[..nseg] {
         let mut bit = 0u8;
@@ -167,51 +174,89 @@ pub fn validate(bytes: &[u8]) -> Option<Layout> {
         }
     }
 
-    Some(Layout { entry: e_entry, base, npages, segments, nseg })
+    // Confine condiviso/privato: la prima pagina scrivibile (o `end` se nessun
+    // segmento W). Le pagine sotto sono immutabili per costruzione.
+    let mut rw = end;
+    for s in &segments[..nseg] {
+        if s.flags & PF_W != 0 && s.vaddr < rw {
+            rw = s.vaddr;
+        }
+    }
+    let rw_off = rw & !(PAGE - 1);
+
+    Some(Layout { entry: e_entry, base, end, rw_off, segments, nseg })
 }
 
-/// Carica l'immagine validata in `cr3`: alloca un blocco contiguo di `npages`,
-/// azzera, copia i segmenti (file bytes), mappa ogni pagina con i flag
-/// dell'ELF (RX/RO/RW + NX, owned). OOM → panic (come il resto dello spawn).
+/// `(writable, executable)` per la pagina che contiene `va`, unione dei
+/// segmenti che la coprono (mai entrambi per il check W+X di `validate`).
+pub(crate) fn page_flags(l: &Layout, va: u64) -> (bool, bool) {
+    let mut w = false;
+    let mut x = false;
+    for s in &l.segments[..l.nseg] {
+        if va + PAGE > s.vaddr && va < s.vaddr + s.memsz {
+            if s.flags & PF_W != 0 {
+                w = true;
+            }
+            if s.flags & PF_X != 0 {
+                x = true;
+            }
+        }
+    }
+    (w, x)
+}
+
+/// Copia i file bytes dei segmenti dentro `[from, to)` in un blocco contiguo
+/// privato (owned) e lo mappa. Buchi e bss restano zero.
+unsafe fn map_private(cr3: u64, bytes: &[u8], l: &Layout, from: u64, to: u64) {
+    if to <= from {
+        return;
+    }
+    let pages = ((to - from) / PAGE) as usize;
+    let phys = crate::phys_mem::alloc_contiguous(pages).expect("oom per l'ELF");
+    let base_ptr = crate::addr::phys_to_virt(phys) as *mut u8;
+    unsafe { core::ptr::write_bytes(base_ptr, 0, pages * PAGE as usize); }
+    for s in &l.segments[..l.nseg] {
+        let s_end = s.vaddr + s.filesz as u64;
+        let a = s.vaddr.max(from);
+        let b = s_end.min(to);
+        if a >= b {
+            continue;
+        }
+        let dst = unsafe { base_ptr.add((a - from) as usize) };
+        let src_off = s.offset + (a - s.vaddr) as usize;
+        let n = (b - a) as usize;
+        unsafe { core::ptr::copy_nonoverlapping(bytes[src_off..src_off + n].as_ptr(), dst, n); }
+    }
+    for p in 0..pages {
+        let va = from + (p as u64) * PAGE;
+        let (w, x) = page_flags(l, va);
+        unsafe {
+            crate::vmm_user::map_user_leaf(cr3, va, phys + (p as u64) * PAGE, w, x);
+        }
+    }
+}
+
+/// Carica l'immagine validata in `cr3`. I segmenti immutabili sono condivisi
+/// (`crate::text`, se c'e' spazio in tabella) o copiati privatamente come
+/// fallback; `[rw_off, end)` e' sempre privato. Ritorna l'`id` del text image
+/// condiviso (0 = nessuno), da rilasciare al teardown del processo.
 ///
 /// # Safety
 /// `cr3` deve essere un address space appena creato da `new_address_space`;
 /// `layout` deve venire da `validate` sullo stesso `bytes`.
-pub unsafe fn load(cr3: u64, bytes: &[u8], layout: &Layout) {
-    let phys = crate::phys_mem::alloc_contiguous(layout.npages).expect("oom per l'ELF");
-    let base_ptr = crate::addr::phys_to_virt(phys) as *mut u8;
-    unsafe {
-        core::ptr::write_bytes(base_ptr, 0, layout.npages * PAGE as usize);
-    }
-    // Copia i file bytes di ogni segmento all'offset (vaddr - base): i buchi
-    // e il bss (memsz - filesz) restano zero (blocco azzerato sopra).
-    for s in &layout.segments[..layout.nseg] {
-        let dst = unsafe { base_ptr.add((s.vaddr - layout.base) as usize) };
-        let src = &bytes[s.offset..s.offset + s.filesz];
-        unsafe {
-            core::ptr::copy_nonoverlapping(src.as_ptr(), dst, s.filesz);
-        }
-    }
-    // Mappa per pagina con i flag risultanti (nessuna pagina W+X, garantito).
-    for p in 0..layout.npages {
-        let va = layout.base + (p as u64) * PAGE;
-        let mut writable = false;
-        let mut executable = false;
-        for s in &layout.segments[..layout.nseg] {
-            if va + PAGE > s.vaddr && va < s.vaddr + s.memsz {
-                if s.flags & PF_W != 0 {
-                    writable = true;
-                }
-                if s.flags & PF_X != 0 {
-                    executable = true;
-                }
+pub unsafe fn load(cr3: u64, bytes: &[u8], layout: &Layout) -> u32 {
+    let mut text_id = 0u32;
+    if layout.rw_off > layout.base {
+        match unsafe { crate::text::acquire(bytes, layout) } {
+            Some(id) => {
+                unsafe { crate::text::map_shared(cr3, layout, id) };
+                text_id = id;
             }
-        }
-        unsafe {
-            crate::vmm_user::map_user_leaf(cr3, va, phys + (p as u64) * PAGE, writable, executable);
+            None => unsafe { map_private(cr3, bytes, layout, layout.base, layout.rw_off) },
         }
     }
-    let _ = layout.entry;
+    unsafe { map_private(cr3, bytes, layout, layout.rw_off, layout.end) };
+    text_id
 }
 
 /// Entry point dell'immagine validata.

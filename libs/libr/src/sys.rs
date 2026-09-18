@@ -290,3 +290,11 @@ pub fn cbs_get_info(server_id: i64) -> Option<CbsInfo> {
         })
     }
 }
+
+/// Fase 32 — `text_stats()`: contatori della shared text (`(hits, misses,
+/// live)`). Debug/test: `live` e' la somma dei refcount vivi.
+#[inline]
+pub fn text_stats() -> (u64, u64, u64) {
+    let (rax, rdi, rsi, _, _) = unsafe { syscall4_out(SYS_TEXT_STATS, 0, 0, 0, 0) };
+    (rax as u64, rdi, rsi)
+}

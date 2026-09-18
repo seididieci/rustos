@@ -433,6 +433,53 @@ pub fn t_shm() -> bool {
     }
 }
 
+/// Fase 32 — shared text: istanze concorrenti dello stesso binario condividono
+/// i segmenti immutabili (`RX`/`RO`). `text_stats` osserva hit/refcount; al
+/// teardown delle istanze i ref sono rilasciati (frame liberati a 0).
+/// NB: il baseline assoluto di `live` non e' stabile (altri test lasciano
+/// reclaim pendenti) → si confronta il delta attorno alle PROPRIE operazioni.
+pub fn t_text() -> bool {
+    helpers::drain_stray();
+    let (h0, _m0, _l0) = libr::text_stats();
+    // 3 helper parcheggiati (vivi) dallo stesso binario `testcli`.
+    let mut chans = [0u64; 3];
+    let mut pids = [0i64; 3];
+    for i in 0..3 {
+        match helpers::spawn_cfg("/fat/test/testcli.bin", "utcli", 16, helpers::M_KILLME, 0) {
+            Some((c, pid)) => {
+                chans[i] = c;
+                pids[i] = pid as i64;
+            }
+            None => {
+                println!("[usertests] t47: spawn {} FAILED", i);
+                return false;
+            }
+        }
+    }
+    let (h1, _m1, live1) = libr::text_stats();
+    // Almeno 1 hit: la 2a/3a istanza condivide il testo della 1a.
+    if h1 <= h0 {
+        println!("[usertests] t47: no sharing (hits {}->{})", h0, h1);
+        return false;
+    }
+    // Cleanup: uccidi e attendi l'exit (reclaim rilascia il ref).
+    for i in 0..3 {
+        if libr::kill(pids[i], 0).is_err() {
+            return false;
+        }
+        if helpers::wait_exit(chans[i]).is_none() {
+            return false;
+        }
+    }
+    let (_h2, _m2, live2) = libr::text_stats();
+    // I 3 helper hanno rilasciato esattamente 1 ref ciascuno.
+    if live1 < 3 || live1 - live2 != 3 {
+        println!("[usertests] t47: release errato (live {}->{}, atteso -3)", live1, live2);
+        return false;
+    }
+    true
+}
+
 pub fn t_map_alias() -> bool {    if libr::map_physical(libr::MAP_TEST_PHYS, helpers::VA_A, 1).is_err() {
         return false;
     }
