@@ -20,49 +20,13 @@ use libr::{DEV_CLOSE, DEV_NULL, DEV_OPEN, DEV_READ, DEV_READDIR, DEV_WRITE, DEV_
 // ── Ring I/O (Fase 10.2) ─────────────────────────────────────────
 // La response ring del client e' mappata a RESP_RING_VA da userfs (map_in);
 // la request ring a REQ_RING_VA (usata per consumare i frame dei WRITE).
+// Frame helpers in `libr` (A2).
 
 const REQ_RING_VA: u64 = libr::CLI_REQ_VA;
 const RESP_RING_VA: u64 = libr::CLI_RESP_VA;
 // Geometria ring + errore IPC (A1): single source in `libr`.
-use libr::{ERR, RING_DATA_CAP, RING_HEAD, RING_TAIL};
-
-/// Consuma `count` byte di payload dalla request ring del client (a
-/// REQ_RING_VA) avanzando la tail di (20 + count). I dati di un WRITE a
-/// /dev/null o /dev/zero vengono scartati, ma la tail va comunque avanzata o
-/// il prossimo request dello stesso client verrebbe letto male.
-unsafe fn req_ring_consume_client(count: usize) {
-    unsafe {
-        let tail = core::ptr::read_volatile((REQ_RING_VA + RING_TAIL as u64) as *const u32);
-        let new_tail = ((tail as usize) + 20 + count) % RING_DATA_CAP;
-        core::ptr::write_volatile((REQ_RING_VA + RING_TAIL as u64) as *mut u32, new_tail as u32);
-    }
-}
-
-/// Scrive dati nella response ring del client (a RESP_RING_VA).
-unsafe fn resp_ring_write_client(data: &[u8]) {
-    let frame_len = 16 + data.len();
-    unsafe {
-        let (head, _tail) = {
-            let h = core::ptr::read_volatile((RESP_RING_VA + RING_HEAD as u64) as *const u32);
-            let t = core::ptr::read_volatile((RESP_RING_VA + 0xFFC) as *const u32);
-            (h, t)
-        };
-        let mut hdr = [0u8; 16];
-        hdr[0..8].copy_from_slice(&(data.len() as u64).to_le_bytes());
-        hdr[8..16].copy_from_slice(&0u64.to_le_bytes());
-        let dst = RESP_RING_VA as *mut u8;
-        for (i, byte) in hdr.iter().enumerate() {
-            let p = ((head as usize) + i) % RING_DATA_CAP;
-            core::ptr::write_volatile(dst.add(p), *byte);
-        }
-        for (i, byte) in data.iter().enumerate() {
-            let p = ((head as usize) + 16 + i) % RING_DATA_CAP;
-            core::ptr::write_volatile(dst.add(p), *byte);
-        }
-        let new_head = ((head as usize) + frame_len) % RING_DATA_CAP;
-        core::ptr::write_volatile((RESP_RING_VA + RING_HEAD as u64) as *mut u32, new_head as u32);
-    }
-}
+use libr::ERR;
+use libr::{req_frame_consume, resp_frame_write};
 
 // ── Device table ────────────────────────────────────────────────────
 
@@ -187,13 +151,13 @@ pub extern "C" fn _start() -> ! {
                     Some(DeviceType::Null) => {
                         // EOF: scrivi comunque un frame vuoto (result 0) cosi' il
                         // client vede 0 byte letti (EOF), non un ring vuoto (-1).
-                        unsafe { resp_ring_write_client(&[]); }
+                        unsafe { resp_frame_write(RESP_RING_VA, &[]); }
                         Some(0)
                     }
                     Some(DeviceType::Zero) => {
                         let n = count.min(4096);
                         let zeros = [0u8; 4096];
-                        unsafe { resp_ring_write_client(&zeros[..n]); }
+                        unsafe { resp_frame_write(RESP_RING_VA, &zeros[..n]); }
                         Some(n as u64)
                     }
                     None => None,
@@ -205,7 +169,7 @@ pub extern "C" fn _start() -> ! {
                 // a REQ_RING_VA). /dev/null e /dev/zero scartano i dati, ma la
                 // tail va consumata o il prossimo request del client e' male.
                 let count = msg.w1 as usize;
-                unsafe { req_ring_consume_client(count); }
+                unsafe { req_frame_consume(REQ_RING_VA, count); }
                 Some(count as u64)
             }
 
@@ -226,7 +190,7 @@ pub extern "C" fn _start() -> ! {
                         pos += len;
                     }
                 }
-                unsafe { resp_ring_write_client(&buf[..pos]); }
+                unsafe { resp_frame_write(RESP_RING_VA, &buf[..pos]); }
                 Some(2)
             }
 

@@ -48,47 +48,9 @@ use libr::KBD_NOTIFY;
 
 const CLI_REQ: u64 = libr::CLI_REQ_VA;
 const CLI_RESP: u64 = libr::CLI_RESP_VA;
-// Geometria ring + errore IPC (A1): single source in `libr`.
-use libr::{ERR, RING_DATA_CAP, RING_HEAD, RING_TAIL};
-
-/// Scrive dati nella response ring del client (a CLI_RESP).
-unsafe fn resp_ring_write_client(data: &[u8]) {
-    let frame_len = 16 + data.len();
-    unsafe {
-        let head = core::ptr::read_volatile((CLI_RESP + RING_HEAD as u64) as *const u32);
-        let mut hdr = [0u8; 16];
-        hdr[0..8].copy_from_slice(&(data.len() as u64).to_le_bytes());
-        hdr[8..16].copy_from_slice(&0u64.to_le_bytes());
-        let dst = CLI_RESP as *mut u8;
-        for (i, byte) in hdr.iter().enumerate() {
-            let p = ((head as usize) + i) % RING_DATA_CAP;
-            core::ptr::write_volatile(dst.add(p), *byte);
-        }
-        for (i, byte) in data.iter().enumerate() {
-            let p = ((head as usize) + 16 + i) % RING_DATA_CAP;
-            core::ptr::write_volatile(dst.add(p), *byte);
-        }
-        let new_head = ((head as usize) + frame_len) % RING_DATA_CAP;
-        core::ptr::write_volatile((CLI_RESP + RING_HEAD as u64) as *mut u32, new_head as u32);
-    }
-}
-
-/// Legge `count` byte dalla request ring del client e avanza la tail di
-/// (20 + letti): serve a consumare il payload dei DEV_WRITE inoltrati.
-unsafe fn req_ring_read_client(dst: &mut [u8], count: usize) -> usize {
-    unsafe {
-        let tail = core::ptr::read_volatile((CLI_REQ + RING_TAIL as u64) as *const u32);
-        let src = CLI_REQ as *const u8;
-        let n = count.min(dst.len());
-        for i in 0..n {
-            let p = ((tail as usize) + 20 + i) % RING_DATA_CAP;
-            dst[i] = core::ptr::read_volatile(src.add(p));
-        }
-        let new_tail = ((tail as usize) + 20 + n) % RING_DATA_CAP;
-        core::ptr::write_volatile((CLI_REQ + RING_TAIL as u64) as *mut u32, new_tail as u32);
-        n
-    }
-}
+// Geometria ring + errore IPC (A1) + frame helpers (A2): single source in `libr`.
+use libr::ERR;
+use libr::{req_frame_read, resp_frame_write};
 
 // ── Stato ───────────────────────────────────────────────────────────
 
@@ -601,7 +563,7 @@ impl Tty {
                 // Frame SEMPRE (anche vuoto con i==0, come kbd/devfs): il
                 // client distingue "0 byte" da "ring vuoto" solo dal frame.
                 // Senza, un async-reader confonde vuoto e risposta persa.
-                unsafe { resp_ring_write_client(&buf[..i]); }
+                unsafe { resp_frame_write(CLI_RESP, &buf[..i]); }
                 Some(i as u64)
             }
             DEV_WRITE => {
@@ -612,7 +574,7 @@ impl Tty {
                 if count > 0 {
                     let mut data = alloc::vec::Vec::with_capacity(count);
                     data.resize(count, 0);
-                    unsafe { req_ring_read_client(&mut data, count); }
+                    unsafe { req_frame_read(CLI_REQ, &mut data, count); }
                     if self.out.len() + count <= OUT_CAPACITY {
                         self.out.extend_from_slice(&data);
                     }
