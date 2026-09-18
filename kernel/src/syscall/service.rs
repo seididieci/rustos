@@ -3,16 +3,32 @@ use super::entry::current_id;
 
 /// ADR-0008 — `service_register(service)`: il chiamante occupa lo slot del
 /// servizio `service`. -1 se gia' occupato da un processo vivo.
+/// Fase 35 (hardening): i servizi di sistema si registrano solo da figli di
+/// init (tutti i driver veri lo sono): impedisce lo squat a slot libero dopo
+/// un kill. `Test` resta aperto (slot sacrificale della suite); `Init` e'
+/// registrabile solo da un figlio di init (nessun processo reale lo registra,
+/// quindi non cambia nulla — la regola e' uniforme).
 pub(super) fn sys_service_register(service_disc: u64) -> i64 {
     let service = match service_from_disc(service_disc) {
         Some(s) => s,
         None => return -1,
     };
-    match crate::channels::register(service, current_id() as usize) {
+    let me = current_id() as usize;
+    if service != syscall_numbers::Service::Test {
+        let is_init_child = matches!(crate::sched::process_ps(me), Some(s) if s.parent == Some(1));
+        if !is_init_child {
+            crate::serial_println!(
+                "[svc] register '{}' da pid={} rifiutato (non figlio di init)",
+                service_name(service), me
+            );
+            return -1;
+        }
+    }
+    match crate::channels::register(service, me) {
         Ok(()) => {
             crate::serial_println!(
                 "[svc] '{}' registrato da pid={}",
-                service_name(service), current_id()
+                service_name(service), me
             );
             0
         }
