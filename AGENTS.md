@@ -97,6 +97,8 @@ velordor/
 └── AGENTS.md           # Questo file
 ```
 
+**Layout moduli (Cleanup)**: ogni crate ha `main.rs`/`lib.rs` sottile (solo attr, `mod`, import, `_start`/panic o re-export) + moduli tematici (`userfs`: mount/ramfs/ftable/rights/rings/handlers/server; `libr`: ipc/spawn/sys/print/tsc/fs/* + facade che riesporta tutti i path `libr::X`; kernel: `sched_rt/`, `syscall/`, `vmm_user/` con facade e `main.rs` intoccato); i figli usano `use super::*;` (+`use crate::*;` se annidati) e i cross-riferimenti sono path espliciti (`handlers::handle_open`), mai glob dai parent. Costanti/tag condivisi stanno in `syscall-numbers` via `libr`, mai duplicati nei crate.
+
 ## Phase Progress
 
 - [x] Fase 1: Bare metal Hello World (VGA) + boot PVH
