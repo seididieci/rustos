@@ -17,7 +17,8 @@
 
 extern crate alloc;
 
-mod io;
+// Port I/O (A4): single source in `libr::pio` (i call site `io::*` restano).
+use libr::pio as io;
 
 use libr::println;
 

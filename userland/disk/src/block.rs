@@ -7,7 +7,7 @@
 //! timeout a contatore, come prima: senza disco la porta status resta 0xFF
 //! (BSY set) e le operazioni falliscono in tempo finito.
 
-use crate::io;
+use libr::pio as io;
 
 /// Timeout di polling in iterazioni (nessuna unita' di tempo: solo un freno).
 /// Su QEMU senza disco il controller non clear mai BSY: 2M iterazioni di `inb`

@@ -7,7 +7,7 @@
 //! `ERR`. Ogni attesa e' bound (stesso `TIMEOUT` del trasferimento): un canale
 //! vuoto non puo' appendere il boot.
 
-use crate::io;
+use libr::pio as io;
 
 /// Timeout di polling in iterazioni (come `block.rs`).
 const TIMEOUT: u32 = 200_000;
