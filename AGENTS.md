@@ -1127,13 +1127,17 @@ rustos/
     regione (guard page sotto lo stack, `USER_STACK_GUARD`) idem; fault
     supervisor resta bug → halt. Guard page: stack a `USER_STACK_TOP`
     (single source `syscall-numbers`, 4 frame), pagina sotto mai mappata.
+  - Hardening "errore del processo → muore il processo, mai il kernel": anche
+    OOM del demand-zero (heap/mmap) e #GP da user mode (es. `in`/`out` su
+    porta non concessa dalla I/O bitmap TSS) passano da `fault_kill`. Il #GP
+    distingue user/kernel via `InterruptStackFrame::code_segment.rpl()`.
   - Bug veri trovati: (1) binario flat RWX obbligatorio (init scriveva nel
     proprio .data mappato RX → kill immediato al boot); (2) `e & !0xFFF`
     lasciava il bit NX nella PTE → `phys_mem::free` panic ("frame fuori
     range") al primo teardown; fix `PTE_ADDR_MASK` (bit 12..51) in tutti i
     siti di estrazione phys.
-  - t45 (`mmap_prot`/`mprotect` transizioni + error paths; 4 helper fault
-    RO/NONE/NX/guard → `FAULT_EXIT_CODE` via EXIT_NOTIFY). Suite → 45/45.
+  - t45 (`mmap_prot`/`mprotect` transizioni + error paths; 5 helper fault
+    RO/NONE/NX/guard/port-GP → `FAULT_EXIT_CODE` via EXIT_NOTIFY). Suite → 45/45.
   - Limite onesto: W^X del binario rimandato (M1b: confini `.text`/`.data`
     all'embed-time). File-backed (M2a) e shared (M3) ancora da fare.
 

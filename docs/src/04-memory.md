@@ -154,6 +154,9 @@ con zero-fill lazy (stesso contratto di `sbrk`: VA subito, frame al fault).
   stack) → **kill del processo** (`FAULT_EXIT_CODE` 139, mai halt del kernel);
   fault supervisor → bug del kernel, halt. La guard page sta a
   `USER_STACK_GUARD` (pagina sotto lo stack, mai mappata).
+- Stessa politica "errore del processo → muore il processo" per l'OOM del
+  demand-zero (heap/mmap) e per #GP da user mode (es. `in`/`out` su porta non
+  concessa dalla I/O bitmap del TSS).
 - Estrazione del phys da una PTE SEMPRE con `PTE_ADDR_MASK` (bit 12..51): mai
   `& !0xFFF`, che con NX lascerebbe il bit 63 e corromperebbe il frame address.
 
