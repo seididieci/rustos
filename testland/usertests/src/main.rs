@@ -82,33 +82,12 @@ fn dir_contains(path: &str, needle: &str) -> bool {
     if n < 0 {
         return false;
     }
-    let count = n as usize;
-    let mut i = 0usize;
-    let mut seen = 0usize;
     let mut found = false;
-    while i < e.len() && seen < count {
-        if e[i] == 0 {
-            i += 1;
-            continue;
+    libr::test::each_name(&e, n as usize, |name| {
+        if name == needle {
+            found = true;
         }
-        let start = i;
-        while i < e.len() && e[i] != 0 {
-            i += 1;
-        }
-        if i > start {
-            let name = core::str::from_utf8(&e[start..i]).unwrap_or("");
-            seen += 1;
-            if name == needle {
-                found = true;
-            }
-        }
-        if i < e.len() && e[i] == 0 {
-            i += 1;
-        }
-        if i < e.len() && e[i] == 0 {
-            break;
-        }
-    }
+    });
     found
 }
 

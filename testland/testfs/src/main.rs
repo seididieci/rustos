@@ -39,35 +39,13 @@ pub extern "C" fn _start() -> ! {
     let mut entries = [0u8; 1024];
     let count = libr::readdir("/", &mut entries, 1024);
     println!("[testfs] readdir count={}", count);
-    // Print entries (null-terminated strings)
+    // Print entries (null-terminated strings, traversal in `libr`, A4).
     if count > 0 {
-        let mut i = 0;
-        let mut entry_num = 0;
-        while i < entries.len() && entry_num < count as usize {
-            if entries[i] == 0 {
-                i += 1;
-                continue;
-            }
-            // Find end of this entry name
-            let start = i;
-            while i < entries.len() && entries[i] != 0 {
-                i += 1;
-            }
+        libr::test::each_name(&entries, count as usize, |name| {
             print_str!("[testfs]   ");
-            if start < i {
-                libr::write_raw(&entries[start] as *const u8, i - start);
-            }
+            libr::write_raw(name.as_ptr(), name.len());
             println!();
-            entry_num += 1;
-            // Skip null terminator
-            if i < entries.len() && entries[i] == 0 {
-                i += 1;
-            }
-            // Double null = end of list
-            if i < entries.len() && entries[i] == 0 {
-                break;
-            }
-        }
+        });
     }
 
     // Test 3: Write a file and read it back
