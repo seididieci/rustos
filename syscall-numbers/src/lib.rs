@@ -274,7 +274,11 @@ pub const RIGHTS_ALL: u32 = 0xFF;
 // — t12 scriveva pattern sopra le PD direct → fault ritardato. Mai piu':
 // invariante di non-sovrapposizione verificata dal compilatore in kernel.)
 pub const MAP_TEST_PHYS: u64 = 0x4_000000;
-pub const MAP_TEST_FRAMES: u64 = 1;
+/// Frame scratch riservati (2 pagine: P1 e P2 di t29/maphammer — il
+/// data-plane di test usa due frame distinti sulla stessa VA in processi
+/// diversi). Fase 35: solo questi frame + ring + VGA sono mappabili via
+/// `map_physical`; con 1 frame il secondo scratch veniva rifiutato.
+pub const MAP_TEST_FRAMES: u64 = 2;
 
 /// Servizi di sistema raggiungibili per nome (ADR-0008, IPC per nome).
 /// Il discriminant coincide con l'indice di slot nel registry del kernel

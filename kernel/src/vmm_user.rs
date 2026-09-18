@@ -26,6 +26,6 @@ pub use heap_brk::{heap_brk, set_heap_brk};
 pub use vma::{vma_lookup, vma_map, vma_unmap, vma_protect, vma_clone, is_user_range};
 pub use fork::fork_share;
 pub use shm::{shm_create, shm_region, shm_ref};
-pub use rings::alloc_ring_pages;
+pub use rings::{alloc_ring_pages, is_ring_page};
 pub use paging::{active_cr3, flush_page, init, kernel_cr3, new_address_space, map_user_region, map_user_region_owned, map_user_region_owned_ro, map_user_region_shared, map_user_region_cow, map_user_leaf, map_user_leaf_shared, setup_user_stack, cow_fault, remap_shared_holes, range_has_cow};
 pub use teardown::teardown_user_space;
