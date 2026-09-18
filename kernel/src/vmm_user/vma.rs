@@ -3,27 +3,30 @@ use super::layout::{PAGE_SIZE, USER_CODE, MMAP_BASE, MMAP_END, USER_OWNED, MAX_P
 use super::paging::{entry_at, set_entry, flush_page, pml4_index, pdpt_index, pd_index, pt_index, PTE_PRESENT};
 use super::teardown::raw_entry;
 use super::heap_brk::heap_brk;
+use super::shm;
 
 /// VMA massime per processo (record statici, mai heap: anche il fault
 /// handler fa lookup qui, stesso stile di `HEAP_BRK`/`RING_PHYS`).
 const VMA_MAX: usize = 16;
-/// Record VMA per pid: (base, len, prot) a pagine; (0, 0, _) = libero.
+/// Record VMA per pid: (base, len, prot, shm) a pagine; len == 0 = libero.
 /// `prot` = PROT_* di `syscall-numbers` (M1: NONE/R/RW; W solo rifiutato a
-/// `mmap`). Le pagine vengono materializzate lazy al fault con i flag del
-/// prot (RW → RW, RO → RO, NONE → mai: fault = kill); owned → il teardown
-/// esistente le libera (nessun codice di free dedicato).
-static mut VMA_TABLE: [(u64, u64, u8); MAX_PROCS * VMA_MAX] =
-    [(0, 0, 0); MAX_PROCS * VMA_MAX];
+/// `mmap`). `shm` = 0 per anonima, altrimenti id+1 di `SHM_TABLE` (M3: la VMA
+/// referenzia una regione condivisa, le pagine sono pre-materializzate al
+/// `shm_map` e NON owned — il free e' a refcount). Le pagine anonime vengono
+/// materializzate lazy al fault con i flag del prot (RW → RW, RO → RO, NONE →
+/// mai: fault = kill); owned → il teardown esistente le libera.
+static mut VMA_TABLE: [(u64, u64, u8, u8); MAX_PROCS * VMA_MAX] =
+    [(0, 0, 0, 0); MAX_PROCS * VMA_MAX];
 /// VMA del processo `pid` che contiene `addr`, se esiste.
-pub fn vma_lookup(pid: usize, addr: u64) -> Option<(u64, u64, u8)> {
+pub fn vma_lookup(pid: usize, addr: u64) -> Option<(u64, u64, u8, u8)> {
     if pid >= MAX_PROCS {
         return None;
     }
     let base = pid * VMA_MAX;
     for i in 0..VMA_MAX {
-        let (b, l, p) = unsafe { *core::ptr::addr_of!(VMA_TABLE[base + i]) };
+        let (b, l, p, s) = unsafe { *core::ptr::addr_of!(VMA_TABLE[base + i]) };
         if l != 0 && b <= addr && addr < b + l {
-            return Some((b, l, p));
+            return Some((b, l, p, s));
         }
     }
     None
@@ -41,7 +44,7 @@ fn vma_contains_range(pid: usize, addr: u64, len: u64) -> bool {
     };
     let base = pid * VMA_MAX;
     for i in 0..VMA_MAX {
-        let (b, l, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[base + i]) };
+        let (b, l, _, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[base + i]) };
         if l != 0 && b <= addr && end <= b + l {
             return true;
         }
@@ -56,7 +59,7 @@ fn vma_overlap_end(pid: usize, s: u64, len: u64) -> Option<u64> {
     let e = s.checked_add(len)?;
     let base = pid * VMA_MAX;
     for i in 0..VMA_MAX {
-        let (b, l, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[base + i]) };
+        let (b, l, _, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[base + i]) };
         if l != 0 && b < e && s < b + l {
             return Some(b + l);
         }
@@ -64,12 +67,14 @@ fn vma_overlap_end(pid: usize, s: u64, len: u64) -> Option<u64> {
     None
 }
 
-/// Registra una VMA anonima (senza materializzare: lazy come `sbrk`).
+/// Registra una VMA (senza materializzare: lazy come `sbrk` per le anonime;
+/// le condivise sono pre-materializzate dal chiamante `shm_map`).
 /// `hint == 0 && !fixed` = scelta kernel (first-fit dal basso);
 /// altrimenti `hint` deve essere libero (o fallisce, mai fallback).
 /// `prot` = PROT_NONE/READ/(READ|WRITE) (M1; W solo rifiutato dal chiamante).
+/// `shm` = 0 anonima, altrimenti id+1 della regione condivisa (M3).
 /// Ritorna la base o `None`.
-pub fn vma_map(pid: usize, hint: u64, len: u64, fixed: bool, prot: u8) -> Option<u64> {
+pub fn vma_map(pid: usize, hint: u64, len: u64, fixed: bool, prot: u8, shm: u8) -> Option<u64> {
     if pid >= MAX_PROCS || len == 0 {
         return None;
     }
@@ -118,7 +123,7 @@ pub fn vma_map(pid: usize, hint: u64, len: u64, fixed: bool, prot: u8) -> Option
     for i in 0..VMA_MAX {
         let e = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + i]) };
         if e.1 == 0 {
-            unsafe { *core::ptr::addr_of_mut!(VMA_TABLE[tbase + i]) = (base, len, prot); }
+            unsafe { *core::ptr::addr_of_mut!(VMA_TABLE[tbase + i]) = (base, len, prot, shm); }
             return Some(base);
         }
     }
@@ -141,9 +146,15 @@ pub fn vma_unmap(pid: usize, cr3: u64, addr: u64, len: u64) -> bool {
         None => return false,
     };
     // Fase 2: smappa + libera + cancella record (`len` e' multipla di pagina).
+    // `unmap_user_range` libera solo le foglie owned: quelle condivise (non
+    // owned) vengono staccate ma non liberate — il free e' a refcount.
     unsafe { unmap_user_range(cr3, addr, (len / PAGE_SIZE) as usize); }
     for k in 0..n {
-        unsafe { *core::ptr::addr_of_mut!(VMA_TABLE[pid * VMA_MAX + idxs[k]]) = (0, 0, 0); }
+        let (_, _, _, s) = unsafe { *core::ptr::addr_of!(VMA_TABLE[pid * VMA_MAX + idxs[k]]) };
+        if s != 0 {
+            shm::shm_release(s as u32); // ultimo riferimento → libera i frame
+        }
+        unsafe { *core::ptr::addr_of_mut!(VMA_TABLE[pid * VMA_MAX + idxs[k]]) = (0, 0, 0, 0); }
     }
     true
 }
@@ -156,7 +167,7 @@ fn exact_cover(pid: usize, addr: u64, end: u64) -> Option<([usize; VMA_MAX], usi
     let mut idxs = [0usize; VMA_MAX];
     let mut n = 0usize;
     for i in 0..VMA_MAX {
-        let (b, l, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + i]) };
+        let (b, l, _, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + i]) };
         if l != 0 && b >= addr && b + l <= end {
             idxs[n] = i;
             n += 1;
@@ -168,8 +179,8 @@ fn exact_cover(pid: usize, addr: u64, end: u64) -> Option<([usize; VMA_MAX], usi
     for a in 1..n {
         let mut j = a;
         while j > 0 {
-            let (ba, _, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + idxs[j]]) };
-            let (bb, _, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + idxs[j - 1]]) };
+            let (ba, _, _, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + idxs[j]]) };
+            let (bb, _, _, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + idxs[j - 1]]) };
             if bb <= ba {
                 break;
             }
@@ -179,13 +190,13 @@ fn exact_cover(pid: usize, addr: u64, end: u64) -> Option<([usize; VMA_MAX], usi
             j -= 1;
         }
     }
-    let (first_b, first_l, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + idxs[0]]) };
+    let (first_b, first_l, _, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + idxs[0]]) };
     if first_b != addr {
         return None;
     }
     let mut covered = first_b + first_l;
     for k in 1..n {
-        let (b, l, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + idxs[k]]) };
+        let (b, l, _, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + idxs[k]]) };
         if b != covered {
             return None;
         }
@@ -217,16 +228,26 @@ pub fn vma_protect(pid: usize, cr3: u64, addr: u64, len: u64, prot: u8) -> bool 
         Some(x) => x,
         None => return false,
     };
+    // PROT_NONE su una VMA condivisa = drop della mappatura (dovrebbe
+    // decrementare il refcount): non supportato, rifiutato senza stato (M3).
+    if prot == PROT_NONE as u8 {
+        for k in 0..n {
+            let (_, _, _, s) = unsafe { *core::ptr::addr_of!(VMA_TABLE[pid * VMA_MAX + idxs[k]]) };
+            if s != 0 {
+                return false;
+            }
+        }
+    }
     // Fase 2: applica (record + PTE).
     for k in 0..n {
-        let (b, l, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[pid * VMA_MAX + idxs[k]]) };
+        let (b, l, _, s) = unsafe { *core::ptr::addr_of!(VMA_TABLE[pid * VMA_MAX + idxs[k]]) };
         if prot == PROT_NONE as u8 {
             unsafe { unmap_user_range(cr3, b, (l / PAGE_SIZE) as usize); }
         } else {
             let writable = prot & PROT_WRITE as u8 != 0;
             unsafe { flip_write_bit(cr3, b, (l / PAGE_SIZE) as usize, writable); }
         }
-        unsafe { *core::ptr::addr_of_mut!(VMA_TABLE[pid * VMA_MAX + idxs[k]]) = (b, l, prot); }
+        unsafe { *core::ptr::addr_of_mut!(VMA_TABLE[pid * VMA_MAX + idxs[k]]) = (b, l, prot, s); }
     }
     true
 }
@@ -287,14 +308,19 @@ unsafe fn unmap_user_range(cr3: u64, vaddr: u64, count: usize) {
 }
 
 /// Dimentica le VMA del processo (teardown: i frame owned cadono col walk
-/// esistente; qui solo i record, come `HEAP_BRK`).
+/// esistente; qui i record, come `HEAP_BRK`). Per le VMA condivise (M3)
+/// rilascia il riferimento: l'ultimo libera i frame della regione.
 pub(super) fn vma_clear(pid: usize) {
     if pid >= MAX_PROCS {
         return;
     }
     let base = pid * VMA_MAX;
     for i in 0..VMA_MAX {
-        unsafe { *core::ptr::addr_of_mut!(VMA_TABLE[base + i]) = (0, 0, 0); }
+        let (_, l, _, s) = unsafe { *core::ptr::addr_of!(VMA_TABLE[base + i]) };
+        if l != 0 && s != 0 {
+            shm::shm_release(s as u32);
+        }
+        unsafe { *core::ptr::addr_of_mut!(VMA_TABLE[base + i]) = (0, 0, 0, 0); }
     }
 }
 

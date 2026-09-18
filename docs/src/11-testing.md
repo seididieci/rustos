@@ -2,7 +2,7 @@
 
 > I conteggi di suite citati negli ADR e nelle sotto-fasi del libro sono
 > **snapshot all'epoca** di ciascuna fase (es. 17/17, 21/21, 32/32). Il gate
-> corrente e' quello qui sotto (5/5 + 7/7 + 45/45 + shell) e in `AGENTS.md`.
+> corrente e' quello qui sotto (5/5 + 7/7 + 46/46 + shell) e in `AGENTS.md`.
 
 La regressione automatica del sistema gira **dentro QEMU** a ogni boot: i
 binari di test sono processi user reali, spawnati da `init` in sequenza prima
@@ -17,8 +17,8 @@ libs/libr   libreria di sistema condivisa (runtime + allocatore)
 testland/   test suite + repro + demo storiche
   testfs        usertestfs   — ramfs (read/write/mkdir/errori)   → PASS 5/5
   testfat       usertestfat  — FAT32 scrivibile (Fase 20) + /dev/null, /dev/zero → PASS 7/7
-  usertests     usertests    — suite completa (45 test)          → PASS 45/45
-  usertest-client usertestcli  — helper a modalita' (ECHO/ZEROREAD/NULLW/SRV/CHURN/KILLME/SRVDIE/SYNCWAIT/MNTDIE/OPENDIE/MAPHAMMER/FLOOD/NEST/FAULT_*)
+  usertests     usertests    — suite completa (46 test)          → PASS 46/46
+  usertest-client usertestcli  — helper a modalita' (ECHO/ZEROREAD/NULLW/SRV/CHURN/KILLME/SRVDIE/SYNCWAIT/MNTDIE/OPENDIE/MAPHAMMER/FLOOD/NEST/FAULT_*/SHMDEMO)
   usertest-spin  usertestspin  — busy-loop a budget di tick (batch 512 spin puri, priorita' via SpawnMeta)
   utcbstest     utcbstest    — helper CBS: crea server e si attacha (Fase 11.5)
   hogheap / devreader         — stress/repro standalone
@@ -50,10 +50,10 @@ Righe di gate:
 ```
 [testfs] PASS 5/5
 [testfat] PASS 7/7
-[usertests] PASS 45/45
+[usertests] PASS 46/46
 ```
 
-## Cosa copre `usertests` (45 test; t34 per ultimo: i drop dei diritti sono
+## Cosa copre `usertests` (46 test; t34 per ultimo: i drop dei diritti sono
 irrevocabili sul canale della suite)
 
 | Test | Cosa verifica |
@@ -102,6 +102,7 @@ irrevocabili sul canale della suite)
 | t43 | composizione annidata `Join<Join<W,W>,W>` (ADR-0019): tre helper MODE_SRV, invii in ordine inverso all'albero, guidati da `block_on`; ogni risultato matcha il proprio req (routing multi-livello) |
 | t44 | mmap anonimo nel basso canonico (Fase M0): pattern R/W su 3 pagine, spot-check 3 MiB multi-PT (1536 fault demand-zero), fixed/overlap/len-0/hint-disallineato rifiutati, munmap parziale rifiutato senza stato, munmap interi + riuso fixed con zeri freschi, `write` seriale da buffer mappato (prova `is_user_range` esteso) |
 | t45 | protezioni (Fase M1): `mmap_prot` RO + `mprotect` RO↔RW (contenuto preservato) + →NONE (pagine cadono, riuso a zeri) + error paths (prot W-solo rifiutato, mprotect parziale rifiutato senza stato); 5 helper `utcli` che provocano fault (write su RO, read su NONE, exec su NX, write sulla guard page, `in` su porta non concessa → #GP) muoiono con `FAULT_EXIT_CODE` osservato via `EXIT_NOTIFY` |
+| t46 | memoria condivisa (Fase M3): `shm_create` + `shm_map`; il parent scrive un pattern, un helper mappa la stessa regione (stesse pagine), verifica il pattern e scrive un marker che il parent vede (visibilita' bidirezionale); `munmap` rilascia il ref, id inesistente rifiutato, riuso dello slot (regione fresca a zeri) |
 | t34 | diritti per-canale lato server (Fase 17, per ultimo: drop irrevocabili): GET default ALL+root, drop WRITE (write -1/read ok), drop MOUNT+subtree /fat (mount/open-fuori -1, open-dentro+read+readdir-dentro ok, readdir-fuori -1), widen rifiutato + GET conferma |
 
 > Il CBS e' sempre attivo (lo scheduler RT e' l'unico): t18/t19 sono test

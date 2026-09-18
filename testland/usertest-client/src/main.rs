@@ -95,6 +95,7 @@ const MODE_FAULT_NONE: u64 = 14;
 const MODE_FAULT_NX: u64 = 15;
 const MODE_FAULT_GUARD: u64 = 16;
 const MODE_FAULT_GPF: u64 = 17;
+const MODE_SHMDEMO: u64 = 18;
 
 // Tag DEV_* + errore IPC (A1): single source in `libr` (prima letterali qui).
 use libr::{DEV_CLOSE, DEV_OPEN, ERR};
@@ -288,6 +289,7 @@ pub extern "C" fn _start() -> ! {
                 MODE_SRV => run_srv(),
                 MODE_MAPHAMMER => run_maphammer(rounds),
                 MODE_FLOOD => run_flood(parent),
+                MODE_SHMDEMO => run_shmdemo(rounds as u32),
                 _ => (false, 1),
             };
             let _ = libr::send(parent, T_DONE, ok as u64, detail as u64);
@@ -295,6 +297,24 @@ pub extern "C" fn _start() -> ! {
             libr::exit(0);
         }
     }
+}
+
+/// Fase M3: mappa la regione condivisa `id` (passata dal parent in `param`),
+/// verifica il pattern scritto dal parent, scrive un marker a offset 4096
+/// (che il parent deve vedere: prova la visibilita' bidirezionale) e riporta
+/// l'esito. Le pagine sono le stesse del parent: zero-copy tra processi.
+fn run_shmdemo(id: u32) -> (bool, usize) {
+    let base = match libr::shm_map(id, 0, libr::PROT_READ | libr::PROT_WRITE) {
+        Ok(b) => b,
+        Err(_) => return (false, 1),
+    };
+    for i in 0..8192usize {
+        if unsafe { core::ptr::read_volatile((base + i) as *const u8) } != (i % 251) as u8 {
+            return (false, 2);
+        }
+    }
+    unsafe { core::ptr::write_volatile((base + 4096) as *mut u8, 0xAB); }
+    (true, 0)
 }
 
 /// Fase M1: provoca un fault di memoria non recuperabile (write su RO,

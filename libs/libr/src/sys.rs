@@ -113,6 +113,33 @@ pub fn mprotect(addr: usize, len: usize, prot: u64) -> Result<(), ()> {
     }
 }
 
+/// Fase M3 — `shm_create(len)`: crea una regione di memoria condivisa di
+/// `len` byte (frame contigui azzerati, max 256 KiB) e ritorna l'id (>= 1).
+/// L'id si passa a un altro processo via IPC, che la mappa con `shm_map`.
+#[inline]
+pub fn shm_create(len: usize) -> Result<u32, ()> {
+    let r = unsafe { syscall4(SYS_SHM_CREATE, len as u64, 0, 0, 0) };
+    if r <= 0 {
+        Err(())
+    } else {
+        Ok(r as u32)
+    }
+}
+
+/// Fase M3 — `shm_map(id, hint, prot)`: mappa la regione condivisa `id` nello
+/// spazio del chiamante (prot `PROT_READ`/`PROT_READ|PROT_WRITE`); le pagine
+/// sono le STESSE per tutti i mappatori (scritture visibili). `hint == 0` =
+/// scelta kernel. Ritorna la base o `Err`.
+#[inline]
+pub fn shm_map(id: u32, hint: usize, prot: u64) -> Result<usize, ()> {
+    let r = unsafe { syscall4(SYS_SHM_MAP, id as u64, hint as u64, prot, 0) };
+    if r < 0 {
+        Err(())
+    } else {
+        Ok(r as usize)
+    }
+}
+
 
 /// Termina il processo corrente con il codice `code`. Non ritorna.
 #[inline]

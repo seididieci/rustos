@@ -4,7 +4,7 @@ use super::entry::PERCPU;
 use super::ipc::{sys_send, sys_send_async, sys_recv, sys_recv_nonblock, sys_reply};
 use super::service::{sys_service_register, sys_service_lookup, sys_service_pid};
 use super::spawn::{sys_spawn, sys_spawn_image};
-use super::mem::{sys_mmap, sys_munmap, sys_mprotect, sys_map_physical, sys_sbrk, sys_ring_alloc, sys_map_in};
+use super::mem::{sys_mmap, sys_munmap, sys_mprotect, sys_shm_create, sys_shm_map, sys_map_physical, sys_sbrk, sys_ring_alloc, sys_map_in};
 use super::misc::{sys_exit, sys_write, sys_getpid, sys_kill, sys_get_ticks, sys_cbs_create, sys_cbs_attach, sys_cbs_get_info, sys_ps_info};
 
 /// Handler di dispatch: legge gli argomenti riempiti dall'entry e chiama la
@@ -55,6 +55,9 @@ pub(super) extern "C" fn syscall_handler() -> i64 {
             syscall_numbers::SYS_MUNMAP => sys_munmap((*p).arg1, (*p).arg2 as usize),
             // Fase M1: mprotect su VMA intere.
             syscall_numbers::SYS_MPROTECT => sys_mprotect((*p).arg1, (*p).arg2 as usize, (*p).arg3),
+            // Fase M3: memoria condivisa tra processi.
+            syscall_numbers::SYS_SHM_CREATE => sys_shm_create((*p).arg1),
+            syscall_numbers::SYS_SHM_MAP => sys_shm_map((*p).arg1, (*p).arg2, (*p).arg3, (*p).arg4),
             _ => -1,
         }
     }

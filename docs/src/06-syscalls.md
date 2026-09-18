@@ -108,6 +108,8 @@ La numerazione e' definita nel dispatch di `syscall_handler` in `kernel/src/sysc
 | 39 | `mmap(hint, len, prot, flags)` | mappa anonima privata nel basso canonico (Fase M0/M1): VA subito, frame zero al primo fault; `hint` 0 = scelta kernel, `MMAP_FIXED` = piazza o fallisci; `prot` = `PROT_NONE`/`PROT_READ`/`PROT_READ\|PROT_WRITE` (W solo ed EXEC rifiutati); ritorna la base o -1 |
 | 40 | `munmap(addr, len)` | smappa VMA intere (Fase M0, niente split: parziali = -1 senza stato) → 0 o -1 |
 | 41 | `mprotect(addr, len, prot)` | cambia le protezioni di VMA intere (Fase M1): RO↔RW flippa il bit W, `PROT_NONE` fa cadere le pagine (riuso a zeri); stesse regole di `munmap`; ritorna 0 o -1 |
+| 42 | `shm_create(len)` | crea una regione di memoria condivisa (Fase M3, max 256 KiB, frame contigui azzerati) → id (>= 1) o -1 |
+| 43 | `shm_map(id, hint, prot, flags)` | mappa la regione condivisa `id` come VMA (prot R/RW, PTE non-owned pre-materializzate): le pagine sono le stesse per tutti i mappatori (scritture visibili); refcount, a 0 i frame sono liberati; ritorna la base o -1 |
 
 > **Fase M1 (protezioni)**: `PROT_NONE`/`PROT_READ`/`PROT_READ|PROT_WRITE` sono
 > enforced dal page-fault handler. Un fault di protezione da user mode (write
@@ -214,6 +216,8 @@ extern "C" fn syscall_handler() -> i64 {
 | `mmap_prot` | 39 | Come `mmap` ma con `prot` esplicito NONE/R/RW (Fase M1) |
 | `munmap` | 40 | Smappa VMA intere (Fase M0, niente split) |
 | `mprotect` | 41 | Cambia le protezioni di VMA intere (Fase M1: RO↔RW, NONE) |
+| `shm_create` | 42 | Crea una regione di memoria condivisa (Fase M3) → id |
+| `shm_map` | 43 | Mappa una regione condivisa (Fase M3) → base (zero-copy tra processi) |
 
 `spawn(name_ptr, name_len)` (Fase 8.1 + 13) crea un nuovo processo a partire dal
 binario user embedded il cui nome combacia con `name` (tabella `NAMED_BINARIES`

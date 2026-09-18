@@ -160,6 +160,21 @@ con zero-fill lazy (stesso contratto di `sbrk`: VA subito, frame al fault).
 - Estrazione del phys da una PTE SEMPRE con `PTE_ADDR_MASK` (bit 12..51): mai
   `& !0xFFF`, che con NX lascerebbe il bit 63 e corromperebbe il frame address.
 
+## Memoria condivisa (Fase M3)
+
+- `shm_create(len)` (syscall 42) alloca frame contigui azzerati (max 256 KiB)
+  e ritorna un id; `shm_map(id, hint, prot)` (43) li mappa come VMA del
+  processo con PTE non-owned **pre-materializzate** (niente demand-zero: le
+  pagine esistono da subito e sono le stesse per tutti i mappatori).
+- Refcount per regione (`SHM_TABLE` statica, 16 slot): ogni `shm_map` +1,
+  ogni `munmap`/teardown -1; a 0 i frame contigui sono liberati. Le VMA
+  condivise portano l'id nel record (`shm`), il teardown le rilascia.
+- `munmap`/teardown staccano le PTE condivise (non-owned) senza liberarle: il
+  free e' solo a refcount. `mprotect` su condivise ammette RO↔RW, non NONE
+  (drop di mappatura non supportato, rifiutato senza stato).
+- Limite dichiarato: la creazione mai mappata resta finche' il processo non
+  mappa (caso d'uso normale = create+map).
+
 ## Riferimenti
 
 - [Writing an OS in Rust - Heap Allocation](https://os.phil-opp.com/heap-allocation/)
