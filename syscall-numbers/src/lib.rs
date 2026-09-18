@@ -90,11 +90,29 @@ pub const SYS_MMAP: u64 = 39;
 /// Smappa `[addr, addr+len)`: solo VMA intere in M0 (parziali = -1 senza
 /// cambiare stato). Ritorna 0 o -1.
 pub const SYS_MUNMAP: u64 = 40;
-/// Protezioni `mmap` (M0: solo la combinazione RW e' accettata; M1: RO/NX).
+/// Cambia le protezioni di `[addr, addr+len)` (Fase M1, mprotect):
+/// `(addr, len, prot)`. Solo VMA intere (come `munmap`). Ritorna 0 o -1.
+pub const SYS_MPROTECT: u64 = 41;
+/// Protezioni `mmap`/`mprotect` (M1: NONE/R/RW con enforcement; W solo e
+/// PROT_EXEC rifiutati — eseguibile solo il codice di spawn).
+pub const PROT_NONE: u64 = 0x0;
 pub const PROT_READ: u64 = 0x1;
 pub const PROT_WRITE: u64 = 0x2;
 /// Flag `mmap`: piazza esattamente a `hint` (o fallisci), niente fallback.
 pub const MMAP_FIXED: u64 = 0x1;
+/// Layout stack user condiviso kernel+test (Fase M1, single source qui):
+/// lo stack vive a `USER_STACK_TOP` (cresce verso il basso, 4 frame);
+/// la pagina a `USER_STACK_GUARD` (subito sotto) NON e' mai mappata:
+/// lo stack overflow fa #PF li' → kill (mai corruzione silenziosa).
+/// NB: `USER_BASE + 0x400_000` (0x0000_4000_0040_0000).
+pub const USER_STACK_TOP: u64 = 0x0000_4000_0040_0000;
+pub const USER_STACK_FRAMES: usize = 4;
+pub const USER_STACK_GUARD: u64 = 0x0000_4000_0040_0000 - 5 * 0x1000;
+/// Codice di uscita con cui il kernel termina un processo user che provoca
+/// un fault di memoria non recuperabile (Fase M1: #PF di protezione, accesso
+/// a PROT_NONE, stack overflow nella guard). Il parent lo osserva via
+/// EXIT_NOTIFY (w0). 139 = 128 + 11 (SIGSEGV, convenzione POSIX).
+pub const FAULT_EXIT_CODE: i64 = 139;
 /// Flag `SpawnMeta.flags` (Fase 22, detach): il figlio non partecipa alla
 /// cascata di morte del parent — alla morte del parent viene ri-parentato a
 /// init invece di terminare. Deciso dallo spawner (il figlio non puo'

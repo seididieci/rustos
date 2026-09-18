@@ -1,5 +1,5 @@
 // Split from vmm_user.rs (byte-identical move; see facade).
-use super::layout::{USER_OWNED, MAX_PROCS};
+use super::layout::{USER_OWNED, MAX_PROCS, PTE_ADDR_MASK};
 use super::paging::{kernel_cr3, PTE_PRESENT};
 use super::heap_brk::HEAP_BRK;
 use super::vma::vma_clear;
@@ -32,7 +32,7 @@ unsafe fn free_pt_leaves(pt_phys: u64) {
         let e = unsafe { raw_entry(pt_phys, i) };
         if e & PTE_PRESENT != 0 {
             if e & USER_OWNED != 0 {
-                crate::phys_mem::free(e & !0xFFF);
+                crate::phys_mem::free(PTE_ADDR_MASK & e);
             }
         }
     }
@@ -43,7 +43,7 @@ unsafe fn free_pd_tree(pd_phys: u64) {
     for i in 0..512 {
         let e = unsafe { raw_entry(pd_phys, i) };
         if e & PTE_PRESENT != 0 {
-            let pt = e & !0xFFF;
+            let pt = PTE_ADDR_MASK & e;
             unsafe { free_pt_leaves(pt) };
             crate::phys_mem::free(pt);
         }
@@ -55,7 +55,7 @@ unsafe fn free_pdp_tree(pdp_phys: u64) {
     for i in 0..512 {
         let e = unsafe { raw_entry(pdp_phys, i) };
         if e & PTE_PRESENT != 0 {
-            let pd = e & !0xFFF;
+            let pd = PTE_ADDR_MASK & e;
             unsafe { free_pd_tree(pd) };
             crate::phys_mem::free(pd);
         }
@@ -78,9 +78,9 @@ pub unsafe fn teardown_user_space(cr3: u64, pid: usize) {
             if e & PTE_PRESENT == 0 {
                 continue;
             }
-            let tbl = e & !0xFFF;
+            let tbl = PTE_ADDR_MASK & e;
             // Entry condivise col kernel (mappa U=0): NON sono del processo.
-            let k = raw_entry(kernel_pml4, i) & !0xFFF;
+            let k = raw_entry(kernel_pml4, i) & PTE_ADDR_MASK;
             if tbl == k {
                 continue;
             }

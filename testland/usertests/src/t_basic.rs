@@ -279,6 +279,98 @@ pub fn t_mmap() -> bool {
     true
 }
 
+/// Fase M1 — protezioni: `mmap_prot`/`mprotect` in-process (transizioni
+/// RO/RW/NONE, error paths) + fault di protezione che termina il processo
+/// (helper, osservato via EXIT_NOTIFY con FAULT_EXIT_CODE).
+pub fn t_mprotect() -> bool {
+    // 1. mmap PROT_READ: prima lettura materializza RO (zero fresco).
+    let ro = match libr::mmap_prot(0, 4096, libr::PROT_READ) {
+        Ok(x) => x,
+        Err(_) => return false,
+    };
+    if unsafe { core::ptr::read_volatile(ro as *const u8) } != 0 {
+        return false;
+    }
+    // 2. RO → RW: scrittura + rilettura.
+    if libr::mprotect(ro, 4096, libr::PROT_READ | libr::PROT_WRITE).is_err() {
+        return false;
+    }
+    unsafe { core::ptr::write_volatile(ro as *mut u8, 0x5A); }
+    if unsafe { core::ptr::read_volatile(ro as *const u8) } != 0x5A {
+        return false;
+    }
+    // 3. RW → RO: il contenuto resta leggibile.
+    if libr::mprotect(ro, 4096, libr::PROT_READ).is_err() {
+        return false;
+    }
+    if unsafe { core::ptr::read_volatile(ro as *const u8) } != 0x5A {
+        return false;
+    }
+    // 4. → NONE: le pagine cadono (nessun accesso qui, sarebbe kill).
+    if libr::mprotect(ro, 4096, libr::PROT_NONE).is_err() {
+        return false;
+    }
+    // 5. NONE → RW: riuso con zeri freschi (frame liberati a NONE, rimappati).
+    if libr::mprotect(ro, 4096, libr::PROT_READ | libr::PROT_WRITE).is_err() {
+        return false;
+    }
+    if unsafe { core::ptr::read_volatile(ro as *const u8) } != 0 {
+        return false;
+    }
+    let _ = libr::munmap(ro, 4096);
+
+    // 6. Error paths: prot non valido (W solo) rifiutato; mprotect parziale
+    // rifiutato SENZA cambiare stato; intero/invalido come atteso.
+    if libr::mmap_prot(0, 4096, libr::PROT_WRITE).is_ok() {
+        return false;
+    }
+    let a = match libr::mmap(0, 3 * 4096) {
+        Ok(x) => x,
+        Err(_) => return false,
+    };
+    if libr::mprotect(a, 4096, libr::PROT_READ).is_ok() {
+        return false; // parziale su 3 VMA-contigue = rifiutato
+    }
+    if libr::mprotect(a, 3 * 4096, libr::PROT_READ).is_err() {
+        return false; // intera = ok
+    }
+    if libr::mprotect(a, 3 * 4096, 0x40).is_ok() {
+        return false; // prot invalido
+    }
+    let _ = libr::munmap(a, 3 * 4096);
+
+    // 7. Fault di protezione → kill con FAULT_EXIT_CODE (helper, EXIT_NOTIFY).
+    helpers::drain_stray();
+    for (mode, name) in [
+        (helpers::M_FAULT_RO, "RO-write"),
+        (helpers::M_FAULT_NONE, "NONE-read"),
+        (helpers::M_FAULT_NX, "NX-exec"),
+        (helpers::M_FAULT_GUARD, "guard"),
+    ] {
+        let (chan, _pid) = match helpers::spawn_cfg(
+            "/fat/test/testcli.bin", "utcli", 16, mode, 0,
+        ) {
+            Some(x) => x,
+            None => {
+                println!("[usertests] t45: spawn {} FAILED", name);
+                return false;
+            }
+        };
+        match helpers::wait_exit(chan) {
+            Some((c, _)) if c == libr::FAULT_EXIT_CODE => {}
+            Some((c, _)) => {
+                println!(
+                    "[usertests] t45: {} exit code {} (atteso {})",
+                    name, c, libr::FAULT_EXIT_CODE
+                );
+                return false;
+            }
+            None => return false,
+        }
+    }
+    true
+}
+
 pub fn t_map_alias() -> bool {    if libr::map_physical(libr::MAP_TEST_PHYS, helpers::VA_A, 1).is_err() {
         return false;
     }

@@ -1114,6 +1114,28 @@ rustos/
     `vma_contains_range` (raddoppiava la somma → ogni VMA rifiutata;
     invisibile finche' solo la heap clause serviva). Rimandati: mprotect/NX,
     guard page, file-backed (fase propria: page-in deadlock-prone).
+- [x] Fase M1: protezioni di memoria (mprotect/NX) + fault→kill.
+  - Record VMA esteso a `(base, len, prot)` (prot = `PROT_*`, statico);
+    `mmap` accetta NONE/R/RW (W-solo ed EXEC rifiutati); nuova syscall
+    `SYS_MPROTECT (41)` su VMA intere (copertura esatta come `munmap`):
+    RO↔RW flippa il bit W in place, NONE smappa+libera (riuso a zeri).
+  - EFER.NXE a boot; foglie dati RW/RO + NX, codice/binario RWX (flat: W^X
+    richiede i confini di sezione all'embed-time → M1b); heap/stack/mmap/
+    iniettate tutte NX.
+  - Page-fault handler: protection-violation da USER MODE → `fault_kill`
+    (`exit_current(FAULT_EXIT_CODE=139)`, mai halt kernel); fault user fuori
+    regione (guard page sotto lo stack, `USER_STACK_GUARD`) idem; fault
+    supervisor resta bug → halt. Guard page: stack a `USER_STACK_TOP`
+    (single source `syscall-numbers`, 4 frame), pagina sotto mai mappata.
+  - Bug veri trovati: (1) binario flat RWX obbligatorio (init scriveva nel
+    proprio .data mappato RX → kill immediato al boot); (2) `e & !0xFFF`
+    lasciava il bit NX nella PTE → `phys_mem::free` panic ("frame fuori
+    range") al primo teardown; fix `PTE_ADDR_MASK` (bit 12..51) in tutti i
+    siti di estrazione phys.
+  - t45 (`mmap_prot`/`mprotect` transizioni + error paths; 4 helper fault
+    RO/NONE/NX/guard → `FAULT_EXIT_CODE` via EXIT_NOTIFY). Suite → 45/45.
+  - Limite onesto: W^X del binario rimandato (M1b: confini `.text`/`.data`
+    all'embed-time). File-backed (M2a) e shared (M3) ancora da fare.
 
 ## Important Notes
 
@@ -1289,9 +1311,9 @@ rg '\[bench\]' /tmp/bench-run1.log /tmp/bench-run2.log /tmp/bench-run3.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 7/7
-#   [usertests] PASS 44/44
+#   [usertests] PASS 45/45
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 44/44' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 45/45' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 

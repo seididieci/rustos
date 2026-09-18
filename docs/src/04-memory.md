@@ -140,6 +140,23 @@ con zero-fill lazy (stesso contratto di `sbrk`: VA subito, frame al fault).
   (page-in su fault verso userfs e' deadlock-prone: sua fase propria).
 - `libr::mmap` / `mmap_fixed` / `munmap`; `sbrk`/heap/scratch invariati.
 
+## Protezioni di memoria (Fase M1)
+
+- Ogni VMA ha un `prot` (`PROT_NONE`/`PROT_READ`/`PROT_READ|PROT_WRITE`);
+  `mmap` lo applica alla materializzazione, `mprotect` (syscall 41) lo cambia
+  su VMA intere (RO↔RW flippa il bit W; NONE smappa+libera, riuso a zeri).
+- EFER.NXE abilitato a boot: heap, stack, `mmap` e pagine iniettate sono
+  non-eseguibili. Il binario user e' ancora RWX perche' flat (codice + dati in
+  un'unica regione copiata): il W^X richiede i confini `.text`/`.data`
+  all'embed-time (M1b).
+- Il page-fault handler distingue: protection-violation da USER MODE (write su
+  RO, exec su NX, accesso a NONE) o fault fuori regione (guard page sotto lo
+  stack) → **kill del processo** (`FAULT_EXIT_CODE` 139, mai halt del kernel);
+  fault supervisor → bug del kernel, halt. La guard page sta a
+  `USER_STACK_GUARD` (pagina sotto lo stack, mai mappata).
+- Estrazione del phys da una PTE SEMPRE con `PTE_ADDR_MASK` (bit 12..51): mai
+  `& !0xFFF`, che con NX lascerebbe il bit 63 e corromperebbe il frame address.
+
 ## Riferimenti
 
 - [Writing an OS in Rust - Heap Allocation](https://os.phil-opp.com/heap-allocation/)

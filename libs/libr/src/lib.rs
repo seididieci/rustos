@@ -61,6 +61,13 @@ pub use syscall_numbers::{STAT_DEVICE, STAT_DIR, STAT_FILE, STAT_READONLY};
 /// Flag `open` (Fase 18.2): crea il file se non esiste.
 pub use syscall_numbers::O_CREAT;
 
+/// Fase M1 (mmap/mprotect): protezioni + codice di uscita per fault di
+/// memoria, e layout stack condiviso (guard page) per i test.
+pub use syscall_numbers::{
+    FAULT_EXIT_CODE, MMAP_FIXED, PROT_NONE, PROT_READ, PROT_WRITE, USER_STACK_FRAMES,
+    USER_STACK_GUARD, USER_STACK_TOP,
+};
+
 /// Tag IPC FS/boot/kbd (DocsB): single source in `syscall-numbers` (prima
 /// duplicati qui, in userfs/userdisk/init/tty/kbd e come letterali nei test).
 /// `libr` li riesporta: i server/test usano i path `libr::`, mai i valori.

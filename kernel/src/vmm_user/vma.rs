@@ -1,5 +1,5 @@
 // Split from vmm_user.rs (byte-identical move; see facade).
-use super::layout::{PAGE_SIZE, USER_CODE, MMAP_BASE, MMAP_END, USER_OWNED, MAX_PROCS};
+use super::layout::{PAGE_SIZE, USER_CODE, MMAP_BASE, MMAP_END, USER_OWNED, MAX_PROCS, PTE_ADDR_MASK};
 use super::paging::{entry_at, set_entry, flush_page, pml4_index, pdpt_index, pd_index, pt_index, PTE_PRESENT};
 use super::teardown::raw_entry;
 use super::heap_brk::heap_brk;
@@ -7,21 +7,23 @@ use super::heap_brk::heap_brk;
 /// VMA massime per processo (record statici, mai heap: anche il fault
 /// handler fa lookup qui, stesso stile di `HEAP_BRK`/`RING_PHYS`).
 const VMA_MAX: usize = 16;
-/// Record VMA per pid: (base, len) a pagine; (0, 0) = libero. Le pagine
-/// vengono materializzate lazy al fault (owned → il teardown esistente le
-/// libera: nessun codice di free dedicato).
-static mut VMA_TABLE: [(u64, u64); MAX_PROCS * VMA_MAX] =
-    [(0, 0); MAX_PROCS * VMA_MAX];
+/// Record VMA per pid: (base, len, prot) a pagine; (0, 0, _) = libero.
+/// `prot` = PROT_* di `syscall-numbers` (M1: NONE/R/RW; W solo rifiutato a
+/// `mmap`). Le pagine vengono materializzate lazy al fault con i flag del
+/// prot (RW → RW, RO → RO, NONE → mai: fault = kill); owned → il teardown
+/// esistente le libera (nessun codice di free dedicato).
+static mut VMA_TABLE: [(u64, u64, u8); MAX_PROCS * VMA_MAX] =
+    [(0, 0, 0); MAX_PROCS * VMA_MAX];
 /// VMA del processo `pid` che contiene `addr`, se esiste.
-pub fn vma_lookup(pid: usize, addr: u64) -> Option<(u64, u64)> {
+pub fn vma_lookup(pid: usize, addr: u64) -> Option<(u64, u64, u8)> {
     if pid >= MAX_PROCS {
         return None;
     }
     let base = pid * VMA_MAX;
     for i in 0..VMA_MAX {
-        let (b, l) = unsafe { *core::ptr::addr_of!(VMA_TABLE[base + i]) };
+        let (b, l, p) = unsafe { *core::ptr::addr_of!(VMA_TABLE[base + i]) };
         if l != 0 && b <= addr && addr < b + l {
-            return Some((b, l));
+            return Some((b, l, p));
         }
     }
     None
@@ -39,7 +41,7 @@ fn vma_contains_range(pid: usize, addr: u64, len: u64) -> bool {
     };
     let base = pid * VMA_MAX;
     for i in 0..VMA_MAX {
-        let (b, l) = unsafe { *core::ptr::addr_of!(VMA_TABLE[base + i]) };
+        let (b, l, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[base + i]) };
         if l != 0 && b <= addr && end <= b + l {
             return true;
         }
@@ -54,7 +56,7 @@ fn vma_overlap_end(pid: usize, s: u64, len: u64) -> Option<u64> {
     let e = s.checked_add(len)?;
     let base = pid * VMA_MAX;
     for i in 0..VMA_MAX {
-        let (b, l) = unsafe { *core::ptr::addr_of!(VMA_TABLE[base + i]) };
+        let (b, l, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[base + i]) };
         if l != 0 && b < e && s < b + l {
             return Some(b + l);
         }
@@ -65,8 +67,9 @@ fn vma_overlap_end(pid: usize, s: u64, len: u64) -> Option<u64> {
 /// Registra una VMA anonima (senza materializzare: lazy come `sbrk`).
 /// `hint == 0 && !fixed` = scelta kernel (first-fit dal basso);
 /// altrimenti `hint` deve essere libero (o fallisce, mai fallback).
+/// `prot` = PROT_NONE/READ/(READ|WRITE) (M1; W solo rifiutato dal chiamante).
 /// Ritorna la base o `None`.
-pub fn vma_map(pid: usize, hint: u64, len: u64, fixed: bool) -> Option<u64> {
+pub fn vma_map(pid: usize, hint: u64, len: u64, fixed: bool, prot: u8) -> Option<u64> {
     if pid >= MAX_PROCS || len == 0 {
         return None;
     }
@@ -115,7 +118,7 @@ pub fn vma_map(pid: usize, hint: u64, len: u64, fixed: bool) -> Option<u64> {
     for i in 0..VMA_MAX {
         let e = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + i]) };
         if e.1 == 0 {
-            unsafe { *core::ptr::addr_of_mut!(VMA_TABLE[tbase + i]) = (base, len); }
+            unsafe { *core::ptr::addr_of_mut!(VMA_TABLE[tbase + i]) = (base, len, prot); }
             return Some(base);
         }
     }
@@ -133,27 +136,40 @@ pub fn vma_unmap(pid: usize, cr3: u64, addr: u64, len: u64) -> bool {
         Some(e) => e,
         None => return false,
     };
-    // Fase 1: raccogli le VMA dentro [addr, end) e verifica copertura esatta.
-    // VMA ordinate per base (insertion sort su <= 16): prima a `addr`,
-    // ultima a `end`, contigue (mai overlap per invariante).
+    let (idxs, n) = match exact_cover(pid, addr, end) {
+        Some(x) => x,
+        None => return false,
+    };
+    // Fase 2: smappa + libera + cancella record (`len` e' multipla di pagina).
+    unsafe { unmap_user_range(cr3, addr, (len / PAGE_SIZE) as usize); }
+    for k in 0..n {
+        unsafe { *core::ptr::addr_of_mut!(VMA_TABLE[pid * VMA_MAX + idxs[k]]) = (0, 0, 0); }
+    }
+    true
+}
+
+/// Raccoglie gli slot VMA dentro `[addr, end)` verificando copertura esatta:
+/// VMA ordinate per base (insertion sort su <= 16), prima a `addr`, ultima a
+/// `end`, contigue (mai overlap per invariante). `None` se buchi/disallineato.
+fn exact_cover(pid: usize, addr: u64, end: u64) -> Option<([usize; VMA_MAX], usize)> {
     let tbase = pid * VMA_MAX;
     let mut idxs = [0usize; VMA_MAX];
     let mut n = 0usize;
     for i in 0..VMA_MAX {
-        let (b, l) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + i]) };
+        let (b, l, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + i]) };
         if l != 0 && b >= addr && b + l <= end {
             idxs[n] = i;
             n += 1;
         }
     }
     if n == 0 {
-        return false;
+        return None;
     }
     for a in 1..n {
         let mut j = a;
         while j > 0 {
-            let (ba, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + idxs[j]]) };
-            let (bb, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + idxs[j - 1]]) };
+            let (ba, _, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + idxs[j]]) };
+            let (bb, _, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + idxs[j - 1]]) };
             if bb <= ba {
                 break;
             }
@@ -163,27 +179,83 @@ pub fn vma_unmap(pid: usize, cr3: u64, addr: u64, len: u64) -> bool {
             j -= 1;
         }
     }
-    let (first_b, first_l) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + idxs[0]]) };
+    let (first_b, first_l, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + idxs[0]]) };
     if first_b != addr {
-        return false;
+        return None;
     }
     let mut covered = first_b + first_l;
     for k in 1..n {
-        let (b, l) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + idxs[k]]) };
+        let (b, l, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + idxs[k]]) };
         if b != covered {
-            return false;
+            return None;
         }
         covered += l;
     }
     if covered != end {
+        return None;
+    }
+    Some((idxs, n))
+}
+
+/// Cambia il prot di `[addr, addr+len)` (mprotect, M1): solo VMA INTERE con
+/// copertura esatta (come `munmap`; parziali = false senza cambiare stato).
+/// Per ogni VMA aggiorna il record e le PTE presenti: prot NONE smappa+libera
+/// (come `munmap`: il riuso rimaterializza zero al fault), altrimenti flippa
+/// il bit W in place (i frame restano). NX non cambia mai in M1 (il codice e'
+/// l'unico eseguibile, niente PROT_EXEC). Flush per pagina toccata.
+/// `prot` gia' validato dal chiamante (NONE/R/RW).
+pub fn vma_protect(pid: usize, cr3: u64, addr: u64, len: u64, prot: u8) -> bool {
+    use syscall_numbers::{PROT_NONE, PROT_WRITE};
+    if pid >= MAX_PROCS || len == 0 || addr & (PAGE_SIZE - 1) != 0 || len & (PAGE_SIZE - 1) != 0 {
         return false;
     }
-    // Fase 2: smappa + libera + cancella record (`len` e' multipla di pagina).
-    unsafe { unmap_user_range(cr3, addr, (len / PAGE_SIZE) as usize); }
+    let end = match addr.checked_add(len) {
+        Some(e) => e,
+        None => return false,
+    };
+    let (idxs, n) = match exact_cover(pid, addr, end) {
+        Some(x) => x,
+        None => return false,
+    };
+    // Fase 2: applica (record + PTE).
     for k in 0..n {
-        unsafe { *core::ptr::addr_of_mut!(VMA_TABLE[tbase + idxs[k]]) = (0, 0); }
+        let (b, l, _) = unsafe { *core::ptr::addr_of!(VMA_TABLE[pid * VMA_MAX + idxs[k]]) };
+        if prot == PROT_NONE as u8 {
+            unsafe { unmap_user_range(cr3, b, (l / PAGE_SIZE) as usize); }
+        } else {
+            let writable = prot & PROT_WRITE as u8 != 0;
+            unsafe { flip_write_bit(cr3, b, (l / PAGE_SIZE) as usize, writable); }
+        }
+        unsafe { *core::ptr::addr_of_mut!(VMA_TABLE[pid * VMA_MAX + idxs[k]]) = (b, l, prot); }
     }
     true
+}
+
+/// Flippa il bit W delle PTE presenti in `[vaddr, vaddr+count*4K)` (walk senza
+/// allocare livelli: le pagine non materializzate non hanno PTE e il record
+/// governa la materializzazione futura). Flush per pagina cambiata.
+unsafe fn flip_write_bit(cr3: u64, vaddr: u64, count: usize, writable: bool) {
+    let mut addr = vaddr;
+    for _ in 0..count {
+        let l1 = unsafe { entry_at(cr3, pml4_index(addr)) };
+        if l1 != 0 {
+            let l2 = unsafe { entry_at(l1, pdpt_index(addr)) };
+            if l2 != 0 {
+                let l3 = unsafe { entry_at(l2, pd_index(addr)) };
+                if l3 != 0 {
+                    let e = unsafe { raw_entry(l3, pt_index(addr)) };
+                    if e & PTE_PRESENT != 0 {
+                        let e2 = if writable { e | 0x2 } else { e & !0x2 };
+                        if e2 != e {
+                            unsafe { set_entry(l3, pt_index(addr), e2); }
+                            flush_page(addr);
+                        }
+                    }
+                }
+            }
+        }
+        addr += PAGE_SIZE;
+    }
 }
 
 /// Smappa PTE presenti in `[vaddr, vaddr+count*4K)` senza allocare livelli
@@ -202,7 +274,7 @@ unsafe fn unmap_user_range(cr3: u64, vaddr: u64, count: usize) {
                     let e = unsafe { raw_entry(l3, pt_index(addr)) };
                     if e & PTE_PRESENT != 0 {
                         if e & USER_OWNED != 0 {
-                            crate::phys_mem::free(e & !0xFFF);
+                            crate::phys_mem::free(PTE_ADDR_MASK & e);
                         }
                         unsafe { set_entry(l3, pt_index(addr), 0); }
                         flush_page(addr);
@@ -222,7 +294,7 @@ pub(super) fn vma_clear(pid: usize) {
     }
     let base = pid * VMA_MAX;
     for i in 0..VMA_MAX {
-        unsafe { *core::ptr::addr_of_mut!(VMA_TABLE[base + i]) = (0, 0); }
+        unsafe { *core::ptr::addr_of_mut!(VMA_TABLE[base + i]) = (0, 0, 0); }
     }
 }
 

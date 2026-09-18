@@ -85,6 +85,34 @@ pub fn munmap(addr: usize, len: usize) -> Result<(), ()> {
     }
 }
 
+/// Fase M1 — `mmap_prot(hint, len, prot)`: come `mmap` ma con `prot` esplicito
+/// (`PROT_NONE`/`PROT_READ`/`PROT_READ|PROT_WRITE`; altri = `Err`). Le pagine
+/// vengono materializzate al primo accesso con i flag del prot (RO = scrittura
+/// → fault → kill del processo).
+#[inline]
+pub fn mmap_prot(hint: usize, len: usize, prot: u64) -> Result<usize, ()> {
+    let r = unsafe { syscall4(SYS_MMAP, hint as u64, len as u64, prot, 0) };
+    if r < 0 {
+        Err(())
+    } else {
+        Ok(r as usize)
+    }
+}
+
+/// Fase M1 — `mprotect(addr, len, prot)`: cambia le protezioni di VMA intere
+/// (copertura esatta come `munmap`; parziali = `Err` senza cambiare stato).
+/// A `PROT_NONE` le pagine cadono (il riuso rimaterializza zero); RO↔RW flippa
+/// il bit W. Il codice e' l'unico mapping eseguibile: niente PROT_EXEC.
+#[inline]
+pub fn mprotect(addr: usize, len: usize, prot: u64) -> Result<(), ()> {
+    let r = unsafe { syscall4(SYS_MPROTECT, addr as u64, len as u64, prot, 0) };
+    if r < 0 {
+        Err(())
+    } else {
+        Ok(())
+    }
+}
+
 
 /// Termina il processo corrente con il codice `code`. Non ritorna.
 #[inline]
