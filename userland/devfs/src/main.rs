@@ -23,11 +23,8 @@ use libr::{DEV_CLOSE, DEV_NULL, DEV_OPEN, DEV_READ, DEV_READDIR, DEV_WRITE, DEV_
 
 const REQ_RING_VA: u64 = libr::CLI_REQ_VA;
 const RESP_RING_VA: u64 = libr::CLI_RESP_VA;
-const RING_DATA_CAP: usize = 4088;
-const RING_HEAD: usize = 0xFF8;
-const RING_TAIL: usize = 0xFFC;
-
-const ERR: u64 = !0u64;
+// Geometria ring + errore IPC (A1): single source in `libr`.
+use libr::{ERR, RING_DATA_CAP, RING_HEAD, RING_TAIL};
 
 /// Consuma `count` byte di payload dalla request ring del client (a
 /// REQ_RING_VA) avanzando la tail di (20 + count). I dati di un WRITE a

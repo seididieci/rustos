@@ -746,16 +746,17 @@ pub const CLI_REQ_VA: u64 = 0x0000_4000_0022_0000;
 pub const CLI_RESP_VA: u64 = 0x0000_4000_0023_0000;
 /// Capacita' dati per ring (4088 byte; gli ultimi 8 byte della pagina
 /// 4KiB = head + tail a 0xFF8/0xFFC, fuori dall'area dati).
-const RING_DATA_CAP: usize = 4088;
+/// Single source (A1): prima duplicata in userfs/userdisk/devfs/console/tty/kbd.
+pub const RING_DATA_CAP: usize = 4088;
 /// Dimensione massima di un payload dati in un singolo frame del ring.
 /// Il response frame occupa 16 B di header: il payload utile massimo e'
 /// RING_DATA_CAP - 16. Un valore sotto il massimo lascia margine per il
 /// wrap e per eventuali frame non ancora letti.
-const RING_MAX_PAYLOAD: usize = 4000;
+pub const RING_MAX_PAYLOAD: usize = 4000;
 /// Offset head nel ring page.
-const RING_HEAD: usize = 0xFF8;
+pub const RING_HEAD: usize = 0xFF8;
 /// Offset tail nel ring page.
-const RING_TAIL: usize = 0xFFC;
+pub const RING_TAIL: usize = 0xFFC;
 
 // ── Tag delle operazioni (nel frame del ring, non nell'IPC) ────────
 // Single source in `syscall-numbers` (Fase 17): prima duplicati qui, in
@@ -789,10 +790,12 @@ pub use syscall_numbers::{
     DEV_READDIR, DEV_WRITE, DEV_ZERO,
 };
 
-const ERR: u64 = !0u64;
-/// Deve combaciare con `ERR_NOHANDSHAKE` di userfs: il server non conosce i
-/// nostri ring (riavviato dopo la registrazione) → rifare handshake + 1 redo.
-const ERR_NOHANDSHAKE: u64 = !0u64 - 1;
+/// Valore di errore IPC: tutti i bit a 1 (equivalente unsigned di -1).
+/// Single source (A1): prima duplicata in ogni server userland + usertest-client.
+pub const ERR: u64 = !0u64;
+/// Il server non conosce (piu') i nostri ring (es. riavviato dopo la
+/// registrazione) → rifare handshake + 1 redo.
+pub const ERR_NOHANDSHAKE: u64 = !0u64 - 1;
 
 static FS_INITED: AtomicBool = AtomicBool::new(false);
 
@@ -839,7 +842,7 @@ fn fs_chan() -> i64 {
 // ── Ring I/O helpers ──────────────────────────────────────────────
 
 /// Legge head e tail dal ring a `ring_va`.
-unsafe fn ring_positions(ring_va: u64) -> (u32, u32) {
+pub unsafe fn ring_positions(ring_va: u64) -> (u32, u32) {
     let head = unsafe { core::ptr::read_volatile((ring_va + RING_HEAD as u64) as *const u32) };
     let tail = unsafe { core::ptr::read_volatile((ring_va + RING_TAIL as u64) as *const u32) };
     (head, tail)
@@ -847,7 +850,7 @@ unsafe fn ring_positions(ring_va: u64) -> (u32, u32) {
 
 /// Quanti byte di dati sono disponibili nel ring (producer=head, consumer=tail).
 /// Head e tail sono wrapped in [0, RING_DATA_CAP).
-fn ring_available(head: u32, tail: u32) -> usize {
+pub fn ring_available(head: u32, tail: u32) -> usize {
     ((head + RING_DATA_CAP as u32 - tail) % RING_DATA_CAP as u32) as usize
 }
 

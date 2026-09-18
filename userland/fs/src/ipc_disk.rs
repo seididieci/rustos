@@ -38,11 +38,8 @@ const DISK_REQ_VA: u64 = 0x0000_4000_0024_0000;
 const DISK_RESP_VA: u64 = 0x0000_4000_0025_0000;
 /// Bound nomi di resolve (deve combaciare con `DISK_MAX_NAME` di userdisk).
 const DISK_MAX_NAME: usize = 16;
-const RING_DATA_CAP: usize = 4088;
-const RING_HEAD: usize = 0xFF8;
-const RING_TAIL: usize = 0xFFC;
-
-const ERR: u64 = !0u64;
+// Geometria ring + errore IPC (A1): single source in `libr`.
+use libr::{ERR, RING_DATA_CAP, RING_HEAD, RING_TAIL};
 /// Bound attesa userdisk a boot/restart (~5 s, come `wait_ready` di init).
 const HELLO_BOUND_TICKS: i64 = 500;
 /// P1.2 — settori max per IPC DISK (bound del ring: 8 + 7*512 = 3592 nella

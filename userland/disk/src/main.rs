@@ -88,11 +88,8 @@ const CLI_REQ: u64 = libr::CLI_REQ_VA;
 const CLI_RESP: u64 = libr::CLI_RESP_VA;
 const DISK_REQ_VA: u64 = 0x0000_4000_0024_0000;
 const DISK_RESP_VA: u64 = 0x0000_4000_0025_0000;
-const RING_DATA_CAP: usize = 4088;
-const RING_HEAD: usize = 0xFF8;
-const RING_TAIL: usize = 0xFFC;
-
-const ERR: u64 = !0u64;
+// Geometria ring + errore IPC (A1): single source in `libr`.
+use libr::{ERR, RING_DATA_CAP, RING_HEAD, RING_TAIL};
 
 /// Scrive un response frame `[result:8][w1:8][payload]` nel ring DISK.
 unsafe fn disk_resp_write(result: u64, w1: u64, payload: &[u8]) {

@@ -41,10 +41,8 @@ use libr::KBD_NOTIFY;
 // con i ring del client a ogni relay DEV).
 
 const RESP_RING_VA: u64 = libr::CLI_RESP_VA;
-const RING_DATA_CAP: usize = 4088;
-const RING_HEAD: usize = 0xFF8;
-
-const ERR: u64 = !0u64;
+// Geometria ring + errore IPC (A1): single source in `libr`.
+use libr::{ERR, RING_DATA_CAP, RING_HEAD};
 
 // ── Porte PS/2 ──────────────────────────────────────────────────────
 
