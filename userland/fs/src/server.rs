@@ -114,6 +114,14 @@ pub extern "C" fn _start() -> ! {
             if op_tag == R_REGISTER && payload_len > 0 && payload_len <= 514 {
                 let mut prefix_buf = [0u8; 514];
                 rings::req_ring_read_payload(&mut prefix_buf, payload_len);
+                // Fase 35 (hardening): policy sui mount registrati dinamicamente.
+                // (a) solo sotto `/dev/` (niente hijack di `/` o voci rogue a
+                // root); (b) il replace di un prefix esistente solo da un figlio
+                // di init (i driver veri lo sono): impedisce a un processo
+                // qualsiasi di squattare `/dev/null` dopo un kill.
+                let caller = libr::peer_pid(chan).unwrap_or(-1);
+                let init_child = caller >= 0
+                    && matches!(libr::ps_info(caller as u32), Some(e) if e.parent == Some(1));
                 // Payload = uno o piu' prefix NUL-separati (Fase 16d): devfs
                 // registra "/dev/null\0/dev/zero" con UNA sola IPC, cosi' non
                 // esiste una finestra in cui un mount e' forwardable mentre il
@@ -126,10 +134,29 @@ pub extern "C" fn _start() -> ! {
                         Ok(p) => p,
                         Err(_) => continue,
                     };
+                    if !prefix.starts_with("/dev/") {
+                        println!("[userfs] FS_REGISTER rifiutato: '{}' fuori /dev/", prefix);
+                        continue;
+                    }
                     // Idempotente sul prefix (init-restart): se il prefix era
                     // gia' registrato (driver morto non ancora purgato o double
                     // register), sostituisci invece di duplicare — lo stale
-                    // avvelenerebbe resolve_mount (first-match).
+                    // avvelenerebbe resolve_mount (first-match). Fase 35: il
+                    // replace di un prefix di un driver VIVO richiede un figlio
+                    // di init; un driver morto (canale invalidato) puo' sempre
+                    // essere rimpiazzato (riconnessione legittima).
+                    let existing = mounts.iter().find(|m| m.prefix.as_str() == prefix).map(|m| m.driver_chan);
+                    let stale = match existing {
+                        Some(dc) => libr::peer_pid(dc).is_err(), // driver morto
+                        None => true,
+                    };
+                    if existing.is_some() && !init_child && !stale {
+                        println!(
+                            "[userfs] FS_REGISTER replace '{}' rifiutato (pid {} non figlio di init, driver vivo)",
+                            prefix, caller
+                        );
+                        continue;
+                    }
                     mounts.retain(|m| m.prefix.as_str() != prefix);
                     mounts.push(mount_legacy::Mount {
                         prefix: String::from(prefix),

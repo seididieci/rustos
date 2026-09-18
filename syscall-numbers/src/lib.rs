@@ -107,6 +107,12 @@ pub const SYS_TEXT_STATS: u64 = 44;
 /// `(0, canale_nascita)` (il figlio usa il canale 0 = `CHANNEL_PARENT`); -1
 /// se non c'e' un PID libero o il pool canali e' esaurito.
 pub const SYS_FORK: u64 = 45;
+/// `peer_pid(chan)`: pid del peer del canale `chan` (0 = canale di nascita,
+/// come `send`/`recv`), o -1 se il canale non esiste/`chan` non ne fa parte
+/// (Fase 35, hardening: i server possono attribuire una richiesta a un
+/// processo — es. la policy `FS_REGISTER` di userfs distingue i figli di
+/// init). Non rivela nulla che `ps_info` non mostri gia'.
+pub const SYS_PEER_PID: u64 = 46;
 /// Protezioni `mmap`/`mprotect` (29: NONE/R/RW con enforcement; W solo e
 /// PROT_EXEC rifiutati — eseguibile solo il codice di spawn).
 pub const PROT_NONE: u64 = 0x0;
