@@ -878,6 +878,63 @@ unsafe fn ring_read_at(ring_va: u64, tail: u32, dst: &mut [u8], count: usize) {
     }
 }
 
+// ── Frame helpers lato server (A2) ─────────────────────────────────
+// Prima identici in devfs/console/tty/kbd/disk: operano sulla response/
+// request ring DEL CLIENT (VA parametrica, mappata da userfs via `map_in`).
+// Formato response `[len:8][0:8][payload]`, request `[tag:4][w0:8][w1:8]
+// [payload]` (header 20 B). Diversi dai frame FS di userfs (`[result:8]
+// [w1:8]`), che restano locali al server.
+
+/// Scrive un response frame `[len:8][0:8][payload]` nel ring a `resp_va`.
+pub unsafe fn resp_frame_write(resp_va: u64, data: &[u8]) {
+    let frame_len = 16 + data.len();
+    unsafe {
+        let (head, _tail) = ring_positions(resp_va);
+        let mut hdr = [0u8; 16];
+        hdr[0..8].copy_from_slice(&(data.len() as u64).to_le_bytes());
+        hdr[8..16].copy_from_slice(&0u64.to_le_bytes());
+        let dst = resp_va as *mut u8;
+        for (i, byte) in hdr.iter().enumerate() {
+            let p = ((head as usize) + i) % RING_DATA_CAP;
+            core::ptr::write_volatile(dst.add(p), *byte);
+        }
+        for (i, byte) in data.iter().enumerate() {
+            let p = ((head as usize) + 16 + i) % RING_DATA_CAP;
+            core::ptr::write_volatile(dst.add(p), *byte);
+        }
+        let new_head = ((head as usize) + frame_len) % RING_DATA_CAP;
+        core::ptr::write_volatile((resp_va + RING_HEAD as u64) as *mut u32, new_head as u32);
+    }
+}
+
+/// Consuma `count` byte di payload dalla request ring a `req_va`, avanzando
+/// la tail di (20 + count). I dati vengono scartati, ma la tail va comunque
+/// avanzata o il prossimo request dello stesso client verrebbe letto male.
+pub unsafe fn req_frame_consume(req_va: u64, count: usize) {
+    unsafe {
+        let tail = core::ptr::read_volatile((req_va + RING_TAIL as u64) as *const u32);
+        let new_tail = ((tail as usize) + 20 + count) % RING_DATA_CAP;
+        core::ptr::write_volatile((req_va + RING_TAIL as u64) as *mut u32, new_tail as u32);
+    }
+}
+
+/// Legge `count` byte di payload dalla request ring a `req_va` (dopo l'header
+/// frame da 20 B) e avanza la tail di (20 + letti). Ritorna i byte letti.
+pub unsafe fn req_frame_read(req_va: u64, dst: &mut [u8], count: usize) -> usize {
+    unsafe {
+        let (_head, tail) = ring_positions(req_va);
+        let src = req_va as *const u8;
+        let n = count.min(dst.len());
+        for i in 0..n {
+            let p = ((tail as usize) + 20 + i) % RING_DATA_CAP;
+            dst[i] = core::ptr::read_volatile(src.add(p));
+        }
+        let new_tail = ((tail as usize) + 20 + n) % RING_DATA_CAP;
+        core::ptr::write_volatile((req_va + RING_TAIL as u64) as *mut u32, new_tail as u32);
+        n
+    }
+}
+
 /// Scrive un frame nel request ring. Formato: [tag:4][w0:8][w1:8][payload].
 /// Ritorna true se il frame e' stato scritto, false se non c'e' spazio.
 fn req_ring_write(tag: u32, w0: u64, w1: u64, payload: &[u8]) -> bool {

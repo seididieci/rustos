@@ -88,8 +88,9 @@ const CLI_REQ: u64 = libr::CLI_REQ_VA;
 const CLI_RESP: u64 = libr::CLI_RESP_VA;
 const DISK_REQ_VA: u64 = 0x0000_4000_0024_0000;
 const DISK_RESP_VA: u64 = 0x0000_4000_0025_0000;
-// Geometria ring + errore IPC (A1): single source in `libr`.
+// Geometria ring + errore IPC (A1) + frame helpers (A2): single source in `libr`.
 use libr::{ERR, RING_DATA_CAP, RING_HEAD, RING_TAIL};
+use libr::{req_frame_consume, resp_frame_write};
 
 /// Scrive un response frame `[result:8][w1:8][payload]` nel ring DISK.
 unsafe fn disk_resp_write(result: u64, w1: u64, payload: &[u8]) {
@@ -110,28 +111,6 @@ unsafe fn disk_resp_write(result: u64, w1: u64, payload: &[u8]) {
         }
         let new_head = ((head as usize) + frame_len) % RING_DATA_CAP;
         core::ptr::write_volatile((DISK_RESP_VA + RING_HEAD as u64) as *mut u32, new_head as u32);
-    }
-}
-
-/// Scrive dati nella response ring del client relay (a CLI_RESP, come kbd).
-unsafe fn resp_ring_write_client(data: &[u8]) {
-    let frame_len = 16 + data.len();
-    unsafe {
-        let head = core::ptr::read_volatile((CLI_RESP + RING_HEAD as u64) as *const u32);
-        let mut hdr = [0u8; 16];
-        hdr[0..8].copy_from_slice(&(data.len() as u64).to_le_bytes());
-        hdr[8..16].copy_from_slice(&0u64.to_le_bytes());
-        let dst = CLI_RESP as *mut u8;
-        for (i, byte) in hdr.iter().enumerate() {
-            let p = ((head as usize) + i) % RING_DATA_CAP;
-            core::ptr::write_volatile(dst.add(p), *byte);
-        }
-        for (i, byte) in data.iter().enumerate() {
-            let p = ((head as usize) + 16 + i) % RING_DATA_CAP;
-            core::ptr::write_volatile(dst.add(p), *byte);
-        }
-        let new_head = ((head as usize) + frame_len) % RING_DATA_CAP;
-        core::ptr::write_volatile((CLI_RESP + RING_HEAD as u64) as *mut u32, new_head as u32);
     }
 }
 
@@ -232,17 +211,6 @@ fn disk_req_read_multi(out: &mut [u8]) -> Option<usize> {
         let new_tail = (t + 8 + count * 512) % RING_DATA_CAP;
         core::ptr::write_volatile((DISK_REQ_VA + RING_TAIL as u64) as *mut u32, new_tail as u32);
         Some(count)
-    }
-}
-
-/// Consuma `count` byte di payload WRITE dal request ring del client relay
-/// (avanza la tail di 20 + count): anche rifiutando la scrittura la tail va
-/// avanzata o il prossimo request del client e' male (come devfs).
-unsafe fn req_ring_consume_client(count: usize) {
-    unsafe {
-        let tail = core::ptr::read_volatile((CLI_REQ + RING_TAIL as u64) as *const u32);
-        let new_tail = ((tail as usize) + 20 + count) % RING_DATA_CAP;
-        core::ptr::write_volatile((CLI_REQ + RING_TAIL as u64) as *mut u32, new_tail as u32);
     }
 }
 
@@ -1023,7 +991,7 @@ pub extern "C" fn _start() -> ! {
                 if nsec == 0 {
                     // EOF o count < 512: frame vuoto + 0 (come /dev/null), mai
                     // wedge il client (lezione fix kbd/tty).
-                    unsafe { resp_ring_write_client(&[]) };
+                    unsafe { resp_frame_write(CLI_RESP, &[]) };
                     Some(0)
                 } else {
                     let mut buf = [0u8; 4096];
@@ -1041,7 +1009,7 @@ pub extern "C" fn _start() -> ! {
                         None
                     } else {
                         let n = ok * 512;
-                        unsafe { resp_ring_write_client(&buf[..n]) };
+                        unsafe { resp_frame_write(CLI_RESP, &buf[..n]) };
                         fds.insert(msg.w0 as u32, (handle, pos + n as u64));
                         Some(n as u64)
                     }
@@ -1050,7 +1018,7 @@ pub extern "C" fn _start() -> ! {
             DEV_WRITE => {
                 // Read-only: consuma comunque il payload (tail!) e rifiuta.
                 let count = msg.w1 as usize;
-                unsafe { req_ring_consume_client(count) };
+                unsafe { req_frame_consume(CLI_REQ, count) };
                 None
             }
             DEV_CLOSE => {
@@ -1065,7 +1033,7 @@ pub extern "C" fn _start() -> ! {
                 // e' userfs su relay del prefix stesso: rel non disponibile qui,
                 // quindi si elencano i figli di TUTTI i dischi? No: senza rel,
                 // risposta vuota conservativa (t32 usa open/read diretti).
-                unsafe { resp_ring_write_client(&[]) };
+                unsafe { resp_frame_write(CLI_RESP, &[]) };
                 Some(0)
             }
             _ => None,

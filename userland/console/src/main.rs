@@ -140,50 +140,8 @@ unsafe fn vga_write_char(vga: *mut Buffer, byte: u8, cursor: &mut usize) {
 
 const REQ_RING_VA: u64 = libr::CLI_REQ_VA;
 const RESP_RING_VA: u64 = libr::CLI_RESP_VA;
-// Geometria ring (A1) + `ring_positions` (A1): single source in `libr`.
-use libr::{RING_DATA_CAP, RING_HEAD, RING_TAIL, ring_positions};
-
-/// Scrive dati nella response ring del client (a RESP_RING_VA).
-unsafe fn resp_ring_write_client(data: &[u8]) {
-    let frame_len = 16 + data.len();
-    unsafe {
-        let (head, _tail) = ring_positions(RESP_RING_VA);
-        let mut hdr = [0u8; 16];
-        hdr[0..8].copy_from_slice(&(data.len() as u64).to_le_bytes());
-        hdr[8..16].copy_from_slice(&0u64.to_le_bytes());
-        let dst = RESP_RING_VA as *mut u8;
-        for (i, byte) in hdr.iter().enumerate() {
-            let p = ((head as usize) + i) % RING_DATA_CAP;
-            core::ptr::write_volatile(dst.add(p), *byte);
-        }
-        for (i, byte) in data.iter().enumerate() {
-            let p = ((head as usize) + 16 + i) % RING_DATA_CAP;
-            core::ptr::write_volatile(dst.add(p), *byte);
-        }
-        let new_head = ((head as usize) + frame_len) % RING_DATA_CAP;
-        core::ptr::write_volatile((RESP_RING_VA + RING_HEAD as u64) as *mut u32, new_head as u32);
-    }
-}
-
-/// Legge `count` byte di payload dalla request ring del client (a REQ_RING_VA)
-/// e avanza la tail di (20 + count): il frame request e' [tag:4][fd:8][count:8]
-/// seguito da `count` byte di dati. Ritorna il numero di byte letti.
-unsafe fn req_ring_read_client(dst: &mut [u8], count: usize) -> usize {
-    unsafe {
-        let (_head, tail) = ring_positions(REQ_RING_VA);
-        let src = REQ_RING_VA as *const u8;
-        let n = count.min(dst.len());
-        for i in 0..n {
-            let p = ((tail as usize) + 20 + i) % RING_DATA_CAP; // salta header frame (20 B)
-            dst[i] = core::ptr::read_volatile(src.add(p));
-        }
-        // Consuma il frame (header + payload): la tail deve avanzare o il ring
-        // resta pieno e il client non puo' piu' scrivere.
-        let new_tail = ((tail as usize) + 20 + n) % RING_DATA_CAP;
-        core::ptr::write_volatile((REQ_RING_VA + RING_TAIL as u64) as *mut u32, new_tail as u32);
-        n
-    }
-}
+// Geometria ring (A1) + frame helpers (A2): single source in `libr`.
+use libr::{req_frame_read, resp_frame_write};
 
 // ── Entry point ──────────────────────────────────────────────────────
 
@@ -276,7 +234,7 @@ pub extern "C" fn _start() -> ! {
                         // Output-only: EOF immediato (frame vuoto + 0), come
                         // /dev/null. Frame SEMPRE (anche vuoto): il client
                         // distingue "0 byte" da "ring vuoto" solo dal frame.
-                        unsafe { resp_ring_write_client(&[]); }
+                        unsafe { resp_frame_write(RESP_RING_VA, &[]); }
                         let _ = libr::reply(msg.tag, 0, 0);
                     }
 
@@ -287,7 +245,7 @@ pub extern "C" fn _start() -> ! {
                         if count > 0 {
                             let mut data = alloc::vec::Vec::with_capacity(count);
                             data.resize(count, 0);
-                            unsafe { req_ring_read_client(&mut data, count); }
+                            unsafe { req_frame_read(REQ_RING_VA, &mut data, count); }
                             for b in &data {
                                 unsafe { vga_write_char(vga, *b, &mut cursor) };
                             }

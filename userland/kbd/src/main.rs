@@ -41,8 +41,8 @@ use libr::KBD_NOTIFY;
 // con i ring del client a ogni relay DEV).
 
 const RESP_RING_VA: u64 = libr::CLI_RESP_VA;
-// Geometria ring + errore IPC (A1): single source in `libr`.
-use libr::{ERR, RING_DATA_CAP, RING_HEAD};
+// Geometria ring + errore IPC (A1): single source in `libr` (ERR ancora usato).
+use libr::ERR;
 
 // ── Porte PS/2 ──────────────────────────────────────────────────────
 
@@ -194,31 +194,8 @@ fn drain_hw(q: &mut ScanQueue) {
     }
 }
 
-/// Scrive dati nella response ring del client (a RESP_RING_VA), come devfs.
-unsafe fn resp_ring_write_client(data: &[u8]) {
-    let frame_len = 16 + data.len();
-    unsafe {
-        let (head, _tail) = {
-            let h = core::ptr::read_volatile((RESP_RING_VA + RING_HEAD as u64) as *const u32);
-            let t = core::ptr::read_volatile((RESP_RING_VA + 0xFFC) as *const u32);
-            (h, t)
-        };
-        let mut hdr = [0u8; 16];
-        hdr[0..8].copy_from_slice(&(data.len() as u64).to_le_bytes());
-        hdr[8..16].copy_from_slice(&0u64.to_le_bytes());
-        let dst = RESP_RING_VA as *mut u8;
-        for (i, byte) in hdr.iter().enumerate() {
-            let p = ((head as usize) + i) % RING_DATA_CAP;
-            core::ptr::write_volatile(dst.add(p), *byte);
-        }
-        for (i, byte) in data.iter().enumerate() {
-            let p = ((head as usize) + 16 + i) % RING_DATA_CAP;
-            core::ptr::write_volatile(dst.add(p), *byte);
-        }
-        let new_head = ((head as usize) + frame_len) % RING_DATA_CAP;
-        core::ptr::write_volatile((RESP_RING_VA + RING_HEAD as u64) as *mut u32, new_head as u32);
-    }
-}
+// Frame helper response (A2): single source in `libr` (prima identica qui).
+use libr::resp_frame_write;
 
 /// Assicura il mount "/dev/kbd" presso userfs (stesso pattern di devfs,
 /// `ensure_mounted`): attende Fs via soli lookup, poi UN tentativo; se
@@ -313,14 +290,14 @@ pub extern "C" fn _start() -> ! {
                             let count = (m.w1 as usize).min(256);
                             let mut buf = [0u8; 256];
                             let n = queue.drain_into(&mut buf[..count]);
-                            unsafe { resp_ring_write_client(&buf[..n]); }
+                            unsafe { resp_frame_write(RESP_RING_VA, &buf[..n]); }
                             Some(n as u64)
                         }
                         DEV_WRITE => None,
                         DEV_CLOSE => Some(0),
                         DEV_READDIR => {
                             let entry = b"kbd\0";
-                            unsafe { resp_ring_write_client(entry); }
+                            unsafe { resp_frame_write(RESP_RING_VA, entry); }
                             Some(1)
                         }
                         _ => None,
