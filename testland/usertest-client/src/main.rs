@@ -105,6 +105,10 @@ const MODE_FORKDEMO: u64 = 21;
 // kill (il kill diretto e' parent-scoped: nessuno puo' pulirlo da fuori dopo
 // il reparent a init).
 const MODE_ORPHAN: u64 = 22;
+// Fase 35 (hardening, t50): tentativi ostili che DEVONO fallire — kill di un
+// pid non-figlio (w1) e register di un servizio di sistema (`Init`) da un
+// processo non figlio di init. Riporta T_DONE(ok, detail) coi due esiti.
+const MODE_HARDEN: u64 = 23;
 
 // Tag DEV_* + errore IPC (A1): single source in `libr` (prima letterali qui).
 use libr::{DEV_CLOSE, DEV_OPEN, ERR};
@@ -320,6 +324,7 @@ pub extern "C" fn _start() -> ! {
                 MODE_SHMDEMO => run_shmdemo(rounds as u32),
                 MODE_COWDEMO => run_cowdemo(rounds as u32),
                 MODE_FORKDEMO => run_forkdemo(),
+                MODE_HARDEN => run_harden(rounds as i64),
                 _ => (false, 1),
             };
             let _ = libr::send(parent, T_DONE, ok as u64, detail as u64);
@@ -448,6 +453,19 @@ fn run_forkdemo() -> (bool, usize) {
             }
         }
     }
+}
+
+/// Fase 35 (hardening, t50): tentativi ostili che DEVONO essere rifiutati.
+/// `target` = pid di un processo che NON e' nostro figlio (un fratello
+/// spawnato dall'orchestratore): il kill deve fallire (parent-scoped). Poi
+/// proviamo a registrare un servizio di sistema (`Init`) da non-figlio di
+/// init: deve fallire. Ritorna (ok, detail) coi due esiti.
+fn run_harden(target: i64) -> (bool, usize) {
+    let kill_rejected = libr::kill(target, 0).is_err();
+    let reg_rejected = libr::service_register(libr::Service::Init).is_err();
+    let ok = kill_rejected && reg_rejected;
+    let detail = (kill_rejected as usize) | ((reg_rejected as usize) << 1);
+    (ok, detail)
 }
 
 /// Fase 29: provoca un fault di memoria non recuperabile (write su RO,

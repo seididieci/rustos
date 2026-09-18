@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted (piano Fase 35; implementazione nei commit successivi).
+Accepted (implementata, Fase 35 — gate 5/5 + 7/7 + 50/50 + shell 30/30).
+Strato 2 (identità misurata) rimandato alla fase successiva.
 
 ## Context
 

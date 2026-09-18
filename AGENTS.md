@@ -1295,6 +1295,39 @@ rustos/
     syscall, walk dell'address space, risorse); va scoped con i caveat di 34.2.
     Valore: abilita il modello processi POSIX-like e il parallelismo per
     processo; non throughput.
+- [x] Fase 35: hardening (threat model + cancelli kernel; ADR-0025/0026).
+  - Motivazione: modello cooperativo da ricerca; con `exec`+shell che lancia
+    programmi di terzi servono difese. Avversario primario: programma locale
+    malevolo. ADR-0025 fissa l'identità (nucleo unico, modello nativo,
+    POSIX come personalità/traduzione); ADR-0026 il threat model e i cancelli.
+  - [x] 35.0 Docs: ADR-0025 (modello nativo + POSIX personalità) e ADR-0026
+    (threat model + hardening) + SUMMARY.
+  - [x] 35.1 Bounce servizi via init (`INIT_BOUNCE` 0x7F, libr::init_bounce):
+    i test di restart (t27/t28/t32/t30) guidano il caos tramite init invece
+    di killare direttamente (uccidere un server supervisionato e' da
+    supervisore). Init risponde con reply; il restart avviene per la via
+    normale (EXIT_NOTIFY → restart_service).
+  - [x] 35.2 Kill parent-scoped: solo parent o init (pid 1) puo' killare
+    (`sys_kill` controlla `process_ps(target).parent == me`); helper ORPHAN
+    per t40 (esce da solo dopo la notify di morte del parent). BUG VERO
+    TROVATO: il pool canali assegnava l'id 0, che collide col sentinella
+    `CHANNEL_PARENT` → `lookup` ritornava 0 e i messaggi finivano al parent
+    sbagliato (reply fantasma); ora lo slot 0 non si assegna mai.
+  - [x] 35.3 Register gate: i servizi di sistema si registrano solo da figli
+    di init (`Test` aperto per la suite); impedisce lo squat a slot libero.
+  - [x] 35.4 map_physical/map_in per-proprietà: solo ring page (RING_PHYS, di
+    qualunque processo), scratch dei test (`MAP_TEST_FRAMES` 1→2) e VGA;
+    qualunque altro frame = -1. Chiudeva un sandbox escape totale (RW su
+    qualunque RAM, page table, kernel).
+  - [x] 35.5 `SYS_PEER_PID (46)` + policy `FS_REGISTER` in userfs: prefix solo
+    sotto `/dev/` (niente hijack di `/`), replace di un driver VIVO solo da
+    figlio di init (un driver morto si rimpiazza sempre); t25 migrato a
+    `/dev/tdie`.
+  - [x] 35.6 Test t50 (helper HARDEN: kill non-figlio + register servizio →
+    rifiutati; map_physical RAM kernel → rifiutato; kill devfs non-figlio →
+    rifiutato) + docs (06/11/AGENTS/run-tests, ADR status). Gate
+    5/5 + 7/7 + 50/50 + shell 30/30. Strato 2 (identità misurata: hash nel
+    PCB + peer_info + policy su identità) rimandato alla fase successiva.
 
 ## Important Notes
 
@@ -1325,7 +1358,18 @@ rustos/
   parent. `libr` risolve `Fs`/`Console`/`Devfs` per nome. I messaggi viaggiano
   per channel_id; `reply` e' implicita al messaggio corrente (via `reply_chan`),
   mai per PID. La morte di un endpoint invalida i suoi canali e libera lo slot
-  servizio → riavvio/riuso sicuri.
+  servizio → riavvio/riuso sicuri. Lo slot canale 0 NON si assegna mai (id 0 =
+  sentinella `CHANNEL_PARENT`: assegnarlo faceva risolvere i messaggi al parent
+  sbagliato).
+- **Hardening (Fase 35, ADR-0026)**: cancelli per un avversario "programma
+  locale malevolo" — (1) `kill` solo parent/init (i test di restart guidano il
+  caos via `init_bounce`, non killano i server direttamente); (2) i servizi di
+  sistema si registrano solo da figli di init (`Test` aperto per la suite);
+  (3) `map_physical`/`map_in` solo frame del sistema (ring/scratch/VGA), mai
+  RAM arbitraria; (4) `FS_REGISTER` solo prefix sotto `/dev/`, replace di un
+  driver vivo solo da init-child (`SYS_PEER_PID` 46 per attribuire la
+  richiesta). Il kernel resta neutro (ADR-0025: POSIX e' personalità, non
+  struttura); identità misurata (hash nel PCB) e' lo Strato 2 futuro.
 - **IPC reply implicita**: la reply del server va al peer del canale del
   messaggio correntemente elaborato (fissato da `recv` in `reply_chan`), non
   all'ultimo `send`. Piu' client concorrenti su un server sono quindi
@@ -1470,9 +1514,9 @@ rg '\[bench\]' /tmp/bench-run1.log /tmp/bench-run2.log /tmp/bench-run3.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 7/7
-#   [usertests] PASS 49/49
+#   [usertests] PASS 50/50
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 49/49' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 50/50' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 

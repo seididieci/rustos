@@ -129,6 +129,7 @@ rustos/
 | 32 | Shared text ELF (segmenti immutabili condivisi, ADR-0022) | ✅ Completata |
 | 33 | Infrastruttura COW (frame refcount + COW fault, ADR-0023) | ✅ Completata |
 | 34 | `fork` — COW dell'address space (ADR-0024) | ✅ Completata |
+| 35 | Hardening (threat model + cancelli kernel, ADR-0025/0026) | ✅ Completata |
 
 ## Risorse
 
