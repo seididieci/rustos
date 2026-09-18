@@ -28,7 +28,7 @@
 //!                 server, attende l'EXIT_NOTIFY unificata, poi attende il
 //!                 via-libera T_GO del parent e riporta T_DONE(w0=1, w1=code).
 //!   - 8 MNTDIE:   (Fase 14, t25) driver sacrificale: registra il prefix
-//!                 "/tdie" presso userfs e serve il minimo (DEV_OPEN → fake
+//!                 "/dev/tdie" presso userfs e serve il minimo (DEV_OPEN → fake
 //!                 fd, DEV_CLOSE → ok). T_READY(w0=1) a registrazione avvenuta.
 //!                 Il parent lo killa: userfs deve purgare il mount (altrimenti
 //!                 lo stale avvelena resolve_mount anche dopo re-registrazione).
@@ -241,10 +241,10 @@ pub extern "C" fn _start() -> ! {
             libr::exit(0);
         }
         MODE_MNTDIE => {
-            // Driver sacrificale (t25): registra "/tdie", handshake T_READY e
+            // Driver sacrificale (t25): registra "/dev/tdie", handshake T_READY e
             // serve il minimo. Se la registrazione fallisce: T_READY(w0=0) +
             // exit(1) — il test fallisce rumoroso, mai hang.
-            if libr::fs_register(b"/tdie") < 0 {
+            if libr::fs_register(b"/dev/tdie") < 0 {
                 println!("[utcli] pid={} mntdie: fs_register FAILED", my_pid);
                 let _ = libr::send(parent, T_READY, 0, 0);
                 libr::exit(1);

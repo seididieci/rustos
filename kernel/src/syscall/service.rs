@@ -68,6 +68,27 @@ pub(super) fn sys_service_pid(service_disc: u64) -> i64 {
     }
 }
 
+/// Fase 35 (hardening) — `peer_pid(chan)`: pid del peer del canale `chan`
+/// (0 = canale di nascita, come `send`/`recv`), o -1. I server lo usano per
+/// attribuire una richiesta a un processo (es. la policy `FS_REGISTER` di
+/// userfs: replace di un prefix solo da figli di init). Non rivela nulla in
+/// piu' di `ps_info` (gia' pubblico).
+pub(super) fn sys_peer_pid(chan: usize) -> i64 {
+    let me = current_id() as usize;
+    let real = if chan == syscall_numbers::CHANNEL_PARENT as usize {
+        match crate::sched::parent_channel(me) {
+            Some(c) => c,
+            None => return -1,
+        }
+    } else {
+        chan
+    };
+    match crate::channels::peer(real, me) {
+        Some(p) => p as i64,
+        None => -1,
+    }
+}
+
 /// Converti un discriminant in un `Service` valido.
 fn service_from_disc(disc: u64) -> Option<syscall_numbers::Service> {
     if disc < syscall_numbers::SERVICE_COUNT as u64 {

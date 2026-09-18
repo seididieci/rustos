@@ -105,6 +105,16 @@ pub fn service_pid(service: Service) -> Result<i64, ()> {
     if p < 0 { Err(()) } else { Ok(p) }
 }
 
+/// Fase 35 (hardening) — `peer_pid(chan)`: pid del peer del canale `chan`
+/// (0 = canale di nascita, come `send`/`recv`), o `Err`. I server lo usano
+/// per attribuire una richiesta a un processo (es. la policy `FS_REGISTER` di
+/// userfs distingue i figli di init).
+#[inline]
+pub fn peer_pid(chan: u64) -> Result<i64, ()> {
+    let p = unsafe { syscall4(SYS_PEER_PID, chan, 0, 0, 0) };
+    if p < 0 { Err(()) } else { Ok(p) }
+}
+
 /// Fase 35 (hardening) — `init_bounce(service)`: chiede a init (canale di
 /// nascita, solo per figli di init) di uccidere+riavviare il servizio
 /// supervisionato `service`. Uccidere un server supervisionato e' operazione

@@ -199,7 +199,7 @@ pub fn t_server_death_notify() -> bool {
 }
 
 /// t25 — purge dei mount alla morte di un driver (Fase 14). Un driver
-/// sacrificale MNTDIE registra "/tdie"; il test apre /tdie/null (routing al
+/// sacrificale MNTDIE registra "/dev/tdie"; il test apre /dev/tdie/null (routing al
 /// driver provato), killa il driver e ne registra un secondo sullo stesso
 /// prefix. Senza purge lo stale (primo in lista per resolve_mount)
 /// avvelenerebbe il routing anche dopo la re-registrazione → open fallisce.
@@ -218,9 +218,9 @@ pub fn t_driver_death_mount() -> bool {
         let _ = helpers::wait_exit(d1_chan);
         return false;
     }
-    let fd1 = libr::open("/tdie/null", 0);
+    let fd1 = libr::open("/dev/tdie/null", 0);
     if fd1 < 0 {
-        println!("[usertests] t25: open /tdie/null via D1 FAILED");
+        println!("[usertests] t25: open /dev/tdie/null via D1 FAILED");
         return false;
     }
     if libr::kill(d1_pid as i64, -11).is_err() {
@@ -247,9 +247,9 @@ pub fn t_driver_death_mount() -> bool {
         let _ = helpers::wait_exit(d2_chan);
         return false;
     }
-    let fd2 = libr::open("/tdie/null", 0);
+    let fd2 = libr::open("/dev/tdie/null", 0);
     if fd2 < 0 {
-        println!("[usertests] t25: open /tdie/null via D2 FAILED (mount stale?)");
+        println!("[usertests] t25: open /dev/tdie/null via D2 FAILED (mount stale?)");
         return false;
     }
     // Igiene: chiudi e uccidi D2 (nessun mount orfano per i test/shell dopo).
