@@ -1212,6 +1212,81 @@ velordor/
     `heap_out` +256 (= `32×8`: padding del nuovo campo `text_id` in `Process`),
     piatto e `heap_n=1` → nessun leak. Valore onesto: memoria/architetturale,
     non throughput (lo spawn e' dominato da FS/disco).
+- [ ] Fase 33: infrastruttura COW (frame refcount + COW fault; ADR-0023).
+  - Obiettivo: rendere condivisibili le pagine utente a livello di **frame**
+    (non di oggetto), con copy-on-write al primo write. E' il prerequisito
+    reale di `fork` (Fase 34); il percorso `exec` resta lo split della Fase 32
+    (nessuna duplicazione della parte scrivibile). NOTA: il COW "sull'immagine"
+    di exec (share anche del `.data`) era stato valutato e scartato — per un
+    processo singolo la pagina scritta risulterebbe **duplicata** (copia
+    nell'immagine + copia privata), a fronte di un guadagno trascurabile (la
+    parte scrivibile dei binari e' ~5 KiB).
+  - [ ] 33.1 Frame refcount (`phys_mem.rs`): array refcount di 1 byte/frame
+    allocato a boot **subito dopo la bitmap** (dinamico, stesso schema di
+    `BITMAP_PTR`: evita un `.bss` enorme alle config grandi); `alloc`/
+    `alloc_contiguous` → `ref = 1`; nuovi `deref(frame)` (ref--, a 0 libera) e
+    `deref_contiguous`. `free`/`free_contiguous` restano per i frame a ref 1
+    (page table, stack kernel, ring, text image, shm non-COW). Contatore
+    `cow` (fault COW gestiti) per il test.
+  - [ ] 33.2 COW fault: bit software `USER_COW = 0x400` (bit 10 AVL; `OWNED` e'
+    bit 9). `cow_fault(cr3, addr) -> bool` in `vmm_user/paging.rs`: PTE
+    `present && COW && !W` → alloca un frame (ref 1), copia 4 KiB dal vecchio
+    (via direct map), rimappa `owned|RW|NX` (azzera COW), `deref` il vecchio,
+    `invlpg`; altrimenti `false` (OOM/mismatch → il chiamante uccide). Nel
+    page-fault handler, ramo protection-violation: **prima** `cow_fault` (user
+    E supervisor: il kernel puo' scrivere buffer user), poi kill/halt. Le
+    protection-violation su codice/rodata (senza COW) continuano a uccidere.
+  - [ ] 33.3 Path di free delle foglie user → `deref`:
+    `teardown.rs::free_pt_leaves` e `vma.rs::unmap_user_range` (foglie `owned`)
+    usano `deref` invece di `free`, cosi' un frame condiviso (ref>1) sopravvive
+    al teardown del primo sharer. Gli altri path (page table, kernel stack,
+    ring, text, shm non-COW) restano `free` (ref 1).
+  - [ ] 33.4 Primitiva testabile `shm_map` con flag `MAP_COW`: mappa i frame
+    della regione `RO`+`COW` e **ref++** per mappatura (la regione tiene il ref
+    di allocazione); sul COW fault il frame della regione e' `deref`-ato
+    (quella PTE non lo referenzia piu'); `munmap`/teardown `deref` per i frame
+    ancora condivisi; `shm_release` a 0 `deref_contiguous`. Semantica: due
+    processi mappano la stessa regione COW → **leggono gli stessi dati finche'
+    non scrivono**, poi isolati. (`MAP_COW` nuovo flag in `syscall-numbers`.)
+  - [ ] 33.5 Test + docs: contatore `cow` esposto estendendo `SYS_TEXT_STATS`
+    (rdx = cow; il nome resta, e' un contatore debug) o con `SYS_COW_STATS`
+    dedicata. t48: due helper concorrenti mappano la stessa regione COW →
+    shared-read prima del write, isolamento dopo; `cow > 0`; alla morte dei due
+    la regione e' liberata (no leak, `heap_out` piatto). Gate atteso
+    5/5 + 7/7 + 48/48 + shell 30/30. Docs: ADR-0023, `04-memory.md`,
+    `06-syscalls.md`, `11-testing.md`, questo file, `00-introduzione.md`.
+  - Rischi: l'array refcount e la conversione dei free toccano l'allocatore
+    (percorso critico); il COW fault e' caldo. Mitigazione: `free` invariato per
+    i frame a ref 1, `deref` solo dove serve; test mirati. Valore onesto:
+    prerequisito di `fork`, non throughput.
+- [ ] Fase 34: `fork` — COW dell'address space (ADR-0024; dipende dalla 33).
+  - Obiettivo: `fork()` crea un figlio che condivide l'address space del padre
+    in COW; il padre ritorna il pid del figlio, il figlio ritorna 0.
+  - [ ] 34.1 Syscall `SYS_FORK (45)`: nuovo PID + kernel stack + slot TSS + PCB
+    + address space (PML4). Walk dell'address space del parent pagina per
+    pagina: foglie `owned` → mappa `RO`+`COW` nel figlio **e** rendi
+    `RO`+`COW` anche nel parent, `ref++` (classico COW: entrambi read-only, il
+    primo write copia); pagine non-owned (text image, shm, ring, iniettate) →
+    mappate come nel parent (condivise/read-only, ref dove serve). Contesto del
+    figlio = copia di quello del parent al punto della syscall con `rax = 0`;
+    canale di nascita padre↔figlio (come `spawn`).
+  - [ ] 34.2 Caveat risorse (documentato, grosso): canali IPC, ring FS, fd
+    lato server e registrazioni di servizio **non vivono nell'address space** →
+    il figlio NON li eredita (riceve solo il canale di nascita). Lo stato `libr`
+    del figlio (es. `FS_CHAN`, `REQ_PHYS`) e' una copia COW che punta alle
+    risorse del padre → il figlio deve ripristinarlo (hook `libr::post_fork`)
+    oppure limitarsi a NON usare FS/IPC. Un fork fedele a POSIX (duplicazione
+    canali kernel + tabelle fd nei server) e' una fase a se'.
+  - [ ] 34.3 Test + docs: t49 con un helper che fa `fork`; padre e figlio
+    scrivono un globale COW e verificano l'isolamento (nessuno vede la
+    scrittura dell'altro); il figlio (senza FS/IPC) esce; il teardown di
+    entrambi libera i frame (refcount), no leak. Gate atteso
+    5/5 + 7/7 + 49/49 + shell 30/30. Docs: ADR-0024, `04-memory.md`,
+    `06-syscalls.md`, `11-testing.md`, questo file, `00-introduzione.md`.
+  - Rischi: `fork` e' grande e cross-cutting (contesto CPU al punto della
+    syscall, walk dell'address space, risorse); va scoped con i caveat di 34.2.
+    Valore: abilita il modello processi POSIX-like e il parallelismo per
+    processo; non throughput.
 
 ## Important Notes
 
