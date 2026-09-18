@@ -338,6 +338,42 @@ pub(super) fn vma_clear(pid: usize) {
     }
 }
 
+/// Clona i record VMA da `src` a `dst` (Fase 34, fork): copia i 16 record e
+/// incrementa il refcount di ogni regione condivisa referenziata (`shm_ref`,
+/// una volta per regione distinta — i frame restano referenziati finche' un
+/// sharer vive). Chiamato DOPO il walk delle pagine (che non dipende dai
+/// record) e dopo tutti i passi fallibili: infallibile, nessun unwind.
+pub fn vma_clone(src: usize, dst: usize) {
+    if src >= MAX_PROCS || dst >= MAX_PROCS {
+        return;
+    }
+    let sbase = src * VMA_MAX;
+    let dbase = dst * VMA_MAX;
+    let mut seen = [0u32; 16];
+    let mut n = 0usize;
+    for i in 0..VMA_MAX {
+        let e = unsafe { *core::ptr::addr_of!(VMA_TABLE[sbase + i]) };
+        unsafe { *core::ptr::addr_of_mut!(VMA_TABLE[dbase + i]) = e; }
+        if e.1 != 0 && e.3 != 0 {
+            let id = e.3 as u32;
+            let mut dup = false;
+            for k in 0..n {
+                if seen[k] == id {
+                    dup = true;
+                    break;
+                }
+            }
+            if !dup {
+                if n < seen.len() {
+                    seen[n] = id;
+                    n += 1;
+                }
+                shm::shm_ref(id);
+            }
+        }
+    }
+}
+
 /// Verifica che l'intervallo [addr, addr+len) sia interamente nello spazio
 /// user legalmente accessibile dal kernel: dal codice (USER_CODE) fino al
 /// `heap_brk` corrente del processo (lo heap committato via `sbrk`; le pagine

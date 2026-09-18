@@ -89,6 +89,9 @@ pub fn fs_buf_reg_async() -> i64 {
 /// `read_async`/`write_async` sono wrapper tipizzati; i driver usano questa
 /// direttamente per tag senza wrapper (es. `R_REGISTER`).
 pub fn fs_op_async(ipc_tag: u64, frame_tag: u32, w0: u64, w1: u64, payload: &[u8]) -> i64 {
+    if session::fs_forked() {
+        return -1; // figlio fork: niente FS (34, mai aliasare i ring)
+    }
     if !session::fs_init() || session::fs_async_pending() {
         return -1;
     }

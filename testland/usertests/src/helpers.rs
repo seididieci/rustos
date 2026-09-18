@@ -34,6 +34,9 @@ pub const M_FAULT_CODE: u64 = 19;
 // Fase 33: COW su regione condivisa (l'helper mappa COW, legge il pattern del
 // parent, scrive due pagine → copie private, il parent non deve vederle).
 pub const M_COWDEMO: u64 = 20;
+// Fase 34: fork COW di se stesso (isolamento padre/figlio su globale,
+// report sul canale di nascita, exit 0).
+pub const M_FORKDEMO: u64 = 21;
 
 // VA per i test map_physical/aliasing (zona libera tra USER_FS_BUFFER e lo
 // heap: 0x4000_0020_0000..0x4000_0040_0000).

@@ -364,10 +364,68 @@ impl Process {
         })
     }
 
+    /// Crea un processo **figlio fork** (Fase 34): condivide l'address space del
+    /// padre in COW (walk a carico del chiamante su `child_cr3`), riprende come
+    /// ritorno dalla syscall con `rax = 0` (`saved` punta al fake stack col
+    /// trampoline `fork_child_exit`). Kernel stack, TSS (senza porte: il figlio
+    /// non eredita la bitmap I/O del padre, least privilege) e `text_id` sono
+    /// del chiamante; IPC/ring/fd/canali NON si ereditano (solo il canale di
+    /// nascita, impostato dopo come in `finish_spawn`). Nome, priorita' e
+    /// `req_next` (i req_id divergono dopo il fork) copiati dal padre.
+    ///
+    /// # Safety
+    /// `child_cr3`/`stack_base`/`saved` devono essere validi e del figlio.
+    pub unsafe fn create_fork(
+        name: &'static str,
+        name_owned: [u8; 16],
+        name_len: u8,
+        priority: crate::sched::Priority,
+        req_next: u64,
+        parent_pid: usize,
+        child_cr3: u64,
+        stack_base: u64,
+        kernel_stack_top: u64,
+        saved: CpuContext,
+        tss_slot: usize,
+        tss_sel: SegmentSelector,
+        text_id: u32,
+    ) -> Process {
+        Process {
+            name,
+            name_owned,
+            name_len,
+            priority,
+            state: State::Ready,
+            parent: Some(parent_pid),
+            detached: false,
+            stack_base,
+            cr3: child_cr3,
+            kernel_stack_top,
+            saved,
+            tss_sel,
+            tss_slot,
+            ipc_state: IpcState::None,
+            msg_queue: MsgQueue::new(),
+            parent_chan: None,
+            reply_chan: None,
+            reply_req: 0,
+            req_next,
+            reply_slot: None,
+            pending_wake: false,
+            cbs_server: None,
+            text_id,
+            exit_code: 0,
+            waiting_pid: None,
+            die_peers: [(0, 0); MAX_NOTIFY_PEERS],
+            die_peer_count: 0,
+            ticks_used: 0,
+        }
+    }
+
     /// Alloca uno slot TSS dal pool, lo configura (RSP0 + IST + bitmap I/O) e
     /// ritorna lo SLOT del pool (1-based). Il selettore GDT e' derivabile con
-    /// `gdt::selectors().tss_selector(slot)`.
-    fn alloc_tss(stack_top: u64, io_ranges: &[(u16, u16)]) -> Option<usize> {
+    /// `gdt::selectors().tss_selector(slot)`. (Fase 34: `pub(crate)` per fork.)
+    pub(crate) fn alloc_tss(stack_top: u64, io_ranges: &[(u16, u16)]) -> Option<usize> {
         let slot = crate::gdt::alloc_tss_slot()?;
         crate::gdt::configure_tss(slot, x86_64::VirtAddr::new(stack_top), io_ranges);
         Some(slot)

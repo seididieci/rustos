@@ -366,6 +366,108 @@ pub fn range_has_cow(cr3: u64, vaddr: u64, count: usize) -> bool {
     }
     false
 }
+/// Mappa UNA pagina con flag foglia espliciti (Fase 34, fork): alloca i
+/// livelli mancanti (fallibile: `None` su OOM, mai panic — a differenza dei
+/// mapper di spawn che usano `expect`), poi imposta la foglia. `flags` deve
+/// includere U+P ed eventuali W/NX/OWNED/COW. Ritorna false su OOM.
+pub fn map_leaf_raw(cr3: u64, vaddr: u64, phys: u64, flags: u64) -> bool {
+    let page = vaddr & !(PAGE_SIZE - 1);
+    let l1 = unsafe { entry_at(cr3, pml4_index(page)) };
+    let pdp = if l1 == 0 {
+        match crate::phys_mem::alloc() {
+            Some(f) => {
+                unsafe { zero_frame(f); }
+                unsafe { set_entry(cr3, pml4_index(page), f | USER_PRESENT_WRITABLE); }
+                f
+            }
+            None => return false,
+        }
+    } else { l1 };
+    let l2 = unsafe { entry_at(pdp, pdpt_index(page)) };
+    let pd = if l2 == 0 {
+        match crate::phys_mem::alloc() {
+            Some(f) => {
+                unsafe { zero_frame(f); }
+                unsafe { set_entry(pdp, pdpt_index(page), f | USER_PRESENT_WRITABLE); }
+                f
+            }
+            None => return false,
+        }
+    } else { l2 };
+    let l3 = unsafe { entry_at(pd, pd_index(page)) };
+    let pt = if l3 == 0 {
+        match crate::phys_mem::alloc() {
+            Some(f) => {
+                unsafe { zero_frame(f); }
+                unsafe { set_entry(pd, pd_index(page), f | USER_PRESENT_WRITABLE); }
+                f
+            }
+            None => return false,
+        }
+    } else { l3 };
+    unsafe { set_entry(pt, pt_index(page), phys | flags); }
+    true
+}
+
+/// Converte una foglia owned del padre in condivisa COW (Fase 34, fork):
+/// azzera W, imposta `USER_COW` (resta owned+NX+U+P), `invlpg`. Ritorna
+/// `(phys, child_flags)` — i flag da mappare nel figlio (gia' con COW, senza
+/// W) — se la foglia e' `present && owned`, altrimenti `None` (assente o
+/// non-owned: il chiamante specchia o salta). Walk senza allocare.
+pub fn share_parent_leaf(cr3: u64, vaddr: u64) -> Option<(u64, u64)> {
+    use super::layout::{PTE_ADDR_MASK, USER_COW, USER_OWNED};
+    use super::teardown::raw_entry;
+    let page = vaddr & !(PAGE_SIZE - 1);
+    let l1 = unsafe { entry_at(cr3, pml4_index(page)) };
+    if l1 == 0 {
+        return None;
+    }
+    let l2 = unsafe { entry_at(l1, pdpt_index(page)) };
+    if l2 == 0 {
+        return None;
+    }
+    let l3 = unsafe { entry_at(l2, pd_index(page)) };
+    if l3 == 0 {
+        return None;
+    }
+    let e = unsafe { raw_entry(l3, pt_index(page)) };
+    if e & PTE_PRESENT == 0 || e & USER_OWNED == 0 {
+        return None;
+    }
+    // Gia' COW (es. shm COW della Fase 33): niente da cambiare.
+    let shared = if e & USER_COW != 0 { e } else { (e | USER_COW) & !0x2 };
+    if shared != e {
+        unsafe { set_entry(l3, pt_index(page), shared); }
+        flush_page(page);
+    }
+    Some((PTE_ADDR_MASK & e, shared & !PTE_ADDR_MASK))
+}
+
+/// Legge una foglia (Fase 34, fork): `(phys, flags)` se presente a qualunque
+/// livello (owned o no), `None` se un livello manca o la foglia e' assente.
+/// Walk senza allocare; i flag includono tutto tranne l'indirizzo.
+pub fn read_leaf(cr3: u64, vaddr: u64) -> Option<(u64, u64)> {
+    use super::layout::PTE_ADDR_MASK;
+    use super::teardown::raw_entry;
+    let page = vaddr & !(PAGE_SIZE - 1);
+    let l1 = unsafe { entry_at(cr3, pml4_index(page)) };
+    if l1 == 0 {
+        return None;
+    }
+    let l2 = unsafe { entry_at(l1, pdpt_index(page)) };
+    if l2 == 0 {
+        return None;
+    }
+    let l3 = unsafe { entry_at(l2, pd_index(page)) };
+    if l3 == 0 {
+        return None;
+    }
+    let e = unsafe { raw_entry(l3, pt_index(page)) };
+    if e & PTE_PRESENT == 0 {
+        return None;
+    }
+    Some((PTE_ADDR_MASK & e, e & !PTE_ADDR_MASK))
+}
 
 /// Alloca e mappa lo stack user a `USER_STACK_TOP` (Fase 31: separato dal
 /// caricamento del codice, che ora e' `elf::load`). Ritorna il RSP iniziale.

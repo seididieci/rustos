@@ -1,7 +1,6 @@
 // Split from syscall.rs (byte-identical move; see facade).
 use super::entry::current_id;
 use super::service::finish_spawn;
-
 /// spawn(name_ptr, name_len): crea un nuovo processo dal binario embedded
 /// chiamato `name`. Crea il canale di nascita tra il chiamante (parent) e il
 /// figlio (ADR-0008): il figlio lo eredita come canale 0, e il chiamante riceve
@@ -104,8 +103,7 @@ pub(super) fn sys_spawn_image(img_ptr: u64, img_len: usize, meta_ptr: u64, meta_
         }
     }
     let parent = current_id() as usize;
-    let name_len = meta.name.iter().position(|&b| b == 0).unwrap_or(16);
-    match crate::user_binary::spawn_image(
+    let name_len = meta.name.iter().position(|&b| b == 0).unwrap_or(16);    match crate::user_binary::spawn_image(
         &meta.name[..name_len],
         prio,
         img_ptr as *const u8,
@@ -123,5 +121,23 @@ pub(super) fn sys_spawn_image(img_ptr: u64, img_len: usize, meta_ptr: u64, meta_
             crate::serial_println!("[syscall] spawn_image: creazione fallita");
             -1
         }
+    }
+}
+
+/// fork() (Fase 34, ADR-0024): duplica il chiamante in COW. Nessun argomento.
+/// Ritorna al padre `(pid_figlio, canale_nascita)` — pid in `rax`, canale in
+/// `rdi` via multi-registro (pattern `ring_alloc`/`ps_info`); al figlio `(0,
+/// canale)` (il figlio usa il canale 0 = `CHANNEL_PARENT`). -1 se non c'e' un
+/// PID libero, il pool canali e' esaurito o l'OOM colpisce il walk/stack/TSS.
+pub(super) fn sys_fork() -> i64 {
+    match crate::sched::fork_current() {
+        Some((pid, chan)) => super::dispatch::apply_ipc(crate::sched::IpcResult {
+            rax: pid as i64,
+            rdi: chan as u64,
+            rsi: 0,
+            rdx: 0,
+            r10: 0,
+        }),
+        None => -1,
     }
 }

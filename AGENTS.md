@@ -1236,53 +1236,61 @@ rustos/
     page-fault handler, ramo protection-violation: **prima** `cow_fault` (user
     E supervisor: il kernel puo' scrivere buffer user), poi kill/halt. Le
     protection-violation su codice/rodata (senza COW) continuano a uccidere.
-  - [ ] 33.3 Path di free delle foglie user → `deref`:
+  - [x] 33.3 Path di free delle foglie user → `deref`:
     `teardown.rs::free_pt_leaves` e `vma.rs::unmap_user_range` (foglie `owned`)
     usano `deref` invece di `free`, cosi' un frame condiviso (ref>1) sopravvive
     al teardown del primo sharer. Gli altri path (page table, kernel stack,
     ring, text, shm non-COW) restano `free` (ref 1).
-  - [ ] 33.4 Primitiva testabile `shm_map` con flag `MAP_COW`: mappa i frame
+  - [x] 33.4 Primitiva testabile `shm_map` con flag `MAP_COW`: mappa i frame
     della regione `RO`+`COW` e **ref++** per mappatura (la regione tiene il ref
     di allocazione); sul COW fault il frame della regione e' `deref`-ato
     (quella PTE non lo referenzia piu'); `munmap`/teardown `deref` per i frame
     ancora condivisi; `shm_release` a 0 `deref_contiguous`. Semantica: due
     processi mappano la stessa regione COW → **leggono gli stessi dati finche'
     non scrivono**, poi isolati. (`MAP_COW` nuovo flag in `syscall-numbers`.)
-  - [ ] 33.5 Test + docs: contatore `cow` esposto estendendo `SYS_TEXT_STATS`
-    (rdx = cow; il nome resta, e' un contatore debug) o con `SYS_COW_STATS`
-    dedicata. t48: due helper concorrenti mappano la stessa regione COW →
-    shared-read prima del write, isolamento dopo; `cow > 0`; alla morte dei due
-    la regione e' liberata (no leak, `heap_out` piatto). Gate atteso
+  - [x] 33.5 Test + docs: contatore `cow` esposto estendendo `SYS_TEXT_STATS`
+    (rdx = cow; il nome resta, e' un contatore debug; `libr::cow_count()`).
+    t48: parent mappa normale RW con pattern, helper COWDEMO mappa COW →
+    shared-read, scrive 2 pagine (copie private, `cow` +2), isolamento
+    verificato dal parent; `shm_map_cow` su id inesistente rifiutato; riuso
+    slot + zeri freschi (no leak, `heap_out` piatto a 27904). Gate
     5/5 + 7/7 + 48/48 + shell 30/30. Docs: ADR-0023, `04-memory.md`,
     `06-syscalls.md`, `11-testing.md`, questo file, `00-introduzione.md`.
+    Salvaguardie oltre il piano: `mprotect` a RW con pagine ancora condivise
+    rifiutato (W bypasserebbe il fault); re-map dell'edge PTE-staccata come
+    hole-fill (mai re-map cieco: clobbererebbe le copie private);
+    `ref_available` pre-check two-phase in `sys_shm_map` (mai rollback).
   - Rischi: l'array refcount e la conversione dei free toccano l'allocatore
     (percorso critico); il COW fault e' caldo. Mitigazione: `free` invariato per
     i frame a ref 1, `deref` solo dove serve; test mirati. Valore onesto:
     prerequisito di `fork`, non throughput.
-- [ ] Fase 34: `fork` — COW dell'address space (ADR-0024; dipende dalla 33).
+- [x] Fase 34: `fork` — COW dell'address space (ADR-0024; dipende dalla 33).
   - Obiettivo: `fork()` crea un figlio che condivide l'address space del padre
-    in COW; il padre ritorna il pid del figlio, il figlio ritorna 0.
-  - [ ] 34.1 Syscall `SYS_FORK (45)`: nuovo PID + kernel stack + slot TSS + PCB
-    + address space (PML4). Walk dell'address space del parent pagina per
-    pagina: foglie `owned` → mappa `RO`+`COW` nel figlio **e** rendi
-    `RO`+`COW` anche nel parent, `ref++` (classico COW: entrambi read-only, il
-    primo write copia); pagine non-owned (text image, shm, ring, iniettate) →
-    mappate come nel parent (condivise/read-only, ref dove serve). Contesto del
-    figlio = copia di quello del parent al punto della syscall con `rax = 0`;
-    canale di nascita padre↔figlio (come `spawn`).
-  - [ ] 34.2 Caveat risorse (documentato, grosso): canali IPC, ring FS, fd
-    lato server e registrazioni di servizio **non vivono nell'address space** →
-    il figlio NON li eredita (riceve solo il canale di nascita). Lo stato `libr`
-    del figlio (es. `FS_CHAN`, `REQ_PHYS`) e' una copia COW che punta alle
-    risorse del padre → il figlio deve ripristinarlo (hook `libr::post_fork`)
-    oppure limitarsi a NON usare FS/IPC. Un fork fedele a POSIX (duplicazione
-    canali kernel + tabelle fd nei server) e' una fase a se'.
-  - [ ] 34.3 Test + docs: t49 con un helper che fa `fork`; padre e figlio
-    scrivono un globale COW e verificano l'isolamento (nessuno vede la
-    scrittura dell'altro); il figlio (senza FS/IPC) esce; il teardown di
-    entrambi libera i frame (refcount), no leak. Gate atteso
-    5/5 + 7/7 + 49/49 + shell 30/30. Docs: ADR-0024, `04-memory.md`,
-    `06-syscalls.md`, `11-testing.md`, questo file, `00-introduzione.md`.
+    in COW; il padre ritorna `(pid_figlio, canale)`, il figlio `(0, canale)`.
+  - [x] 34.1 Syscall `SYS_FORK (45)`: nuovo PID + canale di nascita (per primo) +
+    kernel stack + slot TSS (bitmap I/O vuota: nessuna porta ereditata) + PCB +
+    address space (PML4). Walk (`vmm_user::fork_share`, fallibile OOM → unwind):
+    foglie `owned` → `ref_inc` + `RO`+`COW` nel figlio e conversione del padre
+    (ordine: converti → mappa figlio → inc, mai ghost ref); non-owned (text/shm/
+    iniettate) specchiate (`text::add_ref`/`shm_ref`); finestre ring saltate;
+    large-page rifiutate. Contesto figlio = fake kernel stack (11 word a offset
+    noti — l'entry salva anche i callee-saved user) + `fork_child_exit`
+    (full-pop come l'epilogo, `rax = 0`, mai `ipc_override`); VMA/`HEAP_BRK`/
+    `req_next`/priorita'/nome ereditati. Bug veri trovati: deadlock
+    `set_parent_chan` sotto SCHED lock (assegnazione diretta); `fork_child_exit`
+    a 2 pop invece di 11 (rsp/rcx spazzatura → fetch a indirizzo kernel).
+  - [x] 34.2 Caveat risorse (documentato): canali IPC, ring FS (finestre non
+    mappate: uso = kill rumoroso), fd lato server, registrazioni, porte, CBS
+    NON ereditati (solo nascita). `libr::post_fork_child` (chiamato da
+    `libr::fork` nel ramo figlio) avvelena l'FS: ogni op ritorna `Err` (mai
+    aliasing dei ring). `mprotect`-a-RW rifiutato finche' condiviso. Figlio
+    non-detached (segue la cascata). Cessione porte con perdita = fase futura.
+  - [x] 34.3 Test + docs: t49 (helper FORKDEMO: globale COW, shared-read,
+    isolamento bidirezionale, report SYNC sul canale di nascita, exit 0;
+    padre verifica report + EXIT_NOTIFY code 0); teardown entrambi senza leak
+    (frame stabili, `heap_out` piatto a 27904). Gate 5/5 + 7/7 + 49/49 +
+    shell 30/30. Docs: ADR-0024, `04-memory.md`, `06-syscalls.md`,
+    `11-testing.md`, questo file, `00-introduzione.md`.
   - Rischi: `fork` e' grande e cross-cutting (contesto CPU al punto della
     syscall, walk dell'address space, risorse); va scoped con i caveat di 34.2.
     Valore: abilita il modello processi POSIX-like e il parallelismo per
@@ -1462,9 +1470,9 @@ rg '\[bench\]' /tmp/bench-run1.log /tmp/bench-run2.log /tmp/bench-run3.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 7/7
-#   [usertests] PASS 48/48
+#   [usertests] PASS 49/49
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 48/48' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 49/49' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 
