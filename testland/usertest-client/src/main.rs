@@ -97,6 +97,7 @@ const MODE_FAULT_GUARD: u64 = 16;
 const MODE_FAULT_GPF: u64 = 17;
 const MODE_SHMDEMO: u64 = 18;
 const MODE_FAULT_CODE: u64 = 19;
+const MODE_COWDEMO: u64 = 20;
 
 // Tag DEV_* + errore IPC (A1): single source in `libr` (prima letterali qui).
 use libr::{DEV_CLOSE, DEV_OPEN, ERR};
@@ -291,6 +292,7 @@ pub extern "C" fn _start() -> ! {
                 MODE_MAPHAMMER => run_maphammer(rounds),
                 MODE_FLOOD => run_flood(parent),
                 MODE_SHMDEMO => run_shmdemo(rounds as u32),
+                MODE_COWDEMO => run_cowdemo(rounds as u32),
                 _ => (false, 1),
             };
             let _ = libr::send(parent, T_DONE, ok as u64, detail as u64);
@@ -315,6 +317,39 @@ fn run_shmdemo(id: u32) -> (bool, usize) {
         }
     }
     unsafe { core::ptr::write_volatile((base + 4096) as *mut u8, 0xAB); }
+    (true, 0)
+}
+
+/// Fase 33: mappa la regione `id` in COW, verifica il pattern del parent
+/// (shared-read), scrive un marker su ENTRAMBE le pagine (2 COW fault → copie
+/// private) e verifica marker + pattern circostante. Il parent non deve vedere
+/// i marker (isolamento). Esito come `(bool, detail)`.
+fn run_cowdemo(id: u32) -> (bool, usize) {
+    let base = match libr::shm_map_cow(id, 0) {
+        Ok(b) => b,
+        Err(_) => return (false, 1),
+    };
+    for i in 0..8192usize {
+        if unsafe { core::ptr::read_volatile((base + i) as *const u8) } != (i % 251) as u8 {
+            return (false, 2);
+        }
+    }
+    unsafe {
+        core::ptr::write_volatile(base as *mut u8, 0xAB);
+        core::ptr::write_volatile((base + 4096) as *mut u8, 0xCD);
+    }
+    if unsafe { core::ptr::read_volatile(base as *const u8) } != 0xAB {
+        return (false, 3);
+    }
+    if unsafe { core::ptr::read_volatile((base + 4096) as *const u8) } != 0xCD {
+        return (false, 4);
+    }
+    // Il resto del pattern e' intatto attorno ai marker.
+    for i in [1usize, 100, 4095, 4097, 5000, 8191] {
+        if unsafe { core::ptr::read_volatile((base + i) as *const u8) } != (i % 251) as u8 {
+            return (false, 5);
+        }
+    }
     (true, 0)
 }
 

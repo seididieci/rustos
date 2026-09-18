@@ -1212,7 +1212,7 @@ velordor/
     `heap_out` +256 (= `32×8`: padding del nuovo campo `text_id` in `Process`),
     piatto e `heap_n=1` → nessun leak. Valore onesto: memoria/architetturale,
     non throughput (lo spawn e' dominato da FS/disco).
-- [ ] Fase 33: infrastruttura COW (frame refcount + COW fault; ADR-0023).
+- [x] Fase 33: infrastruttura COW (frame refcount + COW fault; ADR-0023).
   - Obiettivo: rendere condivisibili le pagine utente a livello di **frame**
     (non di oggetto), con copy-on-write al primo write. E' il prerequisito
     reale di `fork` (Fase 34); il percorso `exec` resta lo split della Fase 32
@@ -1221,14 +1221,14 @@ velordor/
     processo singolo la pagina scritta risulterebbe **duplicata** (copia
     nell'immagine + copia privata), a fronte di un guadagno trascurabile (la
     parte scrivibile dei binari e' ~5 KiB).
-  - [ ] 33.1 Frame refcount (`phys_mem.rs`): array refcount di 1 byte/frame
+  - [x] 33.1 Frame refcount (`phys_mem.rs`): array refcount di 1 byte/frame
     allocato a boot **subito dopo la bitmap** (dinamico, stesso schema di
     `BITMAP_PTR`: evita un `.bss` enorme alle config grandi); `alloc`/
     `alloc_contiguous` → `ref = 1`; nuovi `deref(frame)` (ref--, a 0 libera) e
     `deref_contiguous`. `free`/`free_contiguous` restano per i frame a ref 1
     (page table, stack kernel, ring, text image, shm non-COW). Contatore
     `cow` (fault COW gestiti) per il test.
-  - [ ] 33.2 COW fault: bit software `USER_COW = 0x400` (bit 10 AVL; `OWNED` e'
+  - [x] 33.2 COW fault: bit software `USER_COW = 0x400` (bit 10 AVL; `OWNED` e'
     bit 9). `cow_fault(cr3, addr) -> bool` in `vmm_user/paging.rs`: PTE
     `present && COW && !W` → alloca un frame (ref 1), copia 4 KiB dal vecchio
     (via direct map), rimappa `owned|RW|NX` (azzera COW), `deref` il vecchio,
@@ -1462,9 +1462,9 @@ rg '\[bench\]' /tmp/bench-run1.log /tmp/bench-run2.log /tmp/bench-run3.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 7/7
-#   [usertests] PASS 47/47
+#   [usertests] PASS 48/48
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 47/47' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 48/48' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 

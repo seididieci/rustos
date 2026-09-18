@@ -23,6 +23,12 @@ pub(super) const USER_LEAF_RO: u64 = 0x4 | 0x1 | PTE_NX; // U + P + NX
 /// (`map_physical`/`map_in`: VGA, ring di un client, scratch) NON hanno il
 /// bit: il loro owner (il processo che le ha allocate) le libera.
 pub(super) const USER_OWNED: u64 = 0x200;
+/// Bit "COW" software sulla PTE (bit 10 AVL, Fase 33): la pagina e' condivisa
+/// in copy-on-write (read-only finche' nessuno scrive; al primo write il fault
+/// handler materializza una copia privata). Sempre insieme a `USER_OWNED` e
+/// senza W: `owned|COW` = "condivisa", `owned` senza COW = privata. Le pagine
+/// non-owned non hanno mai COW (text image, shm non-COW, ring, iniettate).
+pub(super) const USER_COW: u64 = 0x400;
 pub(super) const PAGE_SIZE: u64 = 0x1000;
 
 /// Indirizzo virtuale della finestra request ring del processo corrente.

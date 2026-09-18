@@ -2,7 +2,8 @@
 
 ## Status
 
-Draft (piano Fase 33 — da implementare).
+Accepted (implementata, Fase 33 — gate 5/5 + 7/7 + 48/48 + shell 30/30,
+zero FAIL/PANIC/FAULT).
 
 ## Context
 

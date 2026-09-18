@@ -107,8 +107,9 @@ pub(super) fn sys_cbs_get_info(server_id: u64) -> i64 {
 }
 
 /// Fase 32 — `text_stats()`: contatori shared text per il test (hits/misses/
-/// live). Multi-registro come `cbs_get_info`: rax = hits, rdi = misses,
-/// rsi = live.
+/// live) + Fase 33 `cow` (fault COW gestiti). Multi-registro come
+/// `cbs_get_info`: rax = hits, rdi = misses, rsi = live, rdx = cow.
+/// (Il nome resta storico: e' il contatore debug/test della memoria user.)
 pub(super) fn sys_text_stats() -> i64 {
     let (hits, misses, live) = crate::text::stats();
     unsafe {
@@ -116,6 +117,7 @@ pub(super) fn sys_text_stats() -> i64 {
         (*p).ipc_override = 1;
         (*p).ret_rdi = misses;
         (*p).ret_rsi = live;
+        (*p).ret_rdx = crate::phys_mem::cow_count();
     }
     hits as i64
 }

@@ -109,8 +109,8 @@ La numerazione e' definita nel dispatch di `syscall_handler` in `kernel/src/sysc
 | 40 | `munmap(addr, len)` | smappa VMA intere (Fase 28, niente split: parziali = -1 senza stato) → 0 o -1 |
 | 41 | `mprotect(addr, len, prot)` | cambia le protezioni di VMA intere (Fase 29): RO↔RW flippa il bit W, `PROT_NONE` fa cadere le pagine (riuso a zeri); stesse regole di `munmap`; ritorna 0 o -1 |
 | 42 | `shm_create(len)` | crea una regione di memoria condivisa (Fase 30, max 256 KiB, frame contigui azzerati) → id (>= 1) o -1 |
-| 43 | `shm_map(id, hint, prot, flags)` | mappa la regione condivisa `id` come VMA (prot R/RW, PTE non-owned pre-materializzate): le pagine sono le stesse per tutti i mappatori (scritture visibili); refcount, a 0 i frame sono liberati; ritorna la base o -1 |
-| 44 | `text_stats()` | contatori shared text (Fase 32, debug/test): `hits` in rax, `misses` in rdi, `live` in rsi |
+| 43 | `shm_map(id, hint, prot, flags)` | mappa la regione condivisa `id` come VMA (prot R/RW, PTE non-owned pre-materializzate): le pagine sono le stesse per tutti i mappatori (scritture visibili); refcount, a 0 i frame sono liberati; con `MAP_COW` (Fase 33, solo `PROT_READ`) le pagine sono `RO`+`COW` (stessi frame finche' nessuno scrive, copia privata al primo write) con refcount per-frame; ritorna la base o -1 |
+| 44 | `text_stats()` | contatori shared text (Fase 32, debug/test): `hits` in rax, `misses` in rdi, `live` in rsi; dalla Fase 33 `rdx` = fault COW gestiti (`cow_count`) |
 
 > **Fase 29 (protezioni)**: `PROT_NONE`/`PROT_READ`/`PROT_READ|PROT_WRITE` sono
 > enforced dal page-fault handler. Un fault di protezione da user mode (write
@@ -219,7 +219,8 @@ extern "C" fn syscall_handler() -> i64 {
 | `mprotect` | 41 | Cambia le protezioni di VMA intere (Fase 29: RO↔RW, NONE) |
 | `shm_create` | 42 | Crea una regione di memoria condivisa (Fase 30) → id |
 | `shm_map` | 43 | Mappa una regione condivisa (Fase 30) → base (zero-copy tra processi) |
-| `text_stats` | 44 | Contatori shared text (Fase 32): hits/misses/live |
+| `shm_map_cow` | 43 | Mappa una regione in COW (Fase 33, `MAP_COW`, solo `PROT_READ`) → base (copia privata al primo write) |
+| `text_stats` | 44 | Contatori shared text (Fase 32): hits/misses/live (+ Fase 33: fault COW in rdx) |
 
 `spawn(name_ptr, name_len)` (Fase 8.1 + 13) crea un nuovo processo a partire dal
 binario user embedded il cui nome combacia con `name` (tabella `NAMED_BINARIES`

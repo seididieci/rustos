@@ -202,7 +202,32 @@ con zero-fill lazy (stesso contratto di `sbrk`: VA subito, frame al fault).
 - Il riferimento sta nel PCB (`text_id`) e si rilascia in `reclaim_one` dopo il
   teardown (il walk libera solo le foglie `owned`). Scope refcount-only:
   condivide tra istanze **concorrenti**; una cache persistente e' un follow-up.
-- `text_stats` (syscall 44) espone `hits/misses/live` (debug/test).
+- `text_stats` (syscall 44) espone `hits/misses/live` (debug/test); dalla Fase
+  33 `rdx` = fault COW gestiti (`cow_count`).
+
+## Copy-on-write a livello di frame (Fase 33, ADR-0023)
+
+- **Frame refcount** (`phys_mem.rs`): 1 byte/frame allocato a boot subito dopo
+  la bitmap (dinamico, stesso schema: niente `.bss` enorme). `alloc` = ref 1;
+  `deref` decrementa e libera a 0 (`free` resta per i frame a ref 1). Contatore
+  `cow` (fault gestiti) per il test.
+- **Bit COW** (`USER_COW`, bit 10 AVL): le PTE `owned|COW` senza W sono pagine
+  condivise read-only; al primo write il fault handler tenta **prima**
+  `cow_fault` (user e supervisor): alloca un frame, copia 4 KiB, rimappa
+  `owned|RW|NX`, `deref` il vecchio, `invlpg`. Senza COW (codice/rodata) o a
+  OOM → kill/halt come prima.
+- I free delle foglie user (`teardown`, `vma::unmap_user_range`) usano `deref`:
+  il frame condiviso sopravvive al primo teardown.
+- **Primitiva testabile**: `shm_map` con `MAP_COW` (solo `PROT_READ`) mappa i
+  frame della regione `RO`+`COW` con ref++ per mappatura; `munmap`/teardown
+  rilasciano via `deref`, `shm_release` a 0 via `deref_contiguous`.
+  Salvaguardie: `mprotect` a RW con pagine ancora condivise rifiutato (W
+  bypasserebbe il fault); il re-map dell'edge PTE-staccata e' hole-fill (un
+  re-map cieco clobbererebbe le copie private); ref saturo (255) mai wrappato.
+- Prerequisito di `fork` (Fase 34); il percorso `exec` resta lo split della
+  Fase 32 (il COW sul `.data` dell'immagine duplicherebbe la pagina scritta
+  per un guadagno di ~5 KiB: valutato e scartato).
+
 
 ## Riferimenti
 

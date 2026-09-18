@@ -26,13 +26,14 @@ pub(super) unsafe fn raw_entry(table_phys: u64, idx: usize) -> u64 {
 }
 
 /// Libera le PTE foglia sotto una tabella di livello 3 (PT): solo quelle
-/// `owned` (le altre restano al proprietario).
+/// `owned` (le altre restano al proprietario). Dalla Fase 33 via `deref`:
+/// un frame condiviso in COW (ref>1) sopravvive al teardown del primo sharer.
 unsafe fn free_pt_leaves(pt_phys: u64) {
     for i in 0..512 {
         let e = unsafe { raw_entry(pt_phys, i) };
         if e & PTE_PRESENT != 0 {
             if e & USER_OWNED != 0 {
-                crate::phys_mem::free(PTE_ADDR_MASK & e);
+                crate::phys_mem::deref(PTE_ADDR_MASK & e);
             }
         }
     }

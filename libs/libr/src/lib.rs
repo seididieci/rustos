@@ -64,7 +64,7 @@ pub use syscall_numbers::O_CREAT;
 /// Fase 29 (mmap/mprotect): protezioni + codice di uscita per fault di
 /// memoria, e layout stack condiviso (guard page) per i test.
 pub use syscall_numbers::{
-    FAULT_EXIT_CODE, MMAP_FIXED, PROT_NONE, PROT_READ, PROT_WRITE, USER_CODE,
+    FAULT_EXIT_CODE, MAP_COW, MMAP_FIXED, PROT_NONE, PROT_READ, PROT_WRITE, USER_CODE,
     USER_STACK_FRAMES, USER_STACK_GUARD, USER_STACK_TOP,
 };
 

@@ -14,7 +14,11 @@ const VMA_MAX: usize = 16;
 /// referenzia una regione condivisa, le pagine sono pre-materializzate al
 /// `shm_map` e NON owned — il free e' a refcount). Le pagine anonime vengono
 /// materializzate lazy al fault con i flag del prot (RW → RW, RO → RO, NONE →
-/// mai: fault = kill); owned → il teardown esistente le libera.
+/// mai: fault = kill); owned → il teardown esistente le libera. Le VMA COW
+/// (33.4, `MAP_COW`: `shm != 0`, `prot` = RO) hanno le pagine pre-materializzate
+/// come owned+COW read-only: il primo write fa `cow_fault` (copia privata),
+/// `munmap`/teardown rilasciano via `deref`, `mprotect` a RW con pagine ancora
+/// condivise e' rifiutato.
 static mut VMA_TABLE: [(u64, u64, u8, u8); MAX_PROCS * VMA_MAX] =
     [(0, 0, 0, 0); MAX_PROCS * VMA_MAX];
 /// VMA del processo `pid` che contiene `addr`, se esiste.
@@ -238,6 +242,15 @@ pub fn vma_protect(pid: usize, cr3: u64, addr: u64, len: u64, prot: u8) -> bool 
             }
         }
     }
+    // 33.4: passaggio a RW su pagine ancora condivise in COW = scritture
+    // condivise (rottura dell'isolamento: il W bypasserebbe `cow_fault`).
+    // Rifiutato senza stato; su VMA COW interamente privatizzata (nessun bit
+    // COW rimasto) il flip e' sicuro e procede.
+    if prot & PROT_WRITE as u8 != 0
+        && super::paging::range_has_cow(cr3, addr, (len / PAGE_SIZE) as usize)
+    {
+        return false;
+    }
     // Fase 2: applica (record + PTE).
     for k in 0..n {
         let (b, l, _, s) = unsafe { *core::ptr::addr_of!(VMA_TABLE[pid * VMA_MAX + idxs[k]]) };
@@ -281,8 +294,9 @@ unsafe fn flip_write_bit(cr3: u64, vaddr: u64, count: usize, writable: bool) {
 
 /// Smappa PTE presenti in `[vaddr, vaddr+count*4K)` senza allocare livelli
 /// (tollerante ai buchi: le VMA registrate li hanno, ma mai assumere).
-/// Le foglie owned (pagine materializzate) vengono liberate; le altre solo
-/// staccate. Flush per pagina.
+/// Le foglie owned (pagine materializzate, incluse le condivise COW della Fase
+/// 33) vengono rilasciate via `deref` (il frame condiviso sopravvive); le
+/// altre solo staccate. Flush per pagina.
 unsafe fn unmap_user_range(cr3: u64, vaddr: u64, count: usize) {
     let mut addr = vaddr;
     for _ in 0..count {
@@ -295,7 +309,7 @@ unsafe fn unmap_user_range(cr3: u64, vaddr: u64, count: usize) {
                     let e = unsafe { raw_entry(l3, pt_index(addr)) };
                     if e & PTE_PRESENT != 0 {
                         if e & USER_OWNED != 0 {
-                            crate::phys_mem::free(PTE_ADDR_MASK & e);
+                            crate::phys_mem::deref(PTE_ADDR_MASK & e);
                         }
                         unsafe { set_entry(l3, pt_index(addr), 0); }
                         flush_page(addr);

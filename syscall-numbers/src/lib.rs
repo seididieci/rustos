@@ -108,6 +108,12 @@ pub const PROT_READ: u64 = 0x1;
 pub const PROT_WRITE: u64 = 0x2;
 /// Flag `mmap`: piazza esattamente a `hint` (o fallisci), niente fallback.
 pub const MMAP_FIXED: u64 = 0x1;
+/// Flag `shm_map` (Fase 33, COW): mappa i frame della regione `RO`+`COW`
+/// (copy-on-write) invece che condivisi-scrittibili. Solo con
+/// `prot == PROT_READ` (la scrittura materializza la copia privata al primo
+/// fault). Ogni mappatura COW incrementa il refcount per-frame: due processi
+/// leggono gli stessi dati finche' non scrivono, poi isolati.
+pub const MAP_COW: u64 = 0x2;
 /// Layout stack user condiviso kernel+test (Fase 29, single source qui):
 /// lo stack vive a `USER_STACK_TOP` (cresce verso il basso, 4 frame);
 /// la pagina a `USER_STACK_GUARD` (subito sotto) NON e' mai mappata:

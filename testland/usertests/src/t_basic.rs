@@ -480,6 +480,73 @@ pub fn t_text() -> bool {
     true
 }
 
+/// Fase 33 — COW su regione condivisa: il parent crea una regione (mappata
+/// normale RW) con un pattern; l'helper la mappa COW, legge il pattern
+/// (shared-read) e scrive due pagine (copie private). Il parent non deve
+/// vedere le scritture (isolamento); `cow_count` cresce di 2; alla fine la
+/// regione e' liberata (riuso slot + zeri freschi, come t46).
+pub fn t_cow() -> bool {
+    let id = match libr::shm_create(8192) {
+        Ok(i) => i,
+        Err(_) => return false,
+    };
+    let base = match libr::shm_map(id, 0, libr::PROT_READ | libr::PROT_WRITE) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    for i in 0..8192usize {
+        unsafe { core::ptr::write_volatile((base + i) as *mut u8, (i % 251) as u8); }
+    }
+    let c0 = libr::cow_count();
+    helpers::drain_stray();
+    let (chan, _pid) = match helpers::spawn_cfg(
+        "/fat/test/testcli.bin", "utcli", 16, helpers::M_COWDEMO, id as u64,
+    ) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t48: spawn helper FAILED");
+            return false;
+        }
+    };
+    let (ok, _) = helpers::recv_done(&[chan]);
+    if !ok {
+        println!("[usertests] t48: helper cow FAIL");
+        return false;
+    }
+    // Isolamento: le scritture COW dell'helper non sono visibili al parent.
+    if unsafe { core::ptr::read_volatile(base as *const u8) } != 0 {
+        return false;
+    }
+    if unsafe { core::ptr::read_volatile((base + 4096) as *const u8) } != (4096 % 251) as u8 {
+        return false;
+    }
+    let c1 = libr::cow_count();
+    if c1 < c0 + 2 {
+        println!("[usertests] t48: cow {}->{} (atteso +2)", c0, c1);
+        return false;
+    }
+    if libr::munmap(base, 8192).is_err() {
+        return false;
+    }
+    // Error path: COW su id inesistente rifiutato.
+    if libr::shm_map_cow(9999, 0).is_ok() {
+        return false;
+    }
+    // Riuso: slot e frame liberati (helper morto + munmap), zeri freschi.
+    match libr::shm_create(4096) {
+        Ok(id2) => {
+            let b2 = match libr::shm_map(id2, 0, libr::PROT_READ | libr::PROT_WRITE) {
+                Ok(b) => b,
+                Err(_) => return false,
+            };
+            let zero = unsafe { core::ptr::read_volatile(b2 as *const u8) } == 0;
+            let _ = libr::munmap(b2, 4096);
+            zero
+        }
+        Err(_) => false,
+    }
+}
+
 pub fn t_map_alias() -> bool {    if libr::map_physical(libr::MAP_TEST_PHYS, helpers::VA_A, 1).is_err() {
         return false;
     }
