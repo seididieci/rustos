@@ -118,6 +118,10 @@ pub const USER_STACK_GUARD: u64 = 0x0000_4000_0040_0000 - 5 * 0x1000;
 /// a PROT_NONE, stack overflow nella guard). Il parent lo osserva via
 /// EXIT_NOTIFY (w0). 139 = 128 + 11 (SIGSEGV, convenzione POSIX).
 pub const FAULT_EXIT_CODE: i64 = 139;
+/// Base del codice user (link address del binario ELF, single source
+/// kernel+test): il loader ELF mappa i segmenti al `p_vaddr` di link e
+/// l'entry e' `e_entry`. Prima solo nel kernel (`layout.rs`).
+pub const USER_CODE: u64 = 0x0000_4000_0000_0000;
 /// Flag `SpawnMeta.flags` (Fase 22, detach): il figlio non partecipa alla
 /// cascata di morte del parent — alla morte del parent viene ri-parentato a
 /// init invece di terminare. Deciso dallo spawner (il figlio non puo'

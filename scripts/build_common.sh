@@ -67,7 +67,11 @@ build_one() {
         echo "[build] Installa llvm-tools-preview o aggiungi l'objcopy del toolchain al PATH" >&2
         exit 1
     fi
-    "$OBJCOPY" -O binary --set-section-flags .bss=alloc,load,contents "$ELF" "$OUT"
+    # Fase 31: si embedda/inietta l'ELF (stripped), non piu' il flat `-O binary`.
+    # Il kernel lo carica per-segmento (`kernel/src/elf.rs`, W^X). `--strip-all`
+    # rimuove symtab/debug ma CONSERVA i program header (PT_LOAD). Il nome
+    # output resta `.bin` (il loader sniffa il magic ELF).
+    "$OBJCOPY" --strip-all "$ELF" "$OUT"
 
     local SIZE=$(stat -c %s "$OUT")
     echo "[build] $OUT ($SIZE bytes)"

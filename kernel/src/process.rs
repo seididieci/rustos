@@ -287,25 +287,25 @@ impl Process {
     /// Crea un processo **user** (gira in ring 3, Fase 6.2).
     ///
     /// Alloca il kernel stack (per `RSP0` e i frame di interrupt), crea un
-    /// address space dedicato (`new_address_space`), vi mappa il codice
-    /// `code_phys` (per `code_frames` frame) a `USER_CODE` e lo stack user, e
-    /// prepara un frame CPU ring 3 (`new_context_user`) con `entry` come RIP.
+    /// address space dedicato (`new_address_space`), vi carica l'ELF `elf`
+    /// per-segmento (Fase 31, `elf::load`: RX/RO/RW + NX, entry dall'ELF) e lo
+    /// stack user, e prepara un frame CPU ring 3 (`new_context_user`).
     ///
     /// # Safety
-    /// `code_phys` deve puntare a frame fisici validi con il codice user.
     /// `parent` e' il processo che richiede la creazione (`None` se dal kernel).
     /// `io_ranges` = porte I/O (inclusive) consentite a ring 3 (TSS ADR-0006).
     pub unsafe fn create_user(
         name: &'static str,
         priority: crate::sched::Priority,
-        code_phys: u64,
-        code_frames: usize,
-        entry: u64,
+        elf: &[u8],
         parent: Option<usize>,
         parent_chan: Option<usize>,
         io_ranges: &[(u16, u16)],
         detached: bool,
     ) -> Option<Process> {
+        // Validazione PRIMA di allocare (ELF malformato = nessun leak).
+        let layout = crate::elf::validate(elf)?;
+
         // Kernel stack: RSP0 (per rientrare a ring 0 su interrupt) + frame.
         // Come sopra: base PHYS (teardown), top VIRT (RSP0 + frame iniziale).
         let stack_base = crate::phys_mem::alloc_contiguous(STACK_FRAMES)?;
@@ -314,12 +314,13 @@ impl Process {
         // Address space user dedicato (PML4 proprio, kernel condiviso U=0).
         let cr3 = crate::vmm_user::new_address_space()?;
 
-        // Mappa codice + stack user, e prende il RSP iniziale. La pagina FS
-        // per-processo viene allocata/mappata lazy al primo uso (syscall 26).
-        let user_stack_top =
-            unsafe { crate::vmm_user::setup_user_memory(cr3, code_phys, code_frames) };
+        // Carica i segmenti ELF + stack user. La pagina FS per-processo viene
+        // allocata/mappata lazy al primo uso (syscall 26).
+        unsafe { crate::elf::load(cr3, elf, &layout) };
+        let user_stack_top = unsafe { crate::vmm_user::setup_user_stack(cr3) };
 
-        // Frame CPU ring 3 sul kernel stack.
+        // Frame CPU ring 3 sul kernel stack (entry dall'ELF).
+        let entry = crate::elf::entry(&layout);
         let saved =
             unsafe { crate::context::new_context_user(stack_top, entry, user_stack_top) };
 

@@ -37,9 +37,7 @@ pub fn spawn(name: &'static str, priority: Priority, entry: crate::process::Proc
 pub unsafe fn create_user(
     name: &'static str,
     priority: Priority,
-    code_phys: u64,
-    code_frames: usize,
-    entry: u64,
+    elf: &[u8],
     parent: Option<usize>,
     parent_chan: Option<usize>,
     io_ranges: &[(u16, u16)],
@@ -50,7 +48,7 @@ pub unsafe fn create_user(
 
     let id = sched.alloc_pid()?;
     let process = match unsafe {
-        Process::create_user(name, priority, code_phys, code_frames, entry, parent, parent_chan, io_ranges, detached)
+        Process::create_user(name, priority, elf, parent, parent_chan, io_ranges, detached)
     } {
         Some(p) => p,
         None => {
