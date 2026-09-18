@@ -94,6 +94,7 @@ const MODE_FAULT_RO: u64 = 13;
 const MODE_FAULT_NONE: u64 = 14;
 const MODE_FAULT_NX: u64 = 15;
 const MODE_FAULT_GUARD: u64 = 16;
+const MODE_FAULT_GPF: u64 = 17;
 
 // Tag DEV_* + errore IPC (A1): single source in `libr` (prima letterali qui).
 use libr::{DEV_CLOSE, DEV_OPEN, ERR};
@@ -276,7 +277,7 @@ pub extern "C" fn _start() -> ! {
             let _ = libr::send(parent, T_READY, det, norm);
             libr::exit(0);
         }
-        MODE_FAULT_RO | MODE_FAULT_NONE | MODE_FAULT_NX | MODE_FAULT_GUARD => {
+        MODE_FAULT_RO | MODE_FAULT_NONE | MODE_FAULT_NX | MODE_FAULT_GUARD | MODE_FAULT_GPF => {
             run_fault(mode);
         }
         _ => {
@@ -324,6 +325,11 @@ fn run_fault(mode: u64) -> ! {
         MODE_FAULT_GUARD => {
             let g = libr::USER_STACK_GUARD as *mut u8;
             unsafe { core::ptr::write_volatile(g, 0x41); } // #PF (guard)
+        }
+        MODE_FAULT_GPF => {
+            // Nessuna porta concessa a questo helper (io_count == 0): `in` su
+            // una porta qualsiasi → #GP → il kernel termina il processo.
+            unsafe { libr::pio::inb(0x80); }
         }
         _ => {}
     }

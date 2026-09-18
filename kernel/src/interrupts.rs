@@ -102,7 +102,8 @@ extern "x86-interrupt" fn page_fault_handler(
                 return;
             }
             crate::serial_println!("[int ] heap demand-zero: OOM @ {:#x}", fault_addr);
-            halt();
+            // OOM del processo: muore il processo, mai il kernel (come M1).
+            fault_kill(pid, fault_addr, error_code, &stack_frame);
         }
     }
 
@@ -130,7 +131,8 @@ extern "x86-interrupt" fn page_fault_handler(
                 return;
             }
             crate::serial_println!("[int ] mmap demand-zero: OOM @ {:#x}", fault_addr);
-            halt();
+            // OOM del processo: muore il processo, mai il kernel (come M1).
+            fault_kill(pid, fault_addr, error_code, &stack_frame);
         }
     }
 
@@ -189,11 +191,23 @@ unsafe fn flush_page(addr: u64) {
 }
 
 extern "x86-interrupt" fn gpf_handler(stack_frame: InterruptStackFrame, error_code: u64) {
+    let pid = crate::syscall::current_id() as usize;
+    let user = stack_frame.code_segment.rpl() == x86_64::PrivilegeLevel::Ring3;
+    let (pnb, pnl) = crate::sched::process_name(pid);
+    let pname = core::str::from_utf8(&pnb[..pnl as usize]).unwrap_or("???");
     crate::serial_println!(
-        "[int ] #GENERAL PROTECTION err={} @ {:#x}",
+        "[int ] #GP err={} @ {:#x} pid={} '{}'{}",
         error_code,
-        stack_frame.instruction_pointer.as_u64()
+        stack_frame.instruction_pointer.as_u64(),
+        pid,
+        pname,
+        if user { " (kill)" } else { "" }
     );
+    if user {
+        // Errore del processo (es. `in`/`out` su una porta non concessa dalla
+        // sua I/O bitmap TSS): muore il processo, mai il kernel (come M1).
+        crate::sched::exit_current(syscall_numbers::FAULT_EXIT_CODE)
+    }
     halt();
 }
 
