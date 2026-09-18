@@ -34,7 +34,7 @@ porte/capabilities senza stravolgere le basi.
 
 ### 2. Address space: identity map + bit U/S
 
-> **Nota di superamento (Fase HH, ADR-0020)**: kernel oggi higher-half
+> **Nota di superamento (Fase 27, ADR-0020)**: kernel oggi higher-half
 > (`-2G+1M`) + direct map, `PML4[0] = 0` a runtime. Resta il principio U/S;
 > il resto del paragrafo e' storia della decisione originale.
 

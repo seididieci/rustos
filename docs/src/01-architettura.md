@@ -129,7 +129,7 @@ Kernel a -2G+1M (VMA alta, LMA 1M); direct map [0, 64G) a pagine 2M.
 PML4[0] = 0 a runtime: il basso canonico e' libero (NULL faulta).
 Pagine kernel: PTE.U/S = 0 (supervisor) → ring 3 riceve #PF se le tocca.
 Ogni processo ha la propria PML4 (copia delle entry alte del kernel).
-Il basso libero ospita le mappe utente (mmap, Fase M0).
+Il basso libero ospita le mappe utente (mmap, Fase 28).
 ```
 
 ## Flusso tipico di una syscall nel progetto maturo

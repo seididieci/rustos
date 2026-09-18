@@ -196,7 +196,7 @@ pub extern "C" fn _start() -> ! {
             continue;
         }
         if msg.tag == DISK_READ {
-            // P1.2 — richiesta multi: frame `[count:8]`, risposta con
+            // 24.2 — richiesta multi: frame `[count:8]`, risposta con
             // count*512 byte in UN frame (1 IPC invece di count).
             let handle = msg.w0 as u32;
             let lba = msg.w1;
@@ -226,7 +226,7 @@ pub extern "C" fn _start() -> ! {
             continue;
         }
         if msg.tag == DISK_WRITE {
-            // P1.2 — frame `[count:8][count*512 byte]`, 1 comando PIO + 1
+            // 24.2 — frame `[count:8][count*512 byte]`, 1 comando PIO + 1
             // flush per l'intero run (prima: comando+flush a settore).
             // Handle in w0, lba in w1. Frame consumato sempre, anche a
             // handle/lba invalidi (stesso contratto dei ring FS).

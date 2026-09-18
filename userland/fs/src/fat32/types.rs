@@ -8,7 +8,7 @@ pub trait BlockSource {
     /// Scrive un settore (Fase 20, FAT scrivibile): write-through, nessun
     /// caching — ogni write torna solo a settore stabile su disco.
     fn write_sector(&self, lba: u64, data: &[u8; 512]) -> bool;
-    /// P1.2 — run di `n` settori contigui (default: loop sui singoli;
+    /// 24.2 — run di `n` settori contigui (default: loop sui singoli;
     /// `IpcDisk` li trasferisce in 1 IPC da ≤7 + 1 comando PIO + 1 flush).
     /// `out`/`data` lunghi almeno `n*512` byte.
     fn read_sectors(&self, lba: u64, n: usize, out: &mut [u8]) -> bool {
@@ -24,7 +24,7 @@ pub trait BlockSource {
         }
         true
     }
-    /// P1.2 — come `read_sectors` in scrittura (write-through per run:
+    /// 24.2 — come `read_sectors` in scrittura (write-through per run:
     /// il flush chiude l'intero run, vedi `AtaDisk::write_sectors`).
     fn write_sectors(&self, lba: u64, n: usize, data: &[u8]) -> bool {
         if data.len() < n * 512 {
@@ -83,8 +83,8 @@ pub struct Fat32<B: BlockSource> {
     pub(crate) vol_serial: Option<u32>,
     /// Label volume BPB+71 (11 byte raw, padding spazi): identità `LABEL=`.
     pub(crate) vol_label: [u8; 11],
-    // Nota: nessun memo settoriale qui (il P1.1 `fat_memo` e' stato rimosso in
-    // P2/C1: la cache settoriale write-through vive in `userdisk`, unico
+    // Nota: nessun memo settoriale qui (il 24.1 `fat_memo` e' stato rimosso in
+    // 25: la cache settoriale write-through vive in `userdisk`, unico
     // proprietario dei blocchi — un secondo strato cacherebbe gli stessi 512 B
     // due volte. Ogni `read_sector` attraversa IPC+PIO o la cache del driver).
 }

@@ -23,7 +23,7 @@ pub const M_OPENDIE: u64 = 9;
 pub const M_MAPHAMMER: u64 = 10;
 pub const M_FLOOD: u64 = 11;
 pub const M_NEST: u64 = 12;
-// Fase M1: fault di protezione (helper muore con FAULT_EXIT_CODE).
+// Fase 29: fault di protezione (helper muore con FAULT_EXIT_CODE).
 pub const M_FAULT_RO: u64 = 13;
 pub const M_FAULT_NONE: u64 = 14;
 pub const M_FAULT_NX: u64 = 15;

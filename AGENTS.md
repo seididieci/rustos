@@ -967,31 +967,31 @@ rustos/
         normale sparita, detached viva parent==1, cleanup-kill). Suite → 40/40.
         Rimandate: generazioni PID complete (cambio protocollo), kill
         sottoalbero oltre la cascata. Verifica: gate 5/5 + 7/7 + 40/40 + shell.
-- [x] Fase P0: baseline performance throughput client→block (KVM)
-  - [x] P0.1 `libr::rdtsc` + `tsc_calibrate` (TSC in ring 3: CR4.TSD mai
+- [x] Fase 23: baseline performance throughput client→block (KVM)
+  - [x] 23.1 `libr::rdtsc` + `tsc_calibrate` (TSC in ring 3: CR4.TSD mai
         impostato; calibrazione su PIT ~100 Hz, ~4.45 GHz sul riferimento).
-  - [x] P0.2 `testland/bench` (`userbench` → `/test/bench.bin`, 6 op
+  - [x] 23.2 `testland/bench` (`userbench` → `/test/bench.bin`, 6 op
         end-to-end con warmup, righe `[bench]`): zero_1B (solo IPC),
         sda_512B_seq (IPC+PIO), fat_small_orc (find+IPC+PIO), ramfs_4K
         write/read (FS+IPC), fat_4K_oow (PIO+FLUSH/settore).
-  - [x] P0.3 Wiring: feature init `bench` (ortogonale a `skip_tests`,
+  - [x] 23.3 Wiring: feature init `bench` (ortogonale a `skip_tests`,
         `RUN_BENCH=1`, mai nel gate) + `scripts/bench.sh` (N run KVM
         `-accel kvm -cpu host`, fail-loud, timeout atteso). Fix latente in
         `build_common.sh`: `build_one` prendeva solo `$5` (flag multipli
         troncati) → ora `${*:5}`.
-  - [x] P0.4 Baseline KVM (media 3 run, stabile ±2%): IPC floor ~1.9 µs/op;
+  - [x] 23.4 Baseline KVM (media 3 run, stabile ±2%): IPC floor ~1.9 µs/op;
         settore ~1.2 ms (~409 KiB/s); small FAT ~21 ms; ramfs 14-25 µs
         (161-289 MiB/s); overwrite FAT 4K ~64 ms (~62 KiB/s). Collo di
         bottiglia = percorso disco (moltiplicatore settori per op logica),
         non l'IPC. Tabella in `docs/src/13-performance.md`; soglia di
-        non-regressione >10%. P1 (PIO multi-settore, flush per richiesta,
-        memo FAT intra-op, DISK multi-settore) e P2 (cache/DMA/N-in-volo)
+        non-regressione >10%. 24 (PIO multi-settore, flush per richiesta,
+        memo FAT intra-op, DISK multi-settore) e 25 (cache/DMA/N-in-volo)
         parcheggiate da analizzare con calma.
-- [x] Fase P1: ottimizzazioni throughput (misurate, gate verde)
-  - [x] P1.1 userfs-local (nessun protocollo): memo ultimo settore FAT
+- [x] Fase 24: ottimizzazioni throughput (misurate, gate verde)
+  - [x] 24.1 userfs-local (nessun protocollo): memo ultimo settore FAT
         (invalida a `set_fat_entry`, drop d'epoca) + read settoriali mirati
         (`read_file` per span, `read_dir` stop a 0x00): small FAT ~21→~2.4 ms.
-  - [x] P1.2 DISK multi-settore (frame v2 con count ≤7/IPC, stessi tag):
+  - [x] 24.2 DISK multi-settore (frame v2 con count ≤7/IPC, stessi tag):
         `AtaDisk::read/write_sectors` (1 comando PIO per run, 1 flush per
         write), `BlockSource` multi (default loop, `IpcDisk` vero multi),
         `fat32` per run + DEV relay intatto: overwrite 4K ~36→~30 ms.
@@ -1018,11 +1018,11 @@ rustos/
         del parser, `readdir` ramfs, response `buf`, nomi long-lived
         nell'albero/mount table. Altri server on demand.
   - Regola aggiornata: temporanei per-op su stack o scratch, mai sullo heap
-        globale (P1.2 vale ancora per chi non usa scratch).
+        globale (24.2 vale ancora per chi non usa scratch).
   - Verifica: gate 5/5 + 7/7 + 40/40 + shell 29/29 (t36 condizionale) KVM,
-        bench 3 run stabili, tabella P1 in `docs/src/13-performance.md`.
-- [x] Fase P2/C1: cache settoriale write-through in userdisk (ADR-0018)
-  - Motivazione: dopo P1 il collo resta il PIO (~1.2 ms/settore); ogni op FAT
+        bench 3 run stabili, tabella 24 in `docs/src/13-performance.md`.
+- [x] Fase 25: cache settoriale write-through in userdisk (ADR-0018)
+  - Motivazione: dopo 24 il collo resta il PIO (~1.2 ms/settore); ogni op FAT
     rilegge gli stessi settori (BPB/FAT/dir). Scelta: UN solo strato a blocchi
     nel driver (indipendente dal FS, copre FAT+raw+futuri FS), mai cache file
     in userfs (doppia copia degli stessi 512 B = RAM sprecata).
@@ -1035,8 +1035,8 @@ rustos/
         punto solo. I miss contigui restano 1 PIO (`contains` delimita il run,
         `note_misses` conta). `node_read(_multi)`/`node_write(_multi` + relay
         `DEV_*` coerenti per costruzione (stessa chiave fisica).
-  - [x] `userfs/fat32.rs`: rimosso `fat_memo` P1.1 (subsumato, un solo strato).
-  - [x] Misure A/B stesso host KVM (media 3 run, TSC ~1.6 GHz; la tabella P1 e'
+  - [x] `userfs/fat32.rs`: rimosso `fat_memo` 24.1 (subsumato, un solo strato).
+  - [x] Misure A/B stesso host KVM (media 3 run, TSC ~1.6 GHz; la tabella 24 e'
         di un altro host): `fat_small_orc` ~126x (6.1M→49K cyc, 6→838 KiB/s),
         `fat_4K_oow` ~1.9x (86M→46M cyc), resto invariato entro il rumore
         KVM/DVFS (±20-40% sulle op brevi, misurato su run identici). Hit rate:
@@ -1044,23 +1044,23 @@ rustos/
         nessun canale di pressione kernel→driver); write-back, read-ahead e
         `DISK_STATS` in ADR-0018 come futuri.
   - Verifica: gate 5/5 + 7/7 + 40/40 + shell 30/30, zero FAIL/PANIC/FAULT;
-        tabelle P2 in `docs/src/13-performance.md`.
-- [x] Fase async/await in libr (ADR-0019, 4 passi verificati uno a uno;
-      userdisk rimandato alla fase server-run, vedi Passo 4).
+        tabelle 25 in `docs/src/13-performance.md`.
+- [x] Fase 26: async/await in libr (ADR-0019, 4 passi verificati uno a uno;
+      userdisk rimandato alla fase server-run, vedi 26.4).
       Sintassi `async/await` (solo `core`) sopra syscall 33/34 invariate, con
       router centrale (l'executor unico a chiamare `recv`, instrada per
       `req_id`; risolve `UnexpectedMsg` per costruzione). Kernel invariato.
-  - [x] Passo 1 — `libr::task` (Future `WaitReply`/`RecvMsg`, tratto
+  - [x] 26.1 — `libr::task` (Future `WaitReply`/`RecvMsg`, tratto
         `Receivable` per l'instradamento, Waker no-op, `block_on`, `run`
         const-generic multi-task, pin contenuto, mai heap per-op).
         Nessun chiamante migrato; gate invariato 40/40.
-  - [x] Passo 2 — t41 (`block_on` + echo async) / t42 (`run` 2 task +
+  - [x] 26.2 — t41 (`block_on` + echo async) / t42 (`run` 2 task +
         `ServerDied`); suite → 42/42 (+ run-tests.sh/testing/docs).
-  - [x] Passo 3 — `FsRead` (compone `WaitReply::on_chan`, invio a
+  - [x] 26.3 — `FsRead` (compone `WaitReply::on_chan`, invio a
         costruzione, collect non-bloccante al poll) sopra read_async/
         fs_collect invariati (prova client reale, protocollo intatto);
         copertura in t20 (doppia lettura, confronto byte).
-  - [x] Passo 4 — `Join` (Future+Receivable, delega, annidabile) + t43
+  - [x] 26.4 — `Join` (Future+Receivable, delega, annidabile) + t43
         (`Join<Join<W,W>,W>` su 3 server, invii inversi, match per-task);
         suite → 43/43. userdisk NON convertito (rimandato alla fase
         server-run con motivazione: `block_on` nel loop scarterebbe gli
@@ -1070,13 +1070,13 @@ rustos/
       Vincoli ereditati Fase 13 (non rilassati): no mix sync/async, FIFO,
       FS 1-in-volo. Rimandati: join/select/timeout, rewrite tty/loop,
       rilassamenti formato frame.
-- [x] Fase HH: Higher-half kernel + direct map (ADR-0020, H0/H1/H2 verificati
+- [x] Fase 27: Higher-half kernel + direct map (ADR-0020, 27.1/27.2/27.3 verificati
       uno a uno; gate invariato 43/43).
-  - [x] H0 — `kernel/src/addr.rs` (`phys_to_virt`/`virt_to_phys`/`kern_*`,
+  - [x] 27.1 — `kernel/src/addr.rs` (`phys_to_virt`/`virt_to_phys`/`kern_*`,
         offset 0) + conversione meccanica di tutti i siti identity (choke
         point entry/set/zero, BITMAP, RSP0=VIRT, boot_info, copy_binary,
         demand-zero, VGA). Zero cambi di comportamento, prova via gate.
-  - [x] H1 — il flip: kernel a `-2G+1M` (`0xFFFF_FFFF_8010_0000`, LMA 1M —
+  - [x] 27.2 — il flip: kernel a `-2G+1M` (`0xFFFF_FFFF_8010_0000`, LMA 1M —
         il +1M rende le PD 2M allineate, stile Linux; basi dispari = #PF
         RSVD a zero output, osservato), direct map `[0,64G)` a pagine 2M
         (baseline ogni x86-64: niente PDPE1GB, niente flag QEMU; tetto 64G
@@ -1084,7 +1084,7 @@ rustos/
         tutto-alto dual-map (alias LMA linker + EIP reale, `retf`+`movabs`),
         `vmm.rs` ridotto a guard, guard seriali a stadi. Gate-0 `readelf`
         (VMA−LMA == OFFSET + nota PVH) prima di ogni boot.
-  - [x] H2 — pulizia e chiusura: stack alto dallo stub, `unmap_low()`
+  - [x] 27.3 — pulizia e chiusura: stack alto dallo stub, `unmap_low()`
         (`PML4[0] = 0` + flush) a inizio `rust_main` (PML4 user futuri
         ereditano il pulito: nessun walk sui vivi), split VGA UC statico
         (PT 4K per i primi 2M, PAT di reset), selftest NULL-#PF pre-
@@ -1095,12 +1095,12 @@ rustos/
         PD → fault ritardato: spostata a 64M + `const assert` di non-
         sovrapposizione). Scoperte: thread di boot mai ripreso dopo il
         primo tick (feature `selftest` post-BOOT_OK + Welcome marciti in
-        silenzio — follow-up scheduler, fuori H2); un flake Test-4 FAT
+        silenzio — follow-up scheduler, fuori 27.3); un flake Test-4 FAT
         isolato su TCG (watch item, rerun verde).
-- [x] Fase M0: mmap anonimo nel basso canonico (payoff higher-half).
+- [x] Fase 28: mmap anonimo nel basso canonico (payoff higher-half).
   - Syscall `SYS_MMAP (39)` / `SYS_MUNMAP (40)` + `PROT_*`/`MMAP_FIXED` in
     `syscall-numbers`; zona `[0x10_0000, 0x4000_0000)` (primi 64K mai
-    assegnati: NULL faulta); solo anonimo RW in M0 (altro prot/flag = -1).
+    assegnati: NULL faulta); solo anonimo RW in 28 (altro prot/flag = -1).
   - Tabella VMA per-pid (16 record statici, mai heap) in `vmm_user.rs`:
     overlap-check totale, first-fit dal basso, pagine `OWNED` (teardown
     esistente), `munmap` solo VMA intere two-phase, `is_user_range` esteso
@@ -1114,13 +1114,13 @@ rustos/
     `vma_contains_range` (raddoppiava la somma → ogni VMA rifiutata;
     invisibile finche' solo la heap clause serviva). Rimandati: mprotect/NX,
     guard page, file-backed (fase propria: page-in deadlock-prone).
-- [x] Fase M1: protezioni di memoria (mprotect/NX) + fault→kill.
+- [x] Fase 29: protezioni di memoria (mprotect/NX) + fault→kill.
   - Record VMA esteso a `(base, len, prot)` (prot = `PROT_*`, statico);
     `mmap` accetta NONE/R/RW (W-solo ed EXEC rifiutati); nuova syscall
     `SYS_MPROTECT (41)` su VMA intere (copertura esatta come `munmap`):
     RO↔RW flippa il bit W in place, NONE smappa+libera (riuso a zeri).
   - EFER.NXE a boot; foglie dati RW/RO + NX, codice/binario RWX (flat: W^X
-    richiede i confini di sezione all'embed-time → M1b); heap/stack/mmap/
+    richiede i confini di sezione all'embed-time → 29b); heap/stack/mmap/
     iniettate tutte NX.
   - Page-fault handler: protection-violation da USER MODE → `fault_kill`
     (`exit_current(FAULT_EXIT_CODE=139)`, mai halt kernel); fault user fuori
@@ -1138,9 +1138,9 @@ rustos/
     siti di estrazione phys.
   - t45 (`mmap_prot`/`mprotect` transizioni + error paths; 5 helper fault
     RO/NONE/NX/guard/port-GP → `FAULT_EXIT_CODE` via EXIT_NOTIFY). Suite → 45/45.
-  - Limite onesto: W^X del binario rimandato (M1b: confini `.text`/`.data`
-    all'embed-time). File-backed (M2a) e shared (M3) ancora da fare.
-- [x] Fase M3: memoria condivisa tra processi (shm_create/shm_map).
+  - Limite onesto: W^X del binario rimandato (29b: confini `.text`/`.data`
+    all'embed-time). File-backed (M2a) e shared (30) ancora da fare.
+- [x] Fase 30: memoria condivisa tra processi (shm_create/shm_map).
   - `SYS_SHM_CREATE (42)`: frame contigui azzerati (max 256 KiB) + slot in
     `SHM_TABLE` statica (16), ritorna id >= 1. `SYS_SHM_MAP (43)`: mappa la
     regione come VMA con PTE non-owned **pre-materializzate** (stesse pagine
@@ -1155,7 +1155,7 @@ rustos/
   - NOTA onesta: M2a (file-backed) NON fattibile come pianificato — il kernel
     non ha un FS (e' in userfs) e non puo' leggere file; servirebbe COW o IPC
     FS dal kernel (fuori ADR-0005). La parte "errore del processo → muore il
-    processo" e' stata fatta in M1b (OOM e #GP → kill).
+    processo" e' stata fatta in 29b (OOM e #GP → kill).
 
 ## Important Notes
 
@@ -1171,7 +1171,7 @@ rustos/
   fasi passate restano snapshot storici (mai "corretti" al nuovo totale).
   Un solo gate corrente: `11-testing.md` + AGENTS Testing + `run-tests.sh`.
 - **Crate consentite**: solo `no_std`-compatible
-- **Kernel higher-half: FATTO (ADR-0020, Fase HH)** — kernel a `-2G+1M`
+- **Kernel higher-half: FATTO (ADR-0020, Fase 27)** — kernel a `-2G+1M`
   (`0xFFFF_FFFF_8010_0000`, LMA 1M) + direct map `[0,64G)` a pagine 2M a
   `0xFFFF_8880_0000_0000`; `PML4[0] = 0` a runtime (NULL-deref faulta).
   Conversioni via `kernel/src/addr.rs` (`phys_to_virt`/`virt_to_phys`/
@@ -1324,7 +1324,7 @@ timeout 6 qemu-system-x86_64 -m 4G -display none -serial stdio -no-reboot \
 # Produzione (default): niente test, shell subito usabile
 timeout 60 ./run.sh > /tmp/boot.log
 
-# Bench throughput su KVM (Fase P0, mai nel gate): 3 run di riferimento
+# Bench throughput su KVM (Fase 23, mai nel gate): 3 run di riferimento
 ./scripts/bench.sh > /tmp/bench.log
 rg '\[bench\]' /tmp/bench-run1.log /tmp/bench-run2.log /tmp/bench-run3.log
 

@@ -5,8 +5,8 @@
 //! U=0 → non accessibili da ring 3) e mappa una regione user dedicata nella
 //! fascia alta (`USER_BASE`), con i propri livelli e PTE `USER_ACCESSIBLE`.
 //!
-//! Il kernel e' higher-half (ADR-0020, Fase HH): PML4[0] = 0 a runtime, il
-//! basso canonico ospita le mappe utente (Fase M0). Dettagli in
+//! Il kernel e' higher-half (ADR-0020, Fase 27): PML4[0] = 0 a runtime, il
+//! basso canonico ospita le mappe utente (Fase 28). Dettagli in
 //! `docs/04-memory.md`.
 
 mod layout;

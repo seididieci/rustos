@@ -100,7 +100,7 @@ rustos/
 | 1 | Bare metal Hello World (VGA) + boot PVH | ✅ Completata |
 | 2 | Memory Map (PVH) + GDT/IDT | ✅ Completata |
 | 3 | Interrupt hardware (PIC/PIT/kbd) | ✅ Completata |
-| 4 | Frame allocator + heap kernel (dinamico; direct map 64G da Fase HH) | ✅ Completata |
+| 4 | Frame allocator + heap kernel (dinamico; direct map 64G da Fase 27) | ✅ Completata |
 | 5 | Processi + scheduler preemptive | ✅ Completata |
 | 6 | User mode (ring 3) + syscall | ✅ Completata |
 | 7 | IPC sincrona send/recv ⭐ | ✅ Completata |
@@ -119,10 +119,12 @@ rustos/
 | 20 | FAT32 scrivibile (persistenza, ADR-0016) | ✅ Completata |
 | 21 | Servizi caricati da disco via `spawn_image` (ADR-0017) | ✅ Completata |
 | 22 | Detach dalla cascata di morte (emendamento ADR-0010 §6) | ✅ Completata |
-| P0/P1/P2 | Baseline + ottimizzazioni throughput (PIO multi-settore, cache settoriale write-through) | ✅ Completata |
-| async | `async`/`await` in `libr` sopra IPC asincrona (ADR-0019, 4 passi) | ✅ Completata |
-| HH | Higher-half kernel + direct map (ADR-0020: H0/H1/H2) | ✅ Completata |
-| M0 | `mmap` anonimo nel basso canonico (payoff higher-half) | ✅ Completata |
+| 23/24/25 | Baseline + ottimizzazioni throughput (PIO multi-settore, cache settoriale write-through) | ✅ Completata |
+| 26 | `async`/`await` in `libr` sopra IPC asincrona (ADR-0019, 4 passi) | ✅ Completata |
+| 27 | Higher-half kernel + direct map (ADR-0020: 27.1/27.2/27.3) | ✅ Completata |
+| 28 | `mmap` anonimo nel basso canonico (payoff higher-half) | ✅ Completata |
+| 29 | Protezioni di memoria (`mprotect`/NX, fault→kill del processo) | ✅ Completata |
+| 30 | Memoria condivisa tra processi (`shm_create`/`shm_map`) | ✅ Completata |
 
 ## Risorse
 

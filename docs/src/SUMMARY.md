@@ -21,7 +21,7 @@
 - [RT Scheduler + CBS](./10-scheduler-rt-cbs.md) — Fase 11
 - [Test Suite](./11-testing.md) — Fase 9.5
 - [Utilities](./12-utilities.md) — Fase 18 (shell + utility utente)
-- [Performance](./13-performance.md) — Fasi P0/P1/P2 (baseline + throughput + cache)
+- [Performance](./13-performance.md) — Fasi 23/24/25 (baseline + throughput + cache)
 
 ---
 

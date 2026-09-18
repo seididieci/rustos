@@ -1,4 +1,4 @@
-//! userbench — micro-benchmark throughput client→block (Fase P0).
+//! userbench — micro-benchmark throughput client→block (Fase 23).
 //!
 //! Misura il percorso dati END-TO-END con il TSC (calibrato sul PIT), senza
 //! cache che nascondano il collo di bottiglia (non ne esistono ancora: ogni

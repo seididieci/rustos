@@ -57,7 +57,7 @@ pub(crate) fn disk_req_read_name() -> Option<String> {
 }
 
 /// Legge un frame di richiesta read `[count:8]` dal DISK_REQ ring e lo
-/// consuma (P1.2). Ritorna count (1..=7) o None a ring vuoto/count invalido
+/// consuma (24.2). Ritorna count (1..=7) o None a ring vuoto/count invalido
 /// (resync tail=head: frame intero prima della notify, incompleto = epoca
 /// morta — stessa invariante dei ring FS).
 pub(crate) fn disk_req_read_count() -> Option<usize> {
@@ -85,7 +85,7 @@ pub(crate) fn disk_req_read_count() -> Option<usize> {
 }
 
 /// Legge un frame di write `[count:8][count*512 byte]` dal DISK_REQ ring e lo
-/// consuma (P1.2, generalizza il vecchio `[len:8][512]`). `out` deve tenere
+/// consuma (24.2, generalizza il vecchio `[len:8][512]`). `out` deve tenere
 /// `DISK_MAX_SECTORS` settori. Ritorna count o None (resync come sopra).
 pub(crate) fn disk_req_read_multi(out: &mut [u8]) -> Option<usize> {
     if out.len() < nodes::DISK_MAX_SECTORS * 512 {

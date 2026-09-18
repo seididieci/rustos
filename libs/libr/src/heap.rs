@@ -13,7 +13,7 @@
 //! Algoritmo: free-list first-fit con split e coalescenza dei blocchi
 //! fisicamente adiacenti (una volta liberati non tornano al kernel).
 //! La lista e' ORDINATA per indirizzo (`push_free` inserisce al posto giusto
-//! e fonde solo coi vicini): free O(n), mai O(n²) — il cliff P1.2 (coalesce
+//! e fonde solo coi vicini): free O(n), mai O(n²) — il cliff 24.2 (coalesce
 //! totale a ogni free) e' eliminato senza cambiare semantica di allocazione.
 
 use core::alloc::{GlobalAlloc, Layout};
@@ -82,7 +82,7 @@ unsafe fn first_fit(need: usize) -> Option<*mut u8> {
 /// MANTENENDOLA ORDINATA per indirizzo, e fonde solo coi vicini fisici
 /// (predecessore/successore). La lista resta sempre totalmente coalescente —
 /// stesso invariante di prima, ma free O(n) invece di O(n²): la vecchia
-/// `coalesce()` riscansionava tutto a OGNI free (il cliff P1.2: +1 blocco a op
+/// `coalesce()` riscansionava tutto a OGNI free (il cliff 24.2: +1 blocco a op
 /// FAT → O(n²) su tutte le op successive). Nessun cambio di semantica per
 /// `first_fit` (che resta first-fit O(n) sulla lista ordinata).
 unsafe fn push_free(addr: usize, len: usize) {
@@ -153,7 +153,7 @@ unsafe fn heap_free(ptr: *mut u8) {
     }
 }
 
-/// Diagnostica heap (introdotta per P1.2, mantenuta): (blocchi liberi, byte
+/// Diagnostica heap (introdotta per 24.2, mantenuta): (blocchi liberi, byte
 /// liberi) nella free-list.
 pub fn heap_stats() -> (usize, usize) {
     unsafe {

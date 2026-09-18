@@ -1,4 +1,4 @@
-//! Direct-map manager (H1): la direct map statica [0, 64 GiB) a pagine 2M
+//! Direct-map manager (27.2): la direct map statica [0, 64 GiB) a pagine 2M
 //! vive nelle tabelle di boot (`boot_tables.rs`: PDPT_DIRECT + 32 PD).
 //! Le pagine 2M sono baseline long-mode su OGNI x86-64: nessun check CPUID,
 //! nessun prerequisito oltre il long mode (vale per TCG qemu64 come per
@@ -44,7 +44,7 @@ pub fn init(max_addr: u64) {    if max_addr > STATIC_DIRECT_MAX {
     );
 }
 
-/// H2: rimuove l'identity di transizione (`PML4[0] = 0`) + flush TLB globale.
+/// 27.3: rimuove l'identity di transizione (`PML4[0] = 0`) + flush TLB globale.
 ///
 /// Da chiamare a inizio `rust_main` (dopo i guard, che girano gia' su stack
 /// alto): da qui il basso canonico non e' piu' mappato — un NULL-deref

@@ -47,7 +47,7 @@ pub fn kernel_cr3() -> u64 {
 }
 
 /// Legge una entry della page table a un dato indirizzo fisico di livello.
-/// `table_phys` e' fisico: l'accesso passa dalla direct map (`addr.rs`, H0).
+/// `table_phys` e' fisico: l'accesso passa dalla direct map (`addr.rs`, 27.1).
 pub(super) unsafe fn entry_at(table_phys: u64, idx: usize) -> u64 {
     let ptr = (crate::addr::phys_to_virt(table_phys) + (idx as u64) * 8) as *const u64;
     unsafe { (*ptr) & !0xFFF }
@@ -118,7 +118,7 @@ pub fn new_address_space() -> Option<u64> {
 
 /// Mappa `count` frame fisici contigui a partire da `phys` all'indirizzo
 /// virtuale `vaddr` nello spazio user del processo `cr3`. Le pagine sono
-/// user-accessible (U=1), writable, NON eseguibili (NX, M1) e present.
+/// user-accessible (U=1), writable, NON eseguibili (NX, 29) e present.
 /// **NON** marca il bit `owned`:
 /// questo e' il percorso delle pagine "estranee" iniettate nel processo
 /// (syscall `map_physical`/`map_in`), che restano di proprieta' di chi le ha
@@ -133,7 +133,7 @@ pub unsafe fn map_user_region(cr3: u64, vaddr: u64, phys: u64, count: usize) {
 /// Come `map_user_region`, ma marca le PTE con il bit `owned`: usato per le
 /// pagine di proprieta' del processo (codice copiato, stack user, ring della
 /// syscall `ring_alloc`, heap demand-zero). Saranno liberate dal teardown
-/// dell'address space (Fase 14). RW + NX (M1; il codice usa `..._exec`).
+/// dell'address space (Fase 14). RW + NX (29; il codice usa `..._exec`).
 ///
 /// # Safety
 /// Richiede `cr3` valido e `vaddr` dentro la regione user del processo.
@@ -141,7 +141,7 @@ pub unsafe fn map_user_region_owned(cr3: u64, vaddr: u64, phys: u64, count: usiz
     unsafe { map_user_region_flags(cr3, vaddr, phys, count, super::layout::USER_LEAF_RW | super::layout::USER_OWNED) }
 }
 
-/// Come `map_user_region_owned`, ma read-only (M1): per le pagine di VMA
+/// Come `map_user_region_owned`, ma read-only (29): per le pagine di VMA
 /// PROT_READ materializzate lazy dal fault handler. Scrittura → #PF con
 /// protection-violation → kill (mai corruzione silenziosa).
 ///
@@ -151,11 +151,11 @@ pub unsafe fn map_user_region_owned_ro(cr3: u64, vaddr: u64, phys: u64, count: u
     unsafe { map_user_region_flags(cr3, vaddr, phys, count, super::layout::USER_LEAF_RO | super::layout::USER_OWNED) }
 }
 
-/// Mapping del binario user (M1): il binario e' FLAT (codice + .rodata +
+/// Mapping del binario user (29): il binario e' FLAT (codice + .rodata +
 /// .data + .bss in un'unica regione contigua copiata dall'embed): non
 /// conoscendo il confine codice/dati serve ancora RWX (writable+executable).
 /// NX e' comunque enforced su heap, stack, mmap e pagine iniettate: il W^X
-/// del binario richiede i confini di sezione all'embed-time (M1b).
+/// del binario richiede i confini di sezione all'embed-time (29b).
 ///
 /// # Safety
 /// Come `map_user_region_owned`.
@@ -204,7 +204,7 @@ unsafe fn map_user_region_flags(cr3: u64, vaddr: u64, phys: u64, count: usize, f
     }
 }
 
-/// Mapping di pagine condivise (M3): U=1, NX, NON owned (i frame sono della
+/// Mapping di pagine condivise (30): U=1, NX, NON owned (i frame sono della
 /// regione condivisa, liberati a refcount da `shm.rs`), RW o RO.
 ///
 /// # Safety
@@ -226,7 +226,7 @@ pub unsafe fn map_user_region_shared(cr3: u64, vaddr: u64, phys: u64, count: usi
 /// `cr3` e' un address space creato da `new_address_space`; `code_phys` deve
 /// puntare a frame fisici validi contenenti il codice user.
 pub unsafe fn setup_user_memory(cr3: u64, code_phys: u64, code_frames: usize) -> u64 {
-    // M1: il binario flat resta RWX (vedi `map_user_region_owned_binary`).
+    // 29: il binario flat resta RWX (vedi `map_user_region_owned_binary`).
     unsafe { map_user_region_owned_binary(cr3, USER_CODE, code_phys, code_frames); }
 
     let stack_base = USER_STACK_TOP - (USER_STACK_FRAMES as u64 * PAGE_SIZE);

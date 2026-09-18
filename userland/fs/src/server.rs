@@ -65,7 +65,7 @@ pub extern "C" fn _start() -> ! {
     // reply → una send sync resterebbe bloccata. Retry bounded, mai hang.
     libr::signal_ready(reg_ok as u64);
 
-    // P1.2-diagnosi: contatore rimosso (era temporaneo); heap_stats resta in
+    // 24.2-diagnosi: contatore rimosso (era temporaneo); heap_stats resta in
     // libr per future diagnosi.
     loop {
         let msg = match libr::recv() {

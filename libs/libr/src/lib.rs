@@ -61,7 +61,7 @@ pub use syscall_numbers::{STAT_DEVICE, STAT_DIR, STAT_FILE, STAT_READONLY};
 /// Flag `open` (Fase 18.2): crea il file se non esiste.
 pub use syscall_numbers::O_CREAT;
 
-/// Fase M1 (mmap/mprotect): protezioni + codice di uscita per fault di
+/// Fase 29 (mmap/mprotect): protezioni + codice di uscita per fault di
 /// memoria, e layout stack condiviso (guard page) per i test.
 pub use syscall_numbers::{
     FAULT_EXIT_CODE, MMAP_FIXED, PROT_NONE, PROT_READ, PROT_WRITE, USER_STACK_FRAMES,
@@ -88,7 +88,7 @@ pub mod heap;
 
 /// Scratch arena per-op (bump + `reset()`, backing `sbrk` dedicato fuori
 /// free-list): per i temporanei con lifetime = una richiesta. Mai heap
-/// globale nei percorsi per-op (regola P1.2 aggiornata).
+/// globale nei percorsi per-op (regola 24.2 aggiornata).
 pub mod scratch;
 
 /// Executor async minimale sopra l'IPC asincrona (ADR-0019): `Future`

@@ -9,8 +9,8 @@ use super::shm;
 /// handler fa lookup qui, stesso stile di `HEAP_BRK`/`RING_PHYS`).
 const VMA_MAX: usize = 16;
 /// Record VMA per pid: (base, len, prot, shm) a pagine; len == 0 = libero.
-/// `prot` = PROT_* di `syscall-numbers` (M1: NONE/R/RW; W solo rifiutato a
-/// `mmap`). `shm` = 0 per anonima, altrimenti id+1 di `SHM_TABLE` (M3: la VMA
+/// `prot` = PROT_* di `syscall-numbers` (29: NONE/R/RW; W solo rifiutato a
+/// `mmap`). `shm` = 0 per anonima, altrimenti id+1 di `SHM_TABLE` (30: la VMA
 /// referenzia una regione condivisa, le pagine sono pre-materializzate al
 /// `shm_map` e NON owned — il free e' a refcount). Le pagine anonime vengono
 /// materializzate lazy al fault con i flag del prot (RW → RW, RO → RO, NONE →
@@ -71,8 +71,8 @@ fn vma_overlap_end(pid: usize, s: u64, len: u64) -> Option<u64> {
 /// le condivise sono pre-materializzate dal chiamante `shm_map`).
 /// `hint == 0 && !fixed` = scelta kernel (first-fit dal basso);
 /// altrimenti `hint` deve essere libero (o fallisce, mai fallback).
-/// `prot` = PROT_NONE/READ/(READ|WRITE) (M1; W solo rifiutato dal chiamante).
-/// `shm` = 0 anonima, altrimenti id+1 della regione condivisa (M3).
+/// `prot` = PROT_NONE/READ/(READ|WRITE) (29; W solo rifiutato dal chiamante).
+/// `shm` = 0 anonima, altrimenti id+1 della regione condivisa (30).
 /// Ritorna la base o `None`.
 pub fn vma_map(pid: usize, hint: u64, len: u64, fixed: bool, prot: u8, shm: u8) -> Option<u64> {
     if pid >= MAX_PROCS || len == 0 {
@@ -118,7 +118,7 @@ pub fn vma_map(pid: usize, hint: u64, len: u64, fixed: bool, prot: u8, shm: u8) 
         }
         hint
     };
-    // Slot libero (se la tabella e' piena si fallisce: niente merge in M0).
+    // Slot libero (se la tabella e' piena si fallisce: niente merge in 28).
     let tbase = pid * VMA_MAX;
     for i in 0..VMA_MAX {
         let e = unsafe { *core::ptr::addr_of!(VMA_TABLE[tbase + i]) };
@@ -130,7 +130,7 @@ pub fn vma_map(pid: usize, hint: u64, len: u64, fixed: bool, prot: u8, shm: u8) 
     None
 }
 
-/// Smappa `[addr, addr+len)`: solo VMA INTERE in M0 (copertura esatta,
+/// Smappa `[addr, addr+len)`: solo VMA INTERE in 28 (copertura esatta,
 /// parziali = false senza cambiare stato). Two-phase: prima valida tutto,
 /// poi smappa (PTE + frame owned + flush) e cancella i record.
 pub fn vma_unmap(pid: usize, cr3: u64, addr: u64, len: u64) -> bool {
@@ -208,11 +208,11 @@ fn exact_cover(pid: usize, addr: u64, end: u64) -> Option<([usize; VMA_MAX], usi
     Some((idxs, n))
 }
 
-/// Cambia il prot di `[addr, addr+len)` (mprotect, M1): solo VMA INTERE con
+/// Cambia il prot di `[addr, addr+len)` (mprotect, 29): solo VMA INTERE con
 /// copertura esatta (come `munmap`; parziali = false senza cambiare stato).
 /// Per ogni VMA aggiorna il record e le PTE presenti: prot NONE smappa+libera
 /// (come `munmap`: il riuso rimaterializza zero al fault), altrimenti flippa
-/// il bit W in place (i frame restano). NX non cambia mai in M1 (il codice e'
+/// il bit W in place (i frame restano). NX non cambia mai in 29 (il codice e'
 /// l'unico eseguibile, niente PROT_EXEC). Flush per pagina toccata.
 /// `prot` gia' validato dal chiamante (NONE/R/RW).
 pub fn vma_protect(pid: usize, cr3: u64, addr: u64, len: u64, prot: u8) -> bool {
@@ -229,7 +229,7 @@ pub fn vma_protect(pid: usize, cr3: u64, addr: u64, len: u64, prot: u8) -> bool 
         None => return false,
     };
     // PROT_NONE su una VMA condivisa = drop della mappatura (dovrebbe
-    // decrementare il refcount): non supportato, rifiutato senza stato (M3).
+    // decrementare il refcount): non supportato, rifiutato senza stato (30).
     if prot == PROT_NONE as u8 {
         for k in 0..n {
             let (_, _, _, s) = unsafe { *core::ptr::addr_of!(VMA_TABLE[pid * VMA_MAX + idxs[k]]) };
@@ -308,7 +308,7 @@ unsafe fn unmap_user_range(cr3: u64, vaddr: u64, count: usize) {
 }
 
 /// Dimentica le VMA del processo (teardown: i frame owned cadono col walk
-/// esistente; qui i record, come `HEAP_BRK`). Per le VMA condivise (M3)
+/// esistente; qui i record, come `HEAP_BRK`). Per le VMA condivise (30)
 /// rilascia il riferimento: l'ultimo libera i frame della regione.
 pub(super) fn vma_clear(pid: usize) {
     if pid >= MAX_PROCS {
@@ -337,7 +337,7 @@ pub fn is_user_range(addr: u64, len: usize) -> bool {
             let brk = heap_brk(pid);
             // Heap committato oppure UNA vma viva (i buffer syscall possono
             // stare in memoria mappata: la validazione resta centrale qui).
-            // NB: a `vma_contains_range` va `len`, non `end` (bug H2: con
+            // NB: a `vma_contains_range` va `len`, non `end` (bug 27.3: con
             // `end` la somma raddoppiava e ogni VMA veniva rifiutata).
             (start >= USER_CODE && end <= brk) || vma_contains_range(pid, start, len as u64)
         }

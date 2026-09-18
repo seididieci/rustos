@@ -46,10 +46,10 @@ pub fn sbrk(inc: usize) -> Result<usize, ()> {
     }
 }
 
-/// Fase M0 — `mmap(hint, len)`: mappa anonima privata RW nel basso canonico
+/// Fase 28 — `mmap(hint, len)`: mappa anonima privata RW nel basso canonico
 /// (zero-fill lazy come `sbrk`). `hint == 0` = scelta kernel (first-fit dal
 /// basso); altrimenti e' un consiglio onorato solo se libero. Ritorna la base
-/// (sempre < 2^63) o `Err`. Solo RW in M0 (il kernel rifiuta altri `prot`).
+/// (sempre < 2^63) o `Err`. Solo RW in 28 (il kernel rifiuta altri `prot`).
 #[inline]
 pub fn mmap(hint: usize, len: usize) -> Result<usize, ()> {
     let r = unsafe { syscall4(SYS_MMAP, hint as u64, len as u64, PROT_READ | PROT_WRITE, 0) };
@@ -60,7 +60,7 @@ pub fn mmap(hint: usize, len: usize) -> Result<usize, ()> {
     }
 }
 
-/// Fase M0 — `mmap_fixed(addr, len)`: come `mmap` ma piazza esattamente ad
+/// Fase 28 — `mmap_fixed(addr, len)`: come `mmap` ma piazza esattamente ad
 /// `addr` (`MMAP_FIXED`) o fallisce, mai fallback. Utile per riuso
 /// deterministico dopo `munmap`.
 #[inline]
@@ -73,8 +73,8 @@ pub fn mmap_fixed(addr: usize, len: usize) -> Result<usize, ()> {
     }
 }
 
-/// Fase M0 — `munmap(addr, len)`: smappa VMA intere (parziali = `Err` senza
-/// cambiare stato, niente split in M0).
+/// Fase 28 — `munmap(addr, len)`: smappa VMA intere (parziali = `Err` senza
+/// cambiare stato, niente split in 28).
 #[inline]
 pub fn munmap(addr: usize, len: usize) -> Result<(), ()> {
     let r = unsafe { syscall4(SYS_MUNMAP, addr as u64, len as u64, 0, 0) };
@@ -85,7 +85,7 @@ pub fn munmap(addr: usize, len: usize) -> Result<(), ()> {
     }
 }
 
-/// Fase M1 — `mmap_prot(hint, len, prot)`: come `mmap` ma con `prot` esplicito
+/// Fase 29 — `mmap_prot(hint, len, prot)`: come `mmap` ma con `prot` esplicito
 /// (`PROT_NONE`/`PROT_READ`/`PROT_READ|PROT_WRITE`; altri = `Err`). Le pagine
 /// vengono materializzate al primo accesso con i flag del prot (RO = scrittura
 /// → fault → kill del processo).
@@ -99,7 +99,7 @@ pub fn mmap_prot(hint: usize, len: usize, prot: u64) -> Result<usize, ()> {
     }
 }
 
-/// Fase M1 — `mprotect(addr, len, prot)`: cambia le protezioni di VMA intere
+/// Fase 29 — `mprotect(addr, len, prot)`: cambia le protezioni di VMA intere
 /// (copertura esatta come `munmap`; parziali = `Err` senza cambiare stato).
 /// A `PROT_NONE` le pagine cadono (il riuso rimaterializza zero); RO↔RW flippa
 /// il bit W. Il codice e' l'unico mapping eseguibile: niente PROT_EXEC.
@@ -113,7 +113,7 @@ pub fn mprotect(addr: usize, len: usize, prot: u64) -> Result<(), ()> {
     }
 }
 
-/// Fase M3 — `shm_create(len)`: crea una regione di memoria condivisa di
+/// Fase 30 — `shm_create(len)`: crea una regione di memoria condivisa di
 /// `len` byte (frame contigui azzerati, max 256 KiB) e ritorna l'id (>= 1).
 /// L'id si passa a un altro processo via IPC, che la mappa con `shm_map`.
 #[inline]
@@ -126,7 +126,7 @@ pub fn shm_create(len: usize) -> Result<u32, ()> {
     }
 }
 
-/// Fase M3 — `shm_map(id, hint, prot)`: mappa la regione condivisa `id` nello
+/// Fase 30 — `shm_map(id, hint, prot)`: mappa la regione condivisa `id` nello
 /// spazio del chiamante (prot `PROT_READ`/`PROT_READ|PROT_WRITE`); le pagine
 /// sono le STESSE per tutti i mappatori (scritture visibili). `hint == 0` =
 /// scelta kernel. Ritorna la base o `Err`.

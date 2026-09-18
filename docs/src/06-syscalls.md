@@ -22,7 +22,7 @@ system in questa fase).
       timer. *Verifica*: uptime prosegue mentre userdemo busy-loppa in ring 3. ✅ completata
       (nota storica: `USER_BASE` con pml4 index ≠ 0 per non collidere con
       l'identity map del kernel a PML4[0] — oggi `PML4[0] = 0` a runtime e il
-      basso ospita le mappe utente (Fase M0, ADR-0020), ma l'indice resta).
+      basso ospita le mappe utente (Fase 28, ADR-0020), ma l'indice resta).
 - [x] **6.3 — Meccanismo syscall/sysret**: MSR `STAR`/`LSTAR`/`SFMASK` + `EFER.SCE`; entry assembly
       con salvataggio/ripristino RSP; handler base `getpid`/`write`/`exit`. *Verifica*: un
       processo user chiama una syscall e il kernel risponde. ✅ completata
@@ -105,20 +105,20 @@ La numerazione e' definita nel dispatch di `syscall_handler` in `kernel/src/sysc
 | 36 | `service_pid(service)` | pid dell'owner del servizio o -1 (supervisione/diagnostica, Fase 14) |
 | 37 | `ps_info(pid)` | snapshot `ps`: 0 + nome in rdi+rsi, packed stato/prio/parent/ipc in rdx, tick in r10; -1 se slot vuoto (Fase 19.1) |
 | 38 | `spawn_image(img, len, meta, metalen)` | come `spawn` ma il binario e' in memoria del chiamante (servizi da disco, Fase 21); `meta` = `SpawnMeta` 40 B (nome/prio/porte, porte solo init); ritorna il canale di nascita o -1 |
-| 39 | `mmap(hint, len, prot, flags)` | mappa anonima privata nel basso canonico (Fase M0/M1): VA subito, frame zero al primo fault; `hint` 0 = scelta kernel, `MMAP_FIXED` = piazza o fallisci; `prot` = `PROT_NONE`/`PROT_READ`/`PROT_READ\|PROT_WRITE` (W solo ed EXEC rifiutati); ritorna la base o -1 |
-| 40 | `munmap(addr, len)` | smappa VMA intere (Fase M0, niente split: parziali = -1 senza stato) → 0 o -1 |
-| 41 | `mprotect(addr, len, prot)` | cambia le protezioni di VMA intere (Fase M1): RO↔RW flippa il bit W, `PROT_NONE` fa cadere le pagine (riuso a zeri); stesse regole di `munmap`; ritorna 0 o -1 |
-| 42 | `shm_create(len)` | crea una regione di memoria condivisa (Fase M3, max 256 KiB, frame contigui azzerati) → id (>= 1) o -1 |
+| 39 | `mmap(hint, len, prot, flags)` | mappa anonima privata nel basso canonico (Fase 28/29): VA subito, frame zero al primo fault; `hint` 0 = scelta kernel, `MMAP_FIXED` = piazza o fallisci; `prot` = `PROT_NONE`/`PROT_READ`/`PROT_READ\|PROT_WRITE` (W solo ed EXEC rifiutati); ritorna la base o -1 |
+| 40 | `munmap(addr, len)` | smappa VMA intere (Fase 28, niente split: parziali = -1 senza stato) → 0 o -1 |
+| 41 | `mprotect(addr, len, prot)` | cambia le protezioni di VMA intere (Fase 29): RO↔RW flippa il bit W, `PROT_NONE` fa cadere le pagine (riuso a zeri); stesse regole di `munmap`; ritorna 0 o -1 |
+| 42 | `shm_create(len)` | crea una regione di memoria condivisa (Fase 30, max 256 KiB, frame contigui azzerati) → id (>= 1) o -1 |
 | 43 | `shm_map(id, hint, prot, flags)` | mappa la regione condivisa `id` come VMA (prot R/RW, PTE non-owned pre-materializzate): le pagine sono le stesse per tutti i mappatori (scritture visibili); refcount, a 0 i frame sono liberati; ritorna la base o -1 |
 
-> **Fase M1 (protezioni)**: `PROT_NONE`/`PROT_READ`/`PROT_READ|PROT_WRITE` sono
+> **Fase 29 (protezioni)**: `PROT_NONE`/`PROT_READ`/`PROT_READ|PROT_WRITE` sono
 > enforced dal page-fault handler. Un fault di protezione da user mode (write
 > su RO, exec su NX, accesso a NONE) o un accesso fuori da ogni regione (es. la
 > guard page sotto lo stack) **termina il processo** con `FAULT_EXIT_CODE`
 > (139) — mai halt del kernel. Heap, stack, pagine `mmap` e pagine iniettate
 > (`map_physical`/`map_in`) sono non-eseguibili (NX, EFER.NXE); il binario user
 > e' ancora RWX perche' flat (W^X richiede i confini di sezione all'embed-time,
-> M1b).
+> 29b).
 
 > **Fase 9.6** (sostituita da 10.2): le syscall FS 3-7, 23, 24 sono state RIMOSSE
 > dal percorso dati. Ogni processo alloca DUE pagine ring (`ring_alloc`, 26:
@@ -212,12 +212,12 @@ extern "C" fn syscall_handler() -> i64 {
 | `spawn_image` | 38 | Come `spawn` ma dal binario in memoria del chiamante (servizi da disco, Fase 21) |
 | `map_physical` | 21 | Mappa pagine fisiche nello spazio user (Fase 8.2) |
 | `get_ticks` | 22 | Ritorna il contatore PIT corrente (Fase 8.3) |
-| `mmap` | 39 | Mappa anonima privata RW nel basso canonico (Fase M0): hint o scelta kernel |
-| `mmap_prot` | 39 | Come `mmap` ma con `prot` esplicito NONE/R/RW (Fase M1) |
-| `munmap` | 40 | Smappa VMA intere (Fase M0, niente split) |
-| `mprotect` | 41 | Cambia le protezioni di VMA intere (Fase M1: RO↔RW, NONE) |
-| `shm_create` | 42 | Crea una regione di memoria condivisa (Fase M3) → id |
-| `shm_map` | 43 | Mappa una regione condivisa (Fase M3) → base (zero-copy tra processi) |
+| `mmap` | 39 | Mappa anonima privata RW nel basso canonico (Fase 28): hint o scelta kernel |
+| `mmap_prot` | 39 | Come `mmap` ma con `prot` esplicito NONE/R/RW (Fase 29) |
+| `munmap` | 40 | Smappa VMA intere (Fase 28, niente split) |
+| `mprotect` | 41 | Cambia le protezioni di VMA intere (Fase 29: RO↔RW, NONE) |
+| `shm_create` | 42 | Crea una regione di memoria condivisa (Fase 30) → id |
+| `shm_map` | 43 | Mappa una regione condivisa (Fase 30) → base (zero-copy tra processi) |
 
 `spawn(name_ptr, name_len)` (Fase 8.1 + 13) crea un nuovo processo a partire dal
 binario user embedded il cui nome combacia con `name` (tabella `NAMED_BINARIES`
