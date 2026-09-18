@@ -62,57 +62,17 @@ fn report(total: &mut u32, ok: &mut u32, name: &str, pass: bool) {
     }
 }
 
-fn spin_ticks(n: i64) {
-    // Batch di spin puri tra due get_ticks (pattern utspin/robusto
-    // scheduler): una get_ticks per iterazione maschera IF=0 ad ogni syscall
-    // e brucia quanti che rallentano gli handoff IPC altrui.
-    let t0 = libr::get_ticks();
-    while libr::get_ticks() - t0 < n {
-        for _ in 0..512 {
-            core::hint::spin_loop();
-        }
-    }
-}
 
 /// Spawna un helper da disco (Fase 21: `/test/*.bin` iniettati a build) e gli
 /// invia la CFG (modo=w0,param=w1) sul canale di nascita (ADR-0008). Ritorna
 /// (canale verso il figlio, ack.w0). Qualunque processo puo' spawnare senza
 /// porte (primitiva generale); le porte restano privilegio di init.
 fn spawn_cfg(path: &str, name: &str, prio: u8, mode: u64, param: u64) -> Option<(u64, u64)> {
-    let img = load_bin(path)?;
+    let img = libr::load_file(path)?;
     let meta = libr::SpawnMeta::new(name, prio, &[])?;
     let chan = libr::spawn_image(&img, &meta).ok()? as u64;
     let ack = libr::send(chan, T_CFG, mode, param).ok()?;
     Some((chan, ack.w0))
-}
-
-/// Legge un file intero in heap (bound 256 KiB). None su errore.
-/// Chunk da 4000 B (= RING_MAX_PAYLOAD libr): un round-trip per chunk invece
-/// di due col vecchio 2048 (ogni round-trip puo' attendere un quanto sotto
-/// carico: dimezzarli dimezza il tempo di load).
-fn load_bin(path: &str) -> Option<Vec<u8>> {
-    let fd = libr::open(path, 0);
-    if fd < 0 {
-        return None;
-    }
-    let mut data = Vec::new();
-    let mut chunk = [0u8; 4000];
-    loop {
-        if data.len() >= 256 * 1024 {
-            let _ = libr::close(fd);
-            return None;
-        }
-        let n = libr::read_fs(fd, &mut chunk, 4000);
-        if n <= 0 {
-            break;
-        }
-        data.extend_from_slice(&chunk[..n as usize]);
-    }
-    let _ = libr::close(fd);
-    if data.is_empty() {
-        return None;
-    }
-    Some(data)
 }
 
 /// Legge `want` entry di una dir e dice se contiene `needle`.
@@ -160,7 +120,7 @@ fn t_getpid() -> bool {
 
 fn t_ticks() -> bool {
     let t1 = libr::get_ticks();
-    spin_ticks(1);
+    libr::spin_ticks(1);
     let t2 = libr::get_ticks();
     // Attendi esplicitamente che il contatore cambi (timer attivo + IF in user).
     let t2b = t2;
@@ -661,7 +621,7 @@ fn t_sched_preempt() -> bool {
 
     // Parent spinge in ring 3 SENZA mai bloccare: il figlio (Normal) può
     // avanzare solo se il timer lo preempta (RR tra Normal).
-    spin_ticks(110);
+    libr::spin_ticks(110);
     let progress = unsafe { core::ptr::read_volatile(ctr) };
 
     let (done, _dchan) = recv_done(&[chan]);

@@ -11,7 +11,6 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
 use libr;
 use libr::{println, print_str};
 // Tag di fine-test e servizio-pronto (DocsB): single source in
@@ -66,31 +65,6 @@ struct SvcMeta {
 const VGA_CURSOR_RANGES: &[(u16, u16)] = &[(0x3D4, 0x3D5)];
 const KBD_PS2_RANGES: &[(u16, u16)] = &[(0x60, 0x64)];
 
-/// Legge un file intero in heap (bound 256 KiB = SPAWN_IMAGE_MAX kernel).
-/// None su qualunque errore (open/read/close): fail-loud al chiamante.
-/// Chunk da 4000 B (= RING_MAX_PAYLOAD libr, come `load_bin` di usertests).
-fn load_file(path: &str) -> Option<Vec<u8>> {
-    let fd = libr::open(path, 0);
-    if fd < 0 {
-        return None;
-    }
-    let mut data = Vec::new();
-    let mut chunk = [0u8; 4000];
-    loop {
-        if data.len() >= 256 * 1024 {
-            let _ = libr::close(fd);
-            return None; // troppo grosso: mai un binario valido
-        }
-        let n = libr::read_fs(fd, &mut chunk, 4000);
-        if n <= 0 {
-            break;
-        }
-        data.extend_from_slice(&chunk[..n as usize]);
-    }
-    let _ = libr::close(fd);
-    Some(data)
-}
-
 /// Spawna un servizio da disco (Fase 21): legge il file, costruisce SpawnMeta
 /// e chiama `spawn_image`. Ritorna il channel id o None (file mancante,
 /// meta invalida, spawn rifiutato). Il boot fallisce loud (panic), la
@@ -99,7 +73,7 @@ fn spawn_file(meta: &SvcMeta) -> Option<i64> {
     let path = meta.path?;
     print_str!("[init] load ");
     libr::write_raw(path.as_ptr(), path.len());
-    let img = match load_file(path) {
+    let img = match libr::load_file(path) {
         Some(b) if !b.is_empty() => b,
         _ => {
             println!(" -> FAILED (file illeggibile)");
@@ -203,15 +177,6 @@ struct Supervised {
 }
 
 /// Attesa di `n` tick con spin puri IF=1 a batch (non affama il timer).
-fn spin_ticks(n: i64) {
-    let t0 = libr::get_ticks();
-    while libr::get_ticks() - t0 < n {
-        for _ in 0..512 {
-            core::hint::spin_loop();
-        }
-    }
-}
-
 /// Attende SVC_READY sul canale di nascita del figlio appena respawnato.
 /// Consuma SENZA reply (fire-and-forget, vedi wait_msg). Ritorna false se il
 /// figlio muore prima del READY (EXIT_NOTIFY sul suo stesso canale) o se
@@ -303,7 +268,7 @@ fn restart_service(e: &mut Supervised) {
             return;
         }
         println!("[init] supervisione: riavvio (tentativo {})", e.restarts);
-        spin_ticks(20);
+        libr::spin_ticks(20);
         let Some(chan) = spawn_entry(e.meta) else {
             println!("[init] supervisione: spawn FAILED, riprovo");
             continue;

@@ -20,6 +20,8 @@
 
 #![no_std]
 
+extern crate alloc;
+
 pub extern crate syscall_numbers;
 use syscall_numbers::*;
 
@@ -437,6 +439,19 @@ pub fn getpid() -> i64 {
 #[inline]
 pub fn get_ticks() -> i64 {
     unsafe { syscall4(SYS_GET_TICKS, 0, 0, 0, 0) }
+}
+
+/// Attende `n` tick con batch di spin puri tra due `get_ticks` (pattern
+/// robusto scheduler, A4: prima identico in init/usertests). Una `get_ticks`
+/// per iterazione maschera IF=0 a ogni syscall e brucia quanti che rallentano
+/// gli handoff IPC altrui; 512 spin puri lasciano IF=1 quasi tutto il tempo.
+pub fn spin_ticks(n: i64) {
+    let t0 = get_ticks();
+    while get_ticks() - t0 < n {
+        for _ in 0..512 {
+            core::hint::spin_loop();
+        }
+    }
 }
 
 /// P0 (benchmark): legge il Time Stamp Counter (cicli CPU). Disponibile in
@@ -1976,9 +1991,41 @@ pub fn fs_collect_msg(m: &IpcMsg, dst: &mut [u8], cap: usize, is_read: bool) -> 
                 resp_ring_consume(16);
                 fs_reply_val(result)
             }
-            None => -1,
+        None => -1,
         }
     }
+}
+
+/// Legge un file intero in heap (bound 256 KiB = SPAWN_IMAGE_MAX kernel).
+/// None su qualunque errore (open/read/close) o file vuoto. Chunk da
+/// RING_MAX_PAYLOAD: un round-trip per chunk (ogni round-trip puo' attendere
+/// un quanto sotto carico: dimezzarli dimezza il tempo di load).
+/// (A4: prima identico in init/usertests/usertest-client come
+/// `load_file`/`load_bin`; la variante init accettava anche il file vuoto,
+/// qui rifiutato — un .bin vuoto non e' mai valido e falliva loud comunque).
+pub fn load_file(path: &str) -> Option<alloc::vec::Vec<u8>> {
+    let fd = open(path, 0);
+    if fd < 0 {
+        return None;
+    }
+    let mut data = alloc::vec::Vec::new();
+    let mut chunk = [0u8; RING_MAX_PAYLOAD];
+    loop {
+        if data.len() >= 256 * 1024 {
+            let _ = close(fd);
+            return None; // troppo grosso: mai un binario valido
+        }
+        let n = read_fs(fd, &mut chunk, RING_MAX_PAYLOAD);
+        if n <= 0 {
+            break;
+        }
+        data.extend_from_slice(&chunk[..n as usize]);
+    }
+    let _ = close(fd);
+    if data.is_empty() {
+        return None;
+    }
+    Some(data)
 }
 
 /// Scarta un'op async in volo (Fase 15, driver-server): azzera il guard e i
