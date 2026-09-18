@@ -289,39 +289,12 @@ pub extern "C" fn _start() -> ! {
 }
 
 /// Legge un file intero in heap (bound 256 KiB, chunk 4000 = RING_MAX_PAYLOAD).
-/// Serve a NEST per spawnare le foglie da `/fat/test` (qualunque processo puo'
-/// usare `spawn_image` senza porte). None su errore.
-fn load_bin(path: &str) -> Option<alloc::vec::Vec<u8>> {
-    let fd = libr::open(path, 0);
-    if fd < 0 {
-        return None;
-    }
-    let mut data = alloc::vec::Vec::new();
-    let mut chunk = [0u8; 4000];
-    loop {
-        if data.len() >= 256 * 1024 {
-            let _ = libr::close(fd);
-            return None;
-        }
-        let n = libr::read_fs(fd, &mut chunk, 4000);
-        if n <= 0 {
-            break;
-        }
-        data.extend_from_slice(&chunk[..n as usize]);
-    }
-    let _ = libr::close(fd);
-    if data.is_empty() {
-        return None;
-    }
-    Some(data)
-}
-
 /// Spawna una foglia KILLME parcheggiata (Fase 22, NEST): come `spawn_cfg` di
 /// usertests ma eseguito da dentro l'helper (il MID e' parent delle foglie).
 /// `detached` = flag spawn (la foglia sopravvive alla morte del MID).
 /// Ritorna il pid della foglia (dall'ACK) o None.
 fn spawn_killme(detached: bool) -> Option<u64> {
-    let img = load_bin("/fat/test/testcli.bin")?;
+    let img = libr::load_file("/fat/test/testcli.bin")?;
     let base = libr::SpawnMeta::new("utcli", 16, &[])?;
     let meta = if detached { base.detached() } else { base };
     let chan = libr::spawn_image(&img, &meta).ok()? as u64;
