@@ -74,6 +74,7 @@ const T_STOP: u64 = 104;
 const T_OPENED: u64 = 105;
 const T_GO: u64 = 106;
 const T_READY: u64 = 107;
+const T_FORKREP: u64 = 108;
 const T_CFG: u64 = 100;
 
 const MODE_ECHO: u64 = 0;
@@ -98,6 +99,7 @@ const MODE_FAULT_GPF: u64 = 17;
 const MODE_SHMDEMO: u64 = 18;
 const MODE_FAULT_CODE: u64 = 19;
 const MODE_COWDEMO: u64 = 20;
+const MODE_FORKDEMO: u64 = 21;
 
 // Tag DEV_* + errore IPC (A1): single source in `libr` (prima letterali qui).
 use libr::{DEV_CLOSE, DEV_OPEN, ERR};
@@ -293,6 +295,7 @@ pub extern "C" fn _start() -> ! {
                 MODE_FLOOD => run_flood(parent),
                 MODE_SHMDEMO => run_shmdemo(rounds as u32),
                 MODE_COWDEMO => run_cowdemo(rounds as u32),
+                MODE_FORKDEMO => run_forkdemo(),
                 _ => (false, 1),
             };
             let _ = libr::send(parent, T_DONE, ok as u64, detail as u64);
@@ -351,6 +354,76 @@ fn run_cowdemo(id: u32) -> (bool, usize) {
         }
     }
     (true, 0)
+}
+
+/// Fase 34: fork COW di se stesso. Il globale `FORK_G` (pagina owned privata)
+/// e' condiviso in COW al fork: padre e figlio scrivono valori diversi e
+/// nessuno deve vedere la scrittura dell'altro (isolamento). Il figlio
+/// riporta il valore letto/scritto sul canale di nascita (SYNC: il padre
+/// risponde) ed esce 0; il padre verifica isolamento + report + exit code.
+/// Solo nascita+exit: niente FS/IPC extra nel figlio (34.2).
+static mut FORK_G: u64 = 0;
+
+const FORK_PAT: u64 = 0x1111_1111_1111_1111;
+const FORK_CHILD_VAL: u64 = 0xAAAA_AAAA_AAAA_AAAA;
+const FORK_PARENT_VAL: u64 = 0x5555_5555_5555_5555;
+
+fn run_forkdemo() -> (bool, usize) {
+    unsafe { FORK_G = FORK_PAT; }
+    match libr::fork() {
+        Err(_) => (false, 1),
+        Ok(libr::ForkResult::Child { .. }) => {
+            // Shared-read: il pattern del padre e' visibile prima del write.
+            if unsafe { FORK_G } != FORK_PAT {
+                libr::exit(2);
+            }
+            unsafe { FORK_G = FORK_CHILD_VAL; }
+            if unsafe { FORK_G } != FORK_CHILD_VAL {
+                libr::exit(3);
+            }
+            // Report SYNC al padre (canale 0): il padre risponde, poi esco.
+            match libr::send(libr::CHANNEL_PARENT, T_FORKREP, FORK_CHILD_VAL, FORK_CHILD_VAL) {
+                Ok(_) => libr::exit(0),
+                Err(_) => libr::exit(4),
+            }
+        }
+        Ok(libr::ForkResult::Parent { pid, chan }) => {
+            if pid == 0 {
+                return (false, 5);
+            }
+            unsafe { FORK_G = FORK_PARENT_VAL; }
+            // Isolamento: la scrittura COW del figlio non e' visibile.
+            if unsafe { FORK_G } != FORK_PARENT_VAL {
+                return (false, 6);
+            }
+            // Report del figlio (SYNC: rispondo per sbloccarlo).
+            let rep = match libr::recv() {
+                Ok(m) if m.tag == T_FORKREP && m.channel == chan => m,
+                Ok(m) => {
+                    let _ = libr::reply(0, 0, 0);
+                    return (false, 7 + (m.tag as usize % 10));
+                }
+                Err(_) => return (false, 8),
+            };
+            let _ = libr::reply(0, 0, 0);
+            if rep.w0 != FORK_CHILD_VAL || rep.w1 != FORK_CHILD_VAL {
+                return (false, 9);
+            }
+            // Il figlio e' uscito 0 (EXIT_NOTIFY sul canale di nascita).
+            loop {
+                match libr::recv() {
+                    Ok(m) if m.channel == chan && libr::is_exit_notify(&m) => {
+                        return (m.w0 == 0, 10);
+                    }
+                    Ok(m) if libr::is_exit_notify(&m) => {}
+                    Ok(_) => {
+                        let _ = libr::reply(0, 0, 0);
+                    }
+                    Err(_) => return (false, 11),
+                }
+            }
+        }
+    }
 }
 
 /// Fase 29: provoca un fault di memoria non recuperabile (write su RO,

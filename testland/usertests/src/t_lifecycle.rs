@@ -611,3 +611,25 @@ pub fn t_userfs_restart() -> bool {
     true
 }
 
+
+/// t49 — fork COW (Fase 34, ADR-0024): l'helper duplica se stesso; padre e
+/// figlio scrivono un globale COW e verificano l'isolamento (nessuno vede la
+/// scrittura dell'altro); il figlio riporta sul canale di nascita ed esce 0.
+/// L'orchestratore osserva solo il T_DONE dell'helper (dettagli dentro).
+pub fn t_fork() -> bool {
+    helpers::drain_stray();
+    let (chan, _pid) = match helpers::spawn_cfg(
+        "/fat/test/testcli.bin", "utcli", 16, helpers::M_FORKDEMO, 0,
+    ) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t49: spawn helper FAILED");
+            return false;
+        }
+    };
+    let (ok, _) = helpers::recv_done(&[chan]);
+    if !ok {
+        println!("[usertests] t49: helper fork FAIL");
+    }
+    ok
+}

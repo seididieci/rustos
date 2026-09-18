@@ -84,6 +84,7 @@ pub extern "C" fn _start() -> ! {
     helpers::report(&mut total, &mut ok, "t46 memoria condivisa (shm)", t_basic::t_shm());
     helpers::report(&mut total, &mut ok, "t47 shared text (RX/RO condivisi)", t_basic::t_text());
     helpers::report(&mut total, &mut ok, "t48 COW su shm (shared-read + isolamento)", t_basic::t_cow());
+    helpers::report(&mut total, &mut ok, "t49 fork COW (isolamento padre/figlio)", t_lifecycle::t_fork());
     // t34 per ULTIMO: i drop sono irrevocabili sul canale di usertests.
     helpers::report(&mut total, &mut ok, "t34 diritti per-canale lato server", t_fs::t_rights());
 

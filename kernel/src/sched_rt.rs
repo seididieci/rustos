@@ -20,8 +20,11 @@ mod ps;
 mod lifecycle;
 #[path = "sched_rt/ctx.rs"]
 mod ctx;
+#[path = "sched_rt/fork.rs"]
+mod fork;
 
 pub use spawn::{init, spawn, create_user};
+pub use fork::fork_current;
 pub use tick::{on_tick, notify_irq};
 pub use ipc::{IpcResult, ipc_send, ipc_send_async, ipc_recv, ipc_recv_nonblock, ipc_reply};
 // Compat: PsSnap era `pub` prima dello split (nessun uso interno attuale).

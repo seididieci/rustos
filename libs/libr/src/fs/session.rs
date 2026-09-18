@@ -20,6 +20,27 @@ pub(crate) static FS_CHAN: AtomicI64 = AtomicI64::new(-1);
 pub(crate) static REQ_PHYS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static RESP_PHYS: AtomicU64 = AtomicU64::new(0);
 
+/// Flag "sono un figlio fork" (Fase 34): i ring FS e i canali del padre NON si
+/// ereditano (le finestre ring non sono mappate nel figlio). Con questo flag
+/// ogni op FS fallisce subito con `Err` invece di faultare sul ring assente o
+/// — peggio — di riuscire l'handshake sui phys del padre (aliasing dei ring).
+/// Il figlio che deve fare FS deve prima `exec`-care (futuro) o restare senza.
+static FS_FORKED: AtomicBool = AtomicBool::new(false);
+
+/// Hook post-fork lato figlio (Fase 34): avvelena l'FS per questo processo e
+/// pulisce il guard 1-in-volo copiato in COW dal padre (un'op in volo del
+/// padre non e' raccoglibile dal figlio: i ring e il canale sono del padre).
+pub fn post_fork_child() {
+    FS_FORKED.store(true, Ordering::Relaxed);
+    FS_PENDING.store(-1, Ordering::Relaxed);
+}
+
+/// True se questo processo e' un figlio fork (FS inutilizzabile).
+#[inline]
+pub(crate) fn fs_forked() -> bool {
+    FS_FORKED.load(Ordering::Relaxed)
+}
+
 /// Risolve (una volta) il canale verso il fs server per nome.
 pub(crate) fn fs_chan() -> i64 {
     let c = FS_CHAN.load(Ordering::Relaxed);
@@ -134,6 +155,9 @@ pub(crate) fn fs_chan_rt() -> i64 {
 /// reply, il retry duplica. Per ramfs/devfs-console l'effetto e' benigno
 /// (overwrite degli stessi byte / device idempotenti); policy fine futura.
 pub(crate) fn fs_send(tag: u64, w0: u64, w1: u64) -> Result<IpcReply, ()> {
+    if fs_forked() {
+        return Err(()); // figlio fork: niente FS (34, mai aliasare i ring)
+    }
     let c = fs_chan();
     if c >= 0 {
         if let Ok(r) = ipc::send(c as u64, tag, w0, w1) {

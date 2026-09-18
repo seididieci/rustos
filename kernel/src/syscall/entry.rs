@@ -50,6 +50,51 @@ pub(super) static mut PERCPU: PerCpu = PerCpu {
     ret_r10: 0,
     user_r12_save: 0,
 };
+/// Offset (da `rsp0`, in byte) dei registri user salvati sullo stack kernel
+/// dall'entry (Fase 34, fork): il figlio riceve una copia di queste 15 word +
+/// trampoline dedicato. Devono restare sincronizzati coi push qui sotto.
+pub(crate) const SAVED_USER_RSP: u64 = 8;
+pub(crate) const SAVED_USER_R12: u64 = 16;
+pub(crate) const SAVED_R8: u64 = 24;
+pub(crate) const SAVED_R9: u64 = 32;
+pub(crate) const SAVED_R10: u64 = 40;
+pub(crate) const SAVED_RDI: u64 = 48;
+pub(crate) const SAVED_RSI: u64 = 56;
+pub(crate) const SAVED_RDX: u64 = 64;
+pub(crate) const SAVED_RCX: u64 = 72;
+pub(crate) const SAVED_R11: u64 = 80;
+pub(crate) const SAVED_RBX: u64 = 88;
+pub(crate) const SAVED_RBP: u64 = 96;
+pub(crate) const SAVED_R13: u64 = 104;
+pub(crate) const SAVED_R14: u64 = 112;
+pub(crate) const SAVED_R15: u64 = 120;
+
+/// Ritorno dalla syscall per un figlio forkato (Fase 34): il `ret` di
+/// `switch_to` atterra qui con uno stack finto `[r11..user_rsp]` copiato dal
+/// padre (stesso layout dei push dell'entry: 8 registri + r12 + rsp).
+/// Ripristina TUTTI i registri user come l'epilogo normale, con `rax = 0` (nel
+/// figlio fork ritorna 0), poi `sysretq` (RIP da `rcx`, RFLAGS da `r11`).
+/// Epilogo dedicato che NON legge `PERCPU.ipc_override` (stale dopo altre
+/// syscall: clobbererebbe i registri del figlio). Mai chiamato dal percorso
+/// normale.
+#[unsafe(naked)]
+pub(crate) unsafe extern "C" fn fork_child_exit() -> ! {
+    core::arch::naked_asm!(
+        "xor eax, eax",
+        "pop r11",
+        "pop rcx",
+        "pop rdx",
+        "pop rsi",
+        "pop rdi",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop r12",
+        "pop rsp",
+        "sysretq",
+    );
+}
+
 /// Entry assembly della syscall: punto d'ingresso di `LSTAR`.
 ///
 /// A questo punto `GS.base` e' quello dell'utente (oppure 0); con `swapgs`
@@ -66,6 +111,7 @@ pub unsafe extern "C" fn syscall_entry() -> ! {
     // Layout dello stack kernel per-processo (dal fondo, 1° push = piu' in
     // basso):
     //   [user_rsp] [user_r12] [r8 r9 r10 rdi rsi rdx rcx r11]
+    //   [rbx rbp r13 r14 r15] (Fase 34: callee-saved user a offset noti per fork)
     // user_rsp e user_r12 sono salvati QUI (non in PERCPU) perche' PERCPU e'
     // condiviso: in una syscall che blocca (recv/send), un altro processo puo'
     // sovrascrivere user_rsp prima che il processo venga ripreso → sysret
@@ -117,8 +163,21 @@ pub unsafe extern "C" fn syscall_entry() -> ! {
         "push rdx",
         "push rcx",
         "push r11",
+        // Fase 34 (fork): salva anche i callee-saved user a offset noti
+        // (SAVED_RBX..SAVED_R15). Trasparente: l'handler li preserva comunque
+        // per ABI, qui si ripristinano i valori user al ritorno.
+        "push rbx",
+        "push rbp",
+        "push r13",
+        "push r14",
+        "push r15",
         // dispatch (il risultato resta in rax)
         "call {handler}",
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop rbp",
+        "pop rbx",
         "pop r11",
         "pop rcx",
         "pop rdx",

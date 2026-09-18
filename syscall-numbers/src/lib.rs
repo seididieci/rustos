@@ -101,6 +101,12 @@ pub const SYS_SHM_MAP: u64 = 43;
 /// Contatori shared text (Fase 32, debug/test): ritorna `hits` in rax,
 /// `misses` in rdi, `live` in rsi (nessun argomento).
 pub const SYS_TEXT_STATS: u64 = 44;
+/// Crea un figlio che condivide l'address space del chiamante in COW
+/// (Fase 34, `fork`): nessun argomento. Ritorna al padre `(pid_figlio,
+/// canale_nascita)` (pid in rax, canale in rdi via multi-registro), al figlio
+/// `(0, canale_nascita)` (il figlio usa il canale 0 = `CHANNEL_PARENT`); -1
+/// se non c'e' un PID libero o il pool canali e' esaurito.
+pub const SYS_FORK: u64 = 45;
 /// Protezioni `mmap`/`mprotect` (29: NONE/R/RW con enforcement; W solo e
 /// PROT_EXEC rifiutati — eseguibile solo il codice di spawn).
 pub const PROT_NONE: u64 = 0x0;

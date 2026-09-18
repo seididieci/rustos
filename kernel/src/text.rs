@@ -158,6 +158,23 @@ pub fn release(id: u32) {
     }
 }
 
+/// Aggiunge un riferimento all'immagine `id` (Fase 34, fork: il figlio
+/// specchia le pagine condivise del padre e ne trattiene una quota).
+/// Idempotente su id invalido/libero (mai panic: il walk del fork specchia
+/// solo PTE presenti, l'id viene dal PCB del padre).
+pub fn add_ref(id: u32) {
+    if id == 0 || id as usize > TEXT_MAX {
+        return;
+    }
+    let idx = id as usize - 1;
+    let e = unsafe { *core::ptr::addr_of!(TEXT_TABLE[idx]) };
+    if e.0 == 0 {
+        return;
+    }
+    unsafe { *core::ptr::addr_of_mut!(TEXT_TABLE[idx].5) += 1; }
+    LIVE.fetch_add(1, Ordering::Relaxed);
+}
+
 /// `(hits, misses, live)`: contatori per la syscall `text_stats` (debug/test).
 pub fn stats() -> (u64, u64, u64) {
     (

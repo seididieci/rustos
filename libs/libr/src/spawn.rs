@@ -116,3 +116,35 @@ pub fn map_physical(phys: u64, virt: u64, count: usize) -> Result<(), ()> {
     }
     Ok(())
 }
+
+/// Esito di `fork()` (Fase 34): nel padre il pid del figlio + il canale di
+/// nascita (stesso id da entrambi i lati; il padre lo usa numerico, il figlio
+/// come canale 0 = `CHANNEL_PARENT`); nel figlio solo il canale di nascita
+/// (il pid del figlio lo sa il padre, il figlio sa di essere il figlio).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ForkResult {
+    /// Padre: pid del figlio + canale di nascita verso di lui.
+    Parent { pid: u64, chan: u64 },
+    /// Figlio: canale di nascita verso il padre (= canale 0).
+    Child { chan: u64 },
+}
+
+/// `fork()`: duplica il chiamante in COW (address space condiviso, copie
+/// private al primo write). Il figlio riprende come ritorno dalla syscall con
+/// 0; priorita' e `req_next` ereditati (e divergono), niente canali/fd/ring/
+/// porte/CBS ereditati (solo nascita). `Err` se non c'e' un PID libero o
+/// l'OOM colpisce il walk. Nel ramo figlio avvelena automaticamente l'FS
+/// (`post_fork_child`): le op FS ritornano `Err` invece di aliasare i ring.
+#[inline]
+pub fn fork() -> Result<ForkResult, ()> {
+    let (rax, rdi, _, _, _) = unsafe { syscall4_out(SYS_FORK, 0, 0, 0, 0) };
+    if rax < 0 {
+        return Err(());
+    }
+    if rax == 0 {
+        crate::fs::session::post_fork_child();
+        Ok(ForkResult::Child { chan: CHANNEL_PARENT })
+    } else {
+        Ok(ForkResult::Parent { pid: rax as u64, chan: rdi })
+    }
+}
