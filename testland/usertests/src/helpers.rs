@@ -37,6 +37,9 @@ pub const M_COWDEMO: u64 = 20;
 // Fase 34: fork COW di se stesso (isolamento padre/figlio su globale,
 // report sul canale di nascita, exit 0).
 pub const M_FORKDEMO: u64 = 21;
+// Fase 35: come KILLME ma alla morte del parent esce 0 da solo dopo ~100
+// tick (igiene senza kill parent-scoped, per t40 dopo il reparent a init).
+pub const M_ORPHAN: u64 = 22;
 
 // VA per i test map_physical/aliasing (zona libera tra USER_FS_BUFFER e lo
 // heap: 0x4000_0020_0000..0x4000_0040_0000).

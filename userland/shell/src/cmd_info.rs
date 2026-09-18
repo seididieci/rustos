@@ -247,6 +247,6 @@ pub(crate) fn cmd_kill(args: &[&str]) {
         },
     };
     if libr::kill(pid, 1).is_err() {
-        term::term_print("kill: failed (init/self/unknown?)\n");
+        term::term_print("kill: failed (parent/init only, or init/self/unknown?)\n");
     }
 }

@@ -169,9 +169,11 @@ pub fn exit(code: i64) -> ! {
 
 /// Fase 14 — `kill(pid, code)`: chiede al kernel di terminare il processo
 /// user `pid` con il codice `code` (cleanup differito + cascata sulla
-/// discendenza + notifica `EXIT_NOTIFY` al parent). `Ok` se il processo e'
-/// stato terminato, `Err` se il pid non esiste / non e' killabile (init,
-/// processi kernel, se stesso).
+/// discendenza + notifica `EXIT_NOTIFY` al parent). Fase 35 (hardening): solo
+/// il parent (o init) puo' killare — uccidere un server supervisionato e'
+/// operazione da supervisore (via init, `init_bounce`). `Ok` se il processo
+/// e' stato terminato, `Err` se il pid non esiste / non e' killabile (init,
+/// processi kernel, se stesso, non-figlio).
 #[inline]
 pub fn kill(pid: i64, code: i64) -> Result<(), ()> {
     let r = unsafe { syscall4(SYS_KILL, pid as u64, code as u64, 0, 0) };
