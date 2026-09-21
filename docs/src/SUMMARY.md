@@ -54,3 +54,4 @@
 - [ADR-0025: Modello nativo + POSIX come personalità](./adr/0025-native-model-personalities.md)
 - [ADR-0026: Threat model + hardening](./adr/0026-threat-model-hardening.md)
 - [ADR-0027: Identità misurata (Strato 2)](./adr/0027-measured-identity.md)
+- [ADR-0028: `exec` in-place + shell che lancia programmi](./adr/0028-exec-in-place.md)

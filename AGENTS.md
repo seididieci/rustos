@@ -1405,8 +1405,10 @@ velordor/
     Lezione: il manifest 36.4 ha bloccato il boot quando ho sovrascritto
     shell.bin a mano (mcopy senza rebuild kernel) — Strato 2 che morde.
     Verifica: test-shell.py 37/37 (8 check nuovi) + gate 52/52 invariato.
-  - [ ] 37.3 gate finale + docs (ADR-0028 + checklist anti-marcio; t52 gia'
-    coperto in 37.0/37.1, shell coperta da test-shell.py 37/37 in 37.2)
+  - [x] 37.3 gate finale + docs (ADR-0028 + checklist anti-marcio; t52 gia'
+    coperto in 37.0/37.1, shell coperta da test-shell.py 37/37 in 37.2;
+    00-introduzione con righe 36+37). Verifica: gate 5/5 + 7/7 + 52/52 +
+    shell 37/37 + mdbook, zero FAIL/PANIC/FAULT.
   - [ ] 37.4 docs (ADR-0028 + checklist anti-marcio)
   - Rischi: cross-cutting come fork (contesto + walk + risorse); teardown
     mai sotto i propri piedi (disciplina reclaim Fase 14); niente redirezioni

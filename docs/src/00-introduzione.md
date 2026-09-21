@@ -130,6 +130,8 @@ velordor/
 | 33 | Infrastruttura COW (frame refcount + COW fault, ADR-0023) | ✅ Completata |
 | 34 | `fork` — COW dell'address space (ADR-0024) | ✅ Completata |
 | 35 | Hardening (threat model + cancelli kernel, ADR-0025/0026) | ✅ Completata |
+| 36 | Identità misurata (hash nel PCB + manifest + policy su identità, ADR-0027) | ✅ Completata |
+| 37 | `exec` in-place + shell che lancia programmi (run/jobs/wait, ADR-0028) | ✅ Completata |
 
 ## Risorse
 
