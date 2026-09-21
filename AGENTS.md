@@ -1413,14 +1413,18 @@ velordor/
     coperto in 37.0/37.1, shell coperta da test-shell.py 37/37 in 37.2;
     00-introduzione con righe 36+37). Verifica: gate 5/5 + 7/7 + 52/52 +
     shell 37/37 + mdbook, zero FAIL/PANIC/FAULT.
-- [ ] Fase 38: ATA DMA + IRQ (PIANIFICATA — backlog, non implementare ancora).
+- [ ] Fase 38: ATA DMA + IRQ (in corso, split idempotente 38.0→38.3).
   - Motivazione (dati): collo misurato = disco PIO ~1,2 ms/settore + userdisk
     bloccato nel polling; ADR-0012/0016 la anticipano ("li' l'async avra'
     senso"). Vittoria dichiarata: bench A/B stesso host (miglioramento > 10%,
     regola repo) + gate invariato (5/5+7/7+52/52+shell).
-  - [ ] 38.0 kernel: handler IRQ14/15 come IRQ1 (lookup owner `Disk`,
-    notify `IRQ_NOTIFY_DISK`, EOI) + const in `syscall-numbers` + `io_ranges`
-    userdisk (PCI `0xCF8-0xCFC` + finestra BM); nessuna nuova syscall se basta.
+  - [x] 38.0c kernel: handler IRQ14/15 come IRQ1 (lookup owner `Disk`,
+    notify `IRQ_NOTIFY_DISK` via `disk_irq` condiviso, EOI slave+master con il
+    vettore INT) + smascheramento PIC slave bit 6-7; const `IRQ_NOTIFY_DISK`
+    (38.0a) + filtro userdisk senza reply (38.0b). Nessuna nuova syscall.
+  - [ ] 38.0d PCI: `io_ranges` userdisk (`0xCF8-0xCFC` + finestra BM runtime
+    da BAR4, fallback PIO fuori `0xC0xx`); `libr::pci` condivisa ORA
+    (scan+BAR+IRQ, modulo traslocabile).
   - PCI: `libr::pci` condivisa ORA (scan+BAR+IRQ, modulo traslocabile),
     servizio `userland/pci` al SECONDO consumer (audio). Registry 8 slot NON
     strutturale (costante+variante+match+docs, discriminant 0-7 stabili).

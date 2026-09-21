@@ -22,14 +22,16 @@ static PICS: Mutex<ChainedPics> =
 pub fn init() {
     unsafe { PICS.lock().initialize() };
 
-    // Maschera tutte le IRQ tranne IRQ 0 (timer) e IRQ 1 (keyboard).
-    // Bit 0 = IRQ0, bit 1 = IRQ1, ... bit 7 = IRQ7; 1 = masked.
+    // Maschera tutte le IRQ tranne IRQ 0 (timer), IRQ 1 (keyboard) e
+    // IRQ 14/15 (ATA primario/secondario, Fase 38: notify a userdisk; col PIO
+    // attuale sono spurie e tollerate, col DMA diventano il completamento).
+    // Bit 0 = IRQ0, ... bit 7 = IRQ7; 1 = masked. IRQ2 (cascade) resta aperta.
     unsafe {
-        PICS.lock().write_masks(0b1111_1100, 0b1111_1111);
+        PICS.lock().write_masks(0b1111_1100, 0b0011_1111);
     }
 
     crate::serial_println!(
-        "[pic ] remappata: master {:#x}, slave {:#x} (IRQ 0+1 abilitate)",
+        "[pic ] remappata: master {:#x}, slave {:#x} (IRQ 0+1+14+15 abilitate)",
         PIC_1_OFFSET,
         PIC_2_OFFSET
     );

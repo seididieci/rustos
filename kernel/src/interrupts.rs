@@ -33,9 +33,11 @@ static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
     // ── Interrupt hardware (32-47) ──────────────────────────────────
     idt[0x20].set_handler_fn(timer_handler); // IRQ 0 → PIT
     idt[0x21].set_handler_fn(keyboard_handler); // IRQ 1 → tastiera PS/2
+    idt[0x2E].set_handler_fn(disk_primary_handler); // IRQ 14 → ATA primario
+    idt[0x2F].set_handler_fn(disk_secondary_handler); // IRQ 15 → ATA secondario
 
-    // IRQ 2-7 del master, 8-15 dello slave: handler generico.
-    for i in 0x22..=0x2F {
+    // IRQ 2-7 del master, 8-13 dello slave: handler generico.
+    for i in 0x22..=0x2D {
         idt[i].set_handler_fn(unhandled_irq_handler);
     }
 
@@ -275,6 +277,28 @@ extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame) {
         crate::serial_println!("[irq1] Kbd non registrato");
     }
     unsafe { crate::pic::end_of_interrupt(0x21) };
+}
+
+extern "x86-interrupt" fn disk_primary_handler(_stack_frame: InterruptStackFrame) {
+    disk_irq(0x2E);
+}
+
+extern "x86-interrupt" fn disk_secondary_handler(_stack_frame: InterruptStackFrame) {
+    disk_irq(0x2F);
+}
+
+/// Corpo comune IRQ14/15 (Fase 38, ATA DMA): routing puro + notify, come
+/// IRQ1→kbd. Il driver vive in userspace (`userdisk`, servizio `Disk`): al
+/// risveglio drena lo status Bus-Master (38.2); col PIO attuale le notify sono
+/// spurie e userdisk le tollera (38.0b). `vector` e' il numero INT (0x2E/0x2F):
+/// `notify_end_of_interrupt` fa EOI slave+master per gli IRQ slave. EOI in ogni
+/// caso (mai wedge). Senza driver registrato l'IRQ va perso finche' userdisk
+/// non parte (come i tasti senza kbd).
+fn disk_irq(vector: u8) {
+    if let Some(owner) = crate::channels::lookup(syscall_numbers::Service::Disk) {
+        crate::sched::notify_irq(owner, syscall_numbers::IRQ_NOTIFY_DISK);
+    }
+    unsafe { crate::pic::end_of_interrupt(vector) };
 }
 
 extern "x86-interrupt" fn unhandled_irq_handler(_stack_frame: InterruptStackFrame) {
