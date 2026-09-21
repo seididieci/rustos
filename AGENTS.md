@@ -1372,7 +1372,15 @@ velordor/
     `image_hash` rimisurato (senza: `peer_info` mentirebbe, bypassabile la
     regola same-image 36.5), porte I/O azzerate. `libr::exec(path, argv)` =
     `load_file` + `exec_image` (il kernel non tocca il FS, ADR-0005).
-  - [ ] 37.0 syscall + loader riuso (validazione prima di toccare nulla)
+  - [x] 37.0 syscall + loader riuso (validazione prima di toccare nulla):
+    `SYS_EXEC` (48) + `sched_rt/exec.rs` (`exec_current`: teardown meta' user
+    con PML4 tenuto + TLB flush, reset heap/VMA/ring/text, `elf::load`,
+    stack nuovo con argc=0, TSS azzerata, frame syscall riscritto per sysret
+    all'entry) + `libr::exec_image` + t52 (EXECDEMO→spin: stesso PID, hash
+    rimisurato, spin-riferimento uguale; reap via `poll_gone`, MAI `wait_exit`
+    dopo `recv_done` che consuma le notify). Bug vero: OOM a load va in panic
+    come `create_user` (proprieta' pre-esistente, vedi ADR-0028 futuro).
+    Gate 5/5 + 7/7 + 52/52.
   - [ ] 37.1 contesto CPU/stack-argv + `libr::exec` + convenzione `_start`
   - [ ] 37.2 shell run/jobs/wait
   - [ ] 37.3 t52 + gate 52/52
@@ -1569,9 +1577,9 @@ rg '\[bench\]' /tmp/bench-run1.log /tmp/bench-run2.log /tmp/bench-run3.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 7/7
-#   [usertests] PASS 51/51
+#   [usertests] PASS 52/52
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 51/51' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 52/52' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 

@@ -59,6 +59,10 @@
 //!                 (DEV_OPEN → fake fd). Due istanze sono lo STESSO binario
 //!                 (stesso image_hash): la seconda puo' rimpiazzare la prima
 //!                 viva (same-image, Fase 36.5) pur non essendo figlia di init.
+//!   - 25 EXECDEMO: (Fase 37, t52) attende T_GO, poi exec_into testspin.bin:
+//!                 il processo diventa spin (stesso PID, hash rimisurato) e
+//!                 serve il T_CFG che l'orchestratore manda dopo. Successo =
+//!                 mai ritorno; fallimento = T_DONE(w0=0) + exit.
 //!
 //! In ogni caso termina con `send(T_DONE, ok, dettagli)` e `exit(0)`.
 //! Il processo e' sempre "garantito che risponde": l'orchestratore reply ad
@@ -117,6 +121,9 @@ const MODE_HARDEN: u64 = 23;
 // Fase 36 (identita' misurata, t51): driver sacrificale sul prefix dedicato
 // "/dev/t51" (come MNTDIE su /dev/tdie). Due istanze = stesso binario.
 const MODE_REG51: u64 = 24;
+// Fase 37 (exec in-place, t52): attende T_GO, poi exec_into testspin.bin.
+// Successo = mai ritorno (si diventa spin); fallimento = T_DONE(w0=0) + exit.
+const MODE_EXECDEMO: u64 = 25;
 
 // Tag DEV_* + errore IPC (A1): single source in `libr` (prima letterali qui).
 use libr::{DEV_CLOSE, DEV_OPEN, ERR};
@@ -251,6 +258,40 @@ pub extern "C" fn _start() -> ! {
             }
             let _ = libr::send(parent, T_DONE, 1, code);
             libr::exit(0);
+        }
+        MODE_EXECDEMO => {
+            // Demo exec (t52, Fase 37): attende il via T_GO, carica testspin
+            // da disco ed exec_into. Successo = mai ritorno (si diventa spin
+            // con stesso PID e hash rimisurato); qualunque fallimento =
+            // T_DONE(w0=0, w1=detail) + exit, mai hang.
+            loop {
+                match libr::recv() {
+                    Ok(m) if m.tag == T_GO => {
+                        let _ = libr::reply(T_ACK, 0, 0);
+                        break;
+                    }
+                    Ok(_) => {
+                        let _ = libr::reply(T_ACK, 0, 0);
+                    }
+                    Err(_) => {
+                        libr::exit(1);
+                    }
+                }
+            }
+            let img = match libr::load_file("/fat/test/testspin.bin") {
+                Some(b) if !b.is_empty() => b,
+                _ => {
+                    let _ = libr::send(parent, T_DONE, 0, 20);
+                    libr::exit(0);
+                }
+            };
+            match libr::exec_image(&img) {
+                Ok(()) => libr::exit(1), // irraggiungibile: success non ritorna
+                Err(()) => {
+                    let _ = libr::send(parent, T_DONE, 0, 21);
+                    libr::exit(0);
+                }
+            }
         }
         MODE_MNTDIE => {
             // Driver sacrificale (t25): registra "/dev/tdie", handshake T_READY e

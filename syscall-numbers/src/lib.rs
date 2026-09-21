@@ -121,6 +121,15 @@ pub const SYS_PEER_PID: u64 = 46;
 /// in userfs). Non rivela nulla oltre l'identita' del binario (nomi e pid sono
 /// gia' visibili via `ps_info`/`peer_pid`).
 pub const SYS_PEER_INFO: u64 = 47;
+/// Sostituisce l'immagine del chiamante (Fase 37, `exec` in-place):
+/// `(img_ptr, img_len)` = ELF in memoria del chiamante (mai il FS: il kernel
+/// non tocca il disco, ADR-0005). Stesso PID/parent/priorita'/canali (fd
+/// server-side sopravvivono); cade tutto l'address space e ne viene caricato
+/// uno nuovo; stack nuovo (argc=0 in 37.0, argv in 37.1); `image_hash`
+/// rimisurato (Strato 2); porte I/O azzerate. Non ritorna mai al chiamante
+/// (salta all'entry nuova); -1 = validazione fallita, processo intatto.
+/// Stesso bound di `spawn_image` (256 KiB).
+pub const SYS_EXEC: u64 = 48;
 /// Protezioni `mmap`/`mprotect` (29: NONE/R/RW con enforcement; W solo e
 /// PROT_EXEC rifiutati — eseguibile solo il codice di spawn).
 pub const PROT_NONE: u64 = 0x0;

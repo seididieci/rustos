@@ -47,7 +47,8 @@ struct SpawnMeta {
 
 /// Immagine massima spawabile (64 frame = 256 KiB; i binari sono < 70 KiB):
 /// un singolo spawn non puo' svuotare il pool frame.
-const SPAWN_IMAGE_MAX: usize = 256 * 1024;
+/// `pub(crate)`: stesso bound per `exec` (Fase 37, stessa ragione).
+pub(crate) const SPAWN_IMAGE_MAX: usize = 256 * 1024;
 
 /// spawn_image(img_ptr, img_len, meta_ptr, meta_len): come `spawn` ma il
 /// binario e' letto dalla memoria del chiamante (servizi da disco, Fase 21).

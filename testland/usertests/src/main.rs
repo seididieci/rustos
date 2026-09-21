@@ -93,6 +93,7 @@ pub extern "C" fn _start() -> ! {
     helpers::report(&mut total, &mut ok, "t49 fork COW (isolamento padre/figlio)", t_lifecycle::t_fork());
     helpers::report(&mut total, &mut ok, "t50 hardening (kill/register/map ostili)", t_stable::t_hardening());
     helpers::report(&mut total, &mut ok, "t51 identita' misurata (peer_info/manifest/squat)", t_stable::t_identity());
+    helpers::report(&mut total, &mut ok, "t52 exec in-place (stesso PID, hash rimisurato)", t_lifecycle::t_exec_core());
     // t34 per ULTIMO: i drop sono irrevocabili sul canale di usertests.
     helpers::report(&mut total, &mut ok, "t34 diritti per-canale lato server", t_fs::t_rights());
 

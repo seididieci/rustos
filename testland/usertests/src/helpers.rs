@@ -46,6 +46,8 @@ pub const M_HARDEN: u64 = 23;
 // Fase 36 (t51): driver sacrificale su "/dev/t51" (come MNTDIE su /dev/tdie,
 // stesso binario testcli → stesso image_hash per il same-image positivo).
 pub const M_REG51: u64 = 24;
+// Fase 37 (t52): demo exec in-place (diventa testspin su T_GO, stesso PID).
+pub const M_EXECDEMO: u64 = 25;
 // Fase 36 (t51): w0 magico per la sonda di squat di usertest-spin (binario
 // diverso da testcli → hash diverso per il negativo). Speculare a
 // SQUAT_MAGIC in usertest-spin (come i tag T_* speculari al client).

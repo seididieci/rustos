@@ -242,7 +242,8 @@ unsafe fn map_private(cr3: u64, bytes: &[u8], l: &Layout, from: u64, to: u64) {
 /// condiviso (0 = nessuno), da rilasciare al teardown del processo.
 ///
 /// # Safety
-/// `cr3` deve essere un address space appena creato da `new_address_space`;
+/// `cr3` deve essere un address space VUOTO: appena creato da
+/// `new_address_space` (spawn) o ripulito da `exec_clear_user` (exec, Fase 37);
 /// `layout` deve venire da `validate` sullo stesso `bytes`.
 pub unsafe fn load(cr3: u64, bytes: &[u8], layout: &Layout) -> u32 {
     let mut text_id = 0u32;

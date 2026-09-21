@@ -71,8 +71,7 @@ unsafe fn free_pdp_tree(pdp_phys: u64) {
 /// # Safety
 /// `cr3` deve essere l'address space di un processo Terminated che non verra'
 /// piu' schedulato.
-pub unsafe fn teardown_user_space(cr3: u64, pid: usize) {
-    let kernel_pml4 = kernel_cr3();
+pub unsafe fn teardown_user_space(cr3: u64, pid: usize) {    let kernel_pml4 = kernel_cr3();
     unsafe {
         for i in 0..512 {
             let e = raw_entry(cr3, i);
@@ -98,4 +97,40 @@ pub unsafe fn teardown_user_space(cr3: u64, pid: usize) {
     vma_clear(pid);
     // Ring: free via record (le PTE ring sono NON-owned, il walk le salta).
     free_ring_pages(pid);
+}
+
+/// Svuota la meta' user dell'address space `cr3` TENENDO il PML4 (Fase 37,
+/// exec in-place): per ogni entry PML4 privata libera il sottoalbero
+/// (foglie `owned` via `deref` come il teardown — i frame COW condivisi
+/// sopravvivono; le PTE non-owned — text/shm/iniettate — saltate, i ref si
+/// rilasciano a parte) e azzera l'entry. Il PML4 resta valido e riusabile
+/// (stesso CR3, meta' kernel intatta). NON tocca `HEAP_BRK`/VMA/ring (il
+/// chiamante li resetta) e NON libera il PML4 stesso.
+///
+/// Dopo: TLB flush a carico del chiamante (stesso CR3 riusato: le entry
+/// vecchie sarebbero stale — `Cr3::write` con lo stesso frame).
+///
+/// # Safety
+/// `cr3` deve essere l'address space del processo CORRENTE in exec (IF=0 in
+/// syscall, niente preemption nel mezzo). Mai su un altro processo.
+pub(crate) unsafe fn exec_clear_user(cr3: u64) {
+    let kernel_pml4 = kernel_cr3();
+    unsafe {
+        let base = crate::addr::phys_to_virt(cr3);
+        for i in 0..512 {
+            let e = raw_entry(cr3, i);
+            if e & PTE_PRESENT == 0 {
+                continue;
+            }
+            let tbl = PTE_ADDR_MASK & e;
+            // Entry condivise col kernel (mappa U=0): NON sono del processo.
+            let k = raw_entry(kernel_pml4, i) & PTE_ADDR_MASK;
+            if tbl == k {
+                continue;
+            }
+            free_pdp_tree(tbl);
+            crate::phys_mem::free(tbl);
+            core::ptr::write_volatile((base + (i as u64) * 8) as *mut u64, 0);
+        }
+    }
 }

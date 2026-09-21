@@ -324,7 +324,8 @@ unsafe fn unmap_user_range(cr3: u64, vaddr: u64, count: usize) {
 /// Dimentica le VMA del processo (teardown: i frame owned cadono col walk
 /// esistente; qui i record, come `HEAP_BRK`). Per le VMA condivise (30)
 /// rilascia il riferimento: l'ultimo libera i frame della regione.
-pub(super) fn vma_clear(pid: usize) {
+/// `pub(crate)` per exec (Fase 37: reset bookkeeping dopo `exec_clear_user`).
+pub(crate) fn vma_clear(pid: usize) {
     if pid >= MAX_PROCS {
         return;
     }

@@ -72,7 +72,8 @@ pub fn alloc_ring_pages(pid: usize) -> Option<(u64, u64)> {
 /// Libera tutte le coppie ring registrate del processo `pid` e azzera il
 /// record (teardown: single path col walk owned, che salta i mapping ring
 /// perche' NON-owned — vedi `sys_ring_alloc`).
-pub(super) fn free_ring_pages(pid: usize) {
+/// `pub(crate)` per exec (Fase 37: la nuova immagine rifa' handshake lazy).
+pub(crate) fn free_ring_pages(pid: usize) {
     if pid >= RING_MAX_PROCS {
         return;
     }

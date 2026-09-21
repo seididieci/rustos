@@ -114,6 +114,7 @@ La numerazione e' definita nel dispatch di `syscall_handler` in `kernel/src/sysc
 | 45 | `fork()` | duplica il chiamante in COW (Fase 34, nessun argomento): padre `(pid_figlio, canale)` (rax + rdi multi-registro), figlio `(0, canale)`; -1 su PID/canali/OOM esauriti |
 | 46 | `peer_pid(chan)` | pid del peer del canale `chan` (0 = nascita), o -1 (Fase 35, hardening: i server attribuiscono le richieste; abilita la policy `FS_REGISTER`) |
 | 47 | `peer_info(chan)` | hash dell'immagine del peer del canale `chan` (0 = nascita): 0 + hash in rdi, o -1 (Fase 36, identita' misurata: policy su identita' in init/userfs) |
+| 48 | `exec_image(img, len)` | sostituisce l'immagine del chiamante (Fase 37, exec in-place): stesso PID/canali, nuovo address space + stack (argc=0 in 37.0), hash rimisurato; mai ritorno (salta all'entry), -1 a validazione fallita (processo intatto) |
 
 > **Fase 29 (protezioni)**: `PROT_NONE`/`PROT_READ`/`PROT_READ|PROT_WRITE` sono
 > enforced dal page-fault handler. Un fault di protezione da user mode (write
@@ -226,6 +227,7 @@ extern "C" fn syscall_handler() -> i64 {
 | `fork` | 45 | Duplica il processo in COW (Fase 34) → padre `(pid, chan)`, figlio `(0, chan)` |
 | `peer_pid` | 46 | Pid del peer di un canale (Fase 35) → pid o `Err` |
 | `peer_info` | 47 | Hash immagine del peer di un canale (Fase 36) → hash o `Err` |
+| `exec_image` | 48 | Exec in-place (Fase 37.0, senza argv) → mai ritorno, `Err` a validazione fallita |
 | `text_stats` | 44 | Contatori shared text (Fase 32): hits/misses/live (+ Fase 33: fault COW in rdx) |
 
 `spawn(name_ptr, name_len)` (Fase 8.1 + 13) crea un nuovo processo a partire dal
@@ -255,8 +257,9 @@ lo storage-TCB (init/disk/fs); tutto il resto parte da disco via init.
 > Le classiche `read`/`open`/`close`/`readdir` non sono syscall kernel:
 > sono wrapper IPC diretti in `libr` (client → userfs, v. [File System](./09-filesystem.md)).
 > `fork` (45, Fase 34) e `mmap` (39, Fase 28) esistono; `sbrk` e' la 25.
-> `exec` in-place + `wait` arrivano con la Fase 37; `brk` non esiste come
-> syscall (l'heap cresce via `sbrk`).
+> `exec` in-place (48, Fase 37.0: `exec_image`, senza argv) esiste; `wait`
+> esplicito arriva con la shell 37.2 (`EXIT_NOTIFY` gia' notifica il parent).
+> `brk` non esiste come syscall (l'heap cresce via `sbrk`).
 
 ### File System — ritirate (Fase 9.6)
 

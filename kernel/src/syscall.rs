@@ -21,6 +21,7 @@ mod dispatch;
 mod ipc;
 mod service;
 mod spawn;
+mod exec;
 mod mem;
 mod misc;
 

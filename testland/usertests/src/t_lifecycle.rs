@@ -629,3 +629,102 @@ pub fn t_fork() -> bool {
     }
     ok
 }
+
+/// t52 — exec in-place, nucleo (Fase 37.0, senza argv): un helper testcli
+/// (EXECDEMO) diventa testspin via `exec_image` su T_GO. Verifiche: stesso
+/// PID (T_ACK pre/post con pid), hash rimisurato (diverso da prima, uguale a
+/// uno spin fresco di riferimento), nuova immagine operativa (T_DONE dopo il
+/// budget). Reap via `poll_gone` (NON `wait_exit`: i `recv_done` consumano e
+/// scartano le EXIT_NOTIFY altrui — aspettarle dopo sarebbe hang garantito).
+/// Entrambi escono da soli.
+pub fn t_exec_core() -> bool {
+    helpers::drain_stray();
+    let (h_chan, h_pid) = match helpers::spawn_cfg(
+        "/fat/test/testcli.bin", "utcli", 16, helpers::M_EXECDEMO, 0,
+    ) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t52: spawn EXECDEMO FAILED");
+            return false;
+        }
+    };
+    let h_before = match libr::peer_info(h_chan) {
+        Ok(h) => h,
+        Err(_) => {
+            println!("[usertests] t52: peer_info pre-exec FAILED");
+            let _ = libr::kill(h_pid as i64, 0);
+            let _ = helpers::wait_exit(h_chan);
+            return false;
+        }
+    };
+    // Via (sync) + T_CFG da spin (budget=100, ~1s di vita: la query post-exec
+    // lo trova vivo; il T_DONE arriva dopo). La send si blocca finche' lo
+    // spin risponde: nessun polling, nessuna race sul momento dell'exec.
+    if libr::send(h_chan, helpers::T_GO, 0, 0).is_err() {
+        println!("[usertests] t52: T_GO FAILED");
+        let _ = libr::kill(h_pid as i64, 0);
+        let _ = helpers::wait_exit(h_chan);
+        return false;
+    }
+    let ack = match libr::send(h_chan, helpers::T_CFG, 100, 0) {
+        Ok(a) => a,
+        Err(_) => {
+            println!("[usertests] t52: T_CFG post-exec FAILED (exec non passato?)");
+            let _ = libr::kill(h_pid as i64, 0);
+            let _ = helpers::wait_exit(h_chan);
+            return false;
+        }
+    };
+    if ack.w0 != h_pid {
+        println!("[usertests] t52: pid cambiato ({} -> {})", h_pid, ack.w0);
+        let _ = libr::kill(h_pid as i64, 0);
+        let _ = helpers::wait_exit(h_chan);
+        return false;
+    }
+    let h_after = match libr::peer_info(h_chan) {
+        Ok(h) => h,
+        Err(_) => {
+            println!("[usertests] t52: peer_info post-exec FAILED");
+            let _ = helpers::wait_exit(h_chan);
+            return false;
+        }
+    };
+    if h_after == h_before {
+        println!("[usertests] t52: hash NON rimisurato ({:#x})", h_after);
+        let _ = helpers::wait_exit(h_chan);
+        return false;
+    }
+    // Spin di riferimento (stesso binario, budget corto): hash atteso.
+    // Come sopra, ack.w0 = pid (spin risponde T_ACK con getpid).
+    let (r_chan, r_pid) = match helpers::spawn_cfg(
+        "/fat/test/testspin.bin", "utspin", 16, 100, 0,
+    ) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t52: spawn spin-rif FAILED");
+            let _ = helpers::poll_gone(h_pid as u64, 200);
+            return false;
+        }
+    };
+    let h_ref = libr::peer_info(r_chan).unwrap_or(0);
+    let (ok_h, _) = helpers::recv_done(&[h_chan]);
+    let (ok_r, _) = helpers::recv_done(&[r_chan]);
+    // Reap senza EXIT_NOTIFY (consumate dai recv_done sopra): poll throttled
+    // sulla sparizione dallo ps. Nessun altro spawn nel mezzo (sequenza
+    // deterministica) → niente rischio di scambiare un riuso del PID.
+    let gone_h = helpers::poll_gone(h_pid as u64, 200);
+    let gone_r = helpers::poll_gone(r_pid as u64, 200);
+    if h_ref != h_after {
+        println!("[usertests] t52: hash post-exec {:#x} != riferimento {:#x}", h_after, h_ref);
+        return false;
+    }
+    if !ok_h || !ok_r {
+        println!("[usertests] t52: T_DONE mancante (h={}, r={})", ok_h, ok_r);
+        return false;
+    }
+    if !gone_h || !gone_r {
+        println!("[usertests] t52: reap mancato (h={}, r={})", gone_h, gone_r);
+        return false;
+    }
+    true
+}

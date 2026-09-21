@@ -79,6 +79,22 @@ pub fn spawn_image(img: &[u8], meta: &SpawnMeta) -> Result<i64, ()> {
     if c < 0 { Err(()) } else { Ok(c) }
 }
 
+/// `exec_image(img)`: sostituisce l'immagine del chiamante con l'ELF `img`
+/// (Fase 37, `SYS_EXEC` in-place). Stesso PID/parent/priorita'/canali; cade
+/// l'address space e ne viene caricato uno nuovo; stack nuovo (argc=0 in
+/// 37.0); `image_hash` rimisurato; porte I/O azzerate. NON ritorna mai in caso
+/// di successo (salta all'entry della nuova immagine con `rax = 0`); ritorna
+/// `Err(())` solo a validazione fallita (processo intatto, completamente
+/// utilizzabile). Il FS va ri-fatto lazy: la nuova immagine parte con stato
+/// `libr` pristine (BSS azzerato) e `fs_init` rifa' handshake al primo uso.
+#[inline]
+pub fn exec_image(img: &[u8]) -> Result<(), ()> {
+    let r = unsafe { syscall4(SYS_EXEC, img.as_ptr() as u64, img.len() as u64, 0, 0) };
+    // Successo = nessun ritorno (siamo nella nuova immagine); -1 = rifiuto.
+    let _ = r;
+    Err(())
+}
+
 /// `service_register(service)`: occupa lo slot del servizio (ADR-0008). Il
 /// chiamante diventa l'owner raggiungibile per nome. `Err` se gia' occupato.
 #[inline]
