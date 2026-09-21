@@ -62,6 +62,12 @@ use libr::{
 // Tag IPC FS/boot (DocsB): single source in `syscall-numbers`, via `libr`.
 use libr::{FS_BUF_REG, FS_NOTIFY, FS_REGISTER};
 
+/// Manifest degli hash dei servizi (Fase 36, identita' misurata, Strato 2 di
+/// ADR-0026): generato a build-time da scripts/gen-service-hashes.sh, incluso
+/// via `VELORDOR_SERVICE_HASHES` (esportata da build-userland.sh — userfs e'
+/// compilato DOPO la generazione, vedi ordine di build).
+include!(env!("VELORDOR_SERVICE_HASHES"));
+
 const MAX_PATH: usize = 256;
 
 // ── IPC tags verso i driver remoti (devfs/console/kbd/tty/disk): op DEV_*

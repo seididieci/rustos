@@ -2,6 +2,24 @@ use super::*;
 
 // ── Main ───────────────────────────────────────────────────────────
 
+/// Nome del driver dietro il canale `chan` dal suo `image_hash` (Fase 36,
+/// identita' misurata): confronto col manifest generato a build-time; `"?"`
+/// se il canale e' morto o l'hash e' ignoto (test/helper). Solo diagnostica
+/// nei log, mai decisioni (la policy confronta gli hash, non i nomi).
+fn driver_name_of(chan: u64) -> &'static str {
+    match libr::peer_info(chan) {
+        Ok(h) if h == HASH_USERCONSOLE => "userconsole",
+        Ok(h) if h == HASH_USERDEVFS => "userdevfs",
+        Ok(h) if h == HASH_USERDISK => "userdisk",
+        Ok(h) if h == HASH_USERFS => "userfs",
+        Ok(h) if h == HASH_USERKBD => "userkbd",
+        Ok(h) if h == HASH_USERSHELL => "usershell",
+        Ok(h) if h == HASH_USERTTY => "usertty",
+        Ok(h) if h == HASH_USERUPTIME => "useruptime",
+        _ => "?",
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     println!("[userfs] starting");
@@ -114,11 +132,14 @@ pub extern "C" fn _start() -> ! {
             if op_tag == R_REGISTER && payload_len > 0 && payload_len <= 514 {
                 let mut prefix_buf = [0u8; 514];
                 rings::req_ring_read_payload(&mut prefix_buf, payload_len);
-                // Fase 35 (hardening): policy sui mount registrati dinamicamente.
+                // Fase 35 (hardening) + Fase 36 (identita' misurata, Strato 2):
+                // policy sui mount registrati dinamicamente.
                 // (a) solo sotto `/dev/` (niente hijack di `/` o voci rogue a
-                // root); (b) il replace di un prefix esistente solo da un figlio
-                // di init (i driver veri lo sono): impedisce a un processo
-                // qualsiasi di squattare `/dev/null` dopo un kill.
+                // root); (b) il replace di un prefix esistente solo dallo
+                // STESSO binario (stesso `image_hash` del driver vivo: il
+                // restart da disco rilegge gli stessi byte, quindi riesce
+                // senza init) o da un figlio di init (bootstrap): impedisce a
+                // un processo qualsiasi di squattare `/dev/null` dopo un kill.
                 let caller = libr::peer_pid(chan).unwrap_or(-1);
                 let init_child = caller >= 0
                     && matches!(libr::ps_info(caller as u32), Some(e) if e.parent == Some(1));
@@ -144,16 +165,29 @@ pub extern "C" fn _start() -> ! {
                     // avvelenerebbe resolve_mount (first-match). Fase 35: il
                     // replace di un prefix di un driver VIVO richiede un figlio
                     // di init; un driver morto (canale invalidato) puo' sempre
-                    // essere rimpiazzato (riconnessione legittima).
+                    // essere rimpiazzato (riconnessione legittima). Fase 36: il
+                    // replace riesce anche dallo STESSO binario (hash uguale a
+                    // quello del driver vivo — restart da disco senza init).
                     let existing = mounts.iter().find(|m| m.prefix.as_str() == prefix).map(|m| m.driver_chan);
                     let stale = match existing {
                         Some(dc) => libr::peer_pid(dc).is_err(), // driver morto
                         None => true,
                     };
-                    if existing.is_some() && !init_child && !stale {
+                    // Stesso binario? Solo a driver vivo e non-init-child (nei
+                    // casi facili la risposta e' gia' nota: niente syscall).
+                    let same_image = match existing {
+                        Some(dc) if !stale && !init_child => {
+                            match (libr::peer_info(chan), libr::peer_info(dc)) {
+                                (Ok(a), Ok(b)) => a == b,
+                                _ => false,
+                            }
+                        }
+                        _ => false,
+                    };
+                    if existing.is_some() && !init_child && !stale && !same_image {
                         println!(
-                            "[userfs] FS_REGISTER replace '{}' rifiutato (pid {} non figlio di init, driver vivo)",
-                            prefix, caller
+                            "[userfs] FS_REGISTER replace '{}' rifiutato (pid {} {}, driver vivo {})",
+                            prefix, caller, driver_name_of(chan), driver_name_of(existing.unwrap()),
                         );
                         continue;
                     }
@@ -162,7 +196,7 @@ pub extern "C" fn _start() -> ! {
                         prefix: String::from(prefix),
                         driver_chan: chan,
                     });
-                    println!("[userfs] registered mount '{}' → driver_chan={}", prefix, chan);
+                    println!("[userfs] registered mount '{}' → driver_chan={} ({})", prefix, chan, driver_name_of(chan));
                 }
             } else {
                 rings::req_ring_consume(20 + payload_len);
