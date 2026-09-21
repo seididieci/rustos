@@ -1368,9 +1368,8 @@ velordor/
         manifest esclude i binari che lo incorporano (userinit/userfs);
         fixpoint in un passaggio (provato: rebuild → diff vuoto).
   - Verifica: gate 5/5 + 7/7 + 51/51 + shell 30/30, zero FAIL/PANIC/FAULT.
-- [ ] Fase 37: `exec` in-place + shell che lancia programmi (PIANIFICATA,
-      ADR-0028 futuro; `exec` era atteso dalle ADR-0025/0026 come "Fase 36",
-      rinumerato qui).
+- [x] Fase 37: `exec` in-place + shell che lancia programmi (ADR-0028;
+      `exec` era atteso dalle ADR-0025/0026 come "Fase 36", rinumerato qui).
   - Scopo concordato (full): primitiva kernel + shell (`run`, `&`, `jobs`/
     `wait` su EXIT_NOTIFY). Semantica POSIX-like: stesso PID/parent/priorita'/
     canali (fd server-side sopravvivono), cade l'address space, stack nuovo
@@ -1399,7 +1398,6 @@ velordor/
     (il `jmp` testuale non risolve il mangling); (2) stringhe SOTTO rsp =
     red zone le clobbera → ordine Linux (stringhe in alto, argc in basso).
     Gate 5/5 + 7/7 + 52/52 + shell 30/30.
-  - [ ] 37.2 shell run/jobs/wait
   - [x] 37.2 shell run/jobs/wait (`run <path> [args] [&]`, `jobs`, `wait`
     [pid]): parent carica file+argv prima del fork (figlio con FS avvelenato:
     solo `exec_image_args`), job non-detached osservati via EXIT_NOTIFY
@@ -1443,10 +1441,6 @@ velordor/
   l'overlap DMA lo richiede); Strato 3 credenziali; ext2/ATAPI/write-back/
   read-ahead/`DISK_STATS`/generazioni PID/thread (solo su pressione reale);
   OOM-kill a load (negativa ADR-0028).
-  - [ ] 37.4 docs (ADR-0028 + checklist anti-marcio)
-  - Rischi: cross-cutting come fork (contesto + walk + risorse); teardown
-    mai sotto i propri piedi (disciplina reclaim Fase 14); niente redirezioni
-    fd in 37 (solo eredita').
 
 ## Important Notes
 
