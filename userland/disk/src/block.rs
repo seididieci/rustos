@@ -189,6 +189,75 @@ impl AtaDisk {
         }
     }
 
+    // ── Taskfile per DMA Bus-Master (Fase 38.1c) ─────────────────────
+    // Il motore (`dma.rs`) orchestra PRD + registri BM; qui solo taskfile e
+    // status. Solo LBA48 (`READ/WRITE DMA EXT`): i dischi !lba48 restano PIO
+    // (guardia nel motore, mai comando emesso).
+
+    /// Avvia un comando DMA LBA48 (`0x25` read / `0x35` write, count = n):
+    /// taskfile come `read_lba48` ma count piena. Ritorna false su timeout
+    /// pre-comando (il BM non va startato). Il completamento si osserva sui
+    /// registri BM + status (motore).
+    pub(crate) fn start_dma_ext(&self, lba: u64, n: u8, write: bool) -> bool {
+        if n == 0 || !self.wait_not_busy() {
+            return false;
+        }
+        unsafe {
+            io::outb(self.cmd + 6, 0x40 | (self.drive << 4));
+            io::outb(self.cmd + 1, 0x00); // features high
+            io::outb(self.cmd + 2, 0x00); // count high
+            io::outb(self.cmd + 3, ((lba >> 24) & 0xFF) as u8); // LBA 3
+            io::outb(self.cmd + 4, ((lba >> 32) & 0xFF) as u8); // LBA 4
+            io::outb(self.cmd + 5, ((lba >> 40) & 0xFF) as u8); // LBA 5
+            io::outb(self.cmd + 1, 0x00); // features low
+            io::outb(self.cmd + 2, n); // count low
+            io::outb(self.cmd + 3, (lba & 0xFF) as u8); // LBA 0
+            io::outb(self.cmd + 4, ((lba >> 8) & 0xFF) as u8); // LBA 1
+            io::outb(self.cmd + 5, ((lba >> 16) & 0xFF) as u8); // LBA 2
+            io::outb(self.cmd + 7, if write { 0x35 } else { 0x25 });
+        }
+        true
+    }
+
+    /// Legge il registro status taskfile. A fine DMA la lettura SPEGNE l'IRQ
+    /// ATA (va fatta prima del clear INTR del BM, vedi motore).
+    pub(crate) fn task_status(&self) -> u8 {
+        unsafe { io::inb(self.cmd + 7) }
+    }
+
+    /// Offset base dei registri Bus-Master del canale (primario +0,
+    /// secondario +8): il BMIBA e' uno per controller, i registri per canale.
+    pub(crate) fn bm_chan_off(&self) -> u16 {
+        if self.cmd == super::detect::SECONDARY.cmd {
+            8
+        } else {
+            0
+        }
+    }
+
+    /// Flush cache in scrittura (come `write_lba48`, senza i dati): dopo un
+    /// WRITE DMA i dati sono nel buffer del disco, la durabilita' per-
+    /// richiesta vuole il flush dedicato (stessa semantica del PIO).
+    pub(crate) fn flush_write_cache(&self) -> bool {
+        if !self.wait_not_busy() {
+            return false;
+        }
+        unsafe {
+            if self.lba48 {
+                io::outb(self.cmd + 6, 0x40 | (self.drive << 4));
+                io::outb(self.cmd + 7, 0xEA); // FLUSH CACHE EXT
+            } else {
+                io::outb(self.cmd + 6, 0xE0 | (self.drive << 4));
+                io::outb(self.cmd + 7, 0xE7); // FLUSH CACHE
+            }
+        }
+        if !self.wait_not_busy() {
+            return false;
+        }
+        let st = unsafe { io::inb(self.cmd + 7) };
+        st & 0x01 == 0
+    }
+
     /// 24.2 — legge `n` (1..=255) settori contigui con UN solo comando PIO
     /// (count=n): una fase di setup invece di n. `out` deve contenere almeno
     /// `n*512` byte. Ritorna `false` (e dati parziali in `out`) su

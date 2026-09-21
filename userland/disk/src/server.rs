@@ -35,17 +35,26 @@ fn real_main(_sp: u64) -> ! {
     // `BM_BASE` e abilita I/O Space + Bus Master. Qualunque esito avverso
     // (assente, BAR fuori finestra, readback diversa) = resto in PIO: il
     // data-plane sotto e' invariato (il DMA vero arriva in 38.1).
-    match libr::pci::find_piix3_ide() {
+    let bmiba: Option<u16> = match libr::pci::find_piix3_ide() {
         Some(dev) => match libr::pci::enable_bus_master(dev) {
-            Some(bmiba) => println!(
-                "[userdisk] BMIBA={:#x} (irqline={}), DMA negoziato — data-plane ancora PIO fino a 38.1",
-                bmiba,
-                libr::pci::irq_line(dev)
-            ),
-            None => println!("[userdisk] BAR4 fuori finestra/non verificata: resto in PIO"),
+            Some(b) => {
+                println!(
+                    "[userdisk] BMIBA={:#x} (irqline={}), DMA negoziato — data-plane ancora PIO fino a 38.1",
+                    b,
+                    libr::pci::irq_line(dev)
+                );
+                Some(b)
+            }
+            None => {
+                println!("[userdisk] BAR4 fuori finestra/non verificata: resto in PIO");
+                None
+            }
         },
-        None => println!("[userdisk] PIIX3-IDE non trovato su PCI: resto in PIO"),
-    }
+        None => {
+            println!("[userdisk] PIIX3-IDE non trovato su PCI: resto in PIO");
+            None
+        }
+    };
 
     // 1c. Modi DMA (Fase 38.1b): `SET FEATURES` per disco, SOLO log (nessun
     // trasferimento ancora — 38.1c). Qualunque rifiuto = PIO: il data-plane
@@ -61,12 +70,17 @@ fn real_main(_sp: u64) -> ! {
                 letter, m
             ),
             None => println!(
-                "[userdisk] sd{}: niente UDMA (word88={:#x}): resto in PIO",
-                letter, infos[i].udma_modes
+                "[userdisk] sd{}: niente UDMA (word88={:#x}, word63={:#x}): resto in PIO",
+                letter, infos[i].udma_modes, infos[i].mdma_modes
             ),
         }
         dma_modes.push(mode);
     }
+
+    // 1d. Motore DMA (38.1c): staging contigua + STOP/clear BM (sicuro anche
+    // dopo kill+restart: lo stato BM sopravvive al processo). `None` = PIO
+    // puro (data-plane intatto: il routing sotto tenta DMA solo se `Some`).
+    let mut dma_eng = dma::DmaEngine::init(bmiba, &dma_modes);
 
     // 2. Nodi: whole-disk + partizioni MBR primarie (graceful se assenti).
     // Handle = disco<<16|sub, allocato QUI (Fase 16c): la tabella `nodes' e'
@@ -177,6 +191,7 @@ fn real_main(_sp: u64) -> ! {
 
     // 4. Servizio Disk per nome (ADR-0008): userfs lo risolve per il
     // data-plane, init per la supervisione, il kernel non instrada IRQ.
+    // (La BMIBA negoziata sopra e' in `bmiba`, il motore DMA in `dma` sotto.)
     if libr::service_register(libr::Service::Disk).is_ok() {
         println!("[userdisk] registered as service Disk");
     }
@@ -218,12 +233,18 @@ fn real_main(_sp: u64) -> ! {
             continue;
         }
 
-        // 38.0b — notify IRQ14/15 dal kernel (bridge interrupt→IPC, canale 0
-        // senza peer, come IRQ_NOTIFY_KBD per kbd): MAI reply — non c'e'
-        // nessuno ad aspettarla (risponderla manderebbe spazzatura sul canale
-        // di nascita). Per ora solo tollerata (nessun sender fino a 38.0c);
-        // il drenaggio dello status Bus-Master arriva con il DMA in 38.2.
+        // 38.1c — drain notify IRQ (bridge interrupt→IPC, canale 0 senza
+        // peer, come IRQ_NOTIFY_KBD per kbd): il completamento DMA e' a poll
+        // (mai `recv` tra richiesta e reply: clobbererebbe la reply implicita
+        // del kernel), quindi queste non servono — si scartano QUI, prima di
+        // qualunque reply (sicuro: `reply_chan` e' None e il prossimo `recv`
+        // lo riscrive). Senza drain si accumulano e la coda piena fa scartare
+        // le send sync di userfs in silenzio (hang permanente).
+        // MAI reply — non c'e' nessuno ad aspettarla.
         if msg.tag == libr::IRQ_NOTIFY_DISK {
+            if let Some(eng) = dma_eng.as_mut() {
+                eng.note_irq_drained();
+            }
             continue;
         }
 
@@ -247,23 +268,57 @@ fn real_main(_sp: u64) -> ! {
             let handle = msg.w0 as u32;
             let lba = msg.w1;
             let mut buf = [0u8; nodes::DISK_MAX_SECTORS * 512];
-            match rings::disk_req_read_count() {
-                Some(n)
-                    if nodes::node_read_multi(
-                        &disks,
-                        &disk_sectors,
-                        &parts,
-                        handle,
-                        lba,
-                        &mut buf[..n * 512],
-                    ) =>
-                {
-                    unsafe { rings::disk_resp_write((n * 512) as u64, 0, &buf[..n * 512]) };
-                    let _ = libr::reply(0, 0, 0);
-                }
-                _ => {
+            let count = match rings::disk_req_read_count() {
+                Some(n) => n,
+                None => {
                     let _ = libr::reply(0, ERR, 0);
+                    continue;
                 }
+            };
+            // 38.1c — tenta DMA prima del PIO (stesso contratto: bound sul
+            // nodo come il PIO; fallback PIO a qualunque `false`). Niente
+            // `recv` nel mezzo (poll hardware): la reply implicita resta
+            // armata sul messaggio corrente.
+            if let Some(eng) = dma_eng.as_mut() {
+                if let Some((di, base, sectors)) = nodes::locate(handle, &disk_sectors, &parts) {
+                    let end_ok =
+                        lba.checked_add(count as u64).map_or(false, |e| e <= sectors);
+                    if end_ok && dma_modes.get(di).copied().flatten().is_some() {
+                        let disk = &disks[di];
+                        if eng.transfer(
+                            disk,
+                            disk.bm_chan_off(),
+                            base + lba,
+                            count,
+                            &mut buf[..count * 512],
+                            false,
+                        ) {
+                            unsafe {
+                                rings::disk_resp_write(
+                                    (count * 512) as u64,
+                                    0,
+                                    &buf[..count * 512],
+                                )
+                            };
+                            let _ = libr::reply(0, 0, 0);
+                            continue;
+                        }
+                    }
+                }
+            }
+            // PIO (invariato).
+            if nodes::node_read_multi(
+                &disks,
+                &disk_sectors,
+                &parts,
+                handle,
+                lba,
+                &mut buf[..count * 512],
+            ) {
+                unsafe { rings::disk_resp_write((count * 512) as u64, 0, &buf[..count * 512]) };
+                let _ = libr::reply(0, 0, 0);
+            } else {
+                let _ = libr::reply(0, ERR, 0);
             }
             continue;
         }
@@ -279,17 +334,45 @@ fn real_main(_sp: u64) -> ! {
             let handle = msg.w0 as u32;
             let lba = msg.w1;
             let mut buf = [0u8; nodes::DISK_MAX_SECTORS * 512];
-            let ok = match rings::disk_req_read_multi(&mut buf) {
-                Some(n) => nodes::node_write_multi(
-                    &disks,
-                    &disk_sectors,
-                    &parts,
-                    handle,
-                    lba,
-                    &buf[..n * 512],
-                ),
-                None => false,
+            let count = match rings::disk_req_read_multi(&mut buf) {
+                Some(n) => n,
+                None => {
+                    let _ = libr::reply(0, ERR, 0);
+                    continue;
+                }
             };
+            // 38.1c — tenta DMA prima del PIO (frame gia' consumato sopra in
+            // ogni caso; fallback PIO a qualunque `false`). Niente `recv`
+            // nel mezzo (poll hardware): la reply implicita resta armata.
+            if let Some(eng) = dma_eng.as_mut() {
+                if let Some((di, base, sectors)) = nodes::locate(handle, &disk_sectors, &parts) {
+                    let end_ok =
+                        lba.checked_add(count as u64).map_or(false, |e| e <= sectors);
+                    if end_ok && dma_modes.get(di).copied().flatten().is_some() {
+                        let disk = &disks[di];
+                        if eng.transfer(
+                            disk,
+                            disk.bm_chan_off(),
+                            base + lba,
+                            count,
+                            &mut buf[..count * 512],
+                            true,
+                        ) {
+                            let _ = libr::reply(0, 0, 0);
+                            continue;
+                        }
+                    }
+                }
+            }
+            // PIO (invariato).
+            let ok = nodes::node_write_multi(
+                &disks,
+                &disk_sectors,
+                &parts,
+                handle,
+                lba,
+                &buf[..count * 512],
+            );
             if ok {
                 let _ = libr::reply(0, 0, 0);
             } else {

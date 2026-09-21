@@ -1448,10 +1448,16 @@ velordor/
   - [x] 38.1b negotiate: IDENTIFY word 63/88 in `DiskInfo` + SET FEATURES
     (modo min(drive,UDMA2)) per disco a boot, solo log (nessun trasferimento);
     modi in `dma_modes` per il motore (38.1c). Data-plane invariato (PIO).
-  - [ ] 38.1c transfer: PRD (split 64K, EOT, cap 8) + READ/WRITE DMA EXT su
-    staging 1 pagina + wait blocking-recv (pre-check status, verify a ogni
-    wakeup, stash-8, EXIT-abort; self-healing da level-triggered) + routing
+  - [x] 38.1c transfer: PRD (split 64K, EOT, cap 8) + READ/WRITE DMA EXT su
+    staging 1 pagina + wait a POLL boundato del BM status (mai blocking-recv:
+    un `recv` tra richiesta e reply clobbera la reply implicita — `pop_msg`
+    riscrive `reply_chan` anche per le notify con `req_id == 0` — e le notify
+    accumulate riempiono la coda facendo scartare le send sync in silenzio:
+    due hang osservati e diagnosticati) + drain stale a testa-loop + routing
     con fallback PIO per-op; protocollo `DISK_*` INVARIATO, userfs intoccato.
+    NOTA: su QEMU 10.2 l'IRQ14 non arriva mai in userspace (INTR si setta, PIC
+    conta 317 assertion, CPU non vettora 0x2E: IRR slave pending; causa ignota
+    — da sciogliere in 38.2 che dell'IRQ dipende).
   - [ ] 38.2 attesa event-driven (estensione SM Fase 16, lezioni tty).
   - [ ] 38.3 misure + gate + docs (ADR-0029 a implementazione, tabelle 13).
   - Rischi: IRQ level-triggered (clear BM status+EOI), coerenza x86 snooped,

@@ -39,6 +39,7 @@ extern crate alloc;
 mod block;
 mod cache;
 mod detect;
+mod dma;
 mod part;
 mod fs_reg;
 mod nodes;
