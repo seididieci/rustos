@@ -13,6 +13,12 @@ bandwidth reservation.
 **Obiettivo**: un microkernel con isolamento dei servizi in userspace, IPC ad
 alte prestazioni (per-nome, async, zero-copy) e CPU time garantito sotto carico.
 
+**Orizzonte (dichiarato, non roadmap)**: self-hosting — un Velordor capace di
+ricompilare se stesso. Non pianifica nulla da solo, ma ordina le priorita'
+(storage veloce prima, servizi fuori dal kernel poi, personalita' per software
+reale dopo). Il backlog vive qui sotto (voci PIANIFICATE con scope e vittoria
+dichiarati); le idee senza trigger restano in "Parcheggiate".
+
 ## Stack Tecnico
 
 | Componente | Scelta |
@@ -1409,6 +1415,34 @@ velordor/
     coperto in 37.0/37.1, shell coperta da test-shell.py 37/37 in 37.2;
     00-introduzione con righe 36+37). Verifica: gate 5/5 + 7/7 + 52/52 +
     shell 37/37 + mdbook, zero FAIL/PANIC/FAULT.
+- [ ] Fase 38: ATA DMA + IRQ (PIANIFICATA — backlog, non implementare ancora).
+  - Motivazione (dati): collo misurato = disco PIO ~1,2 ms/settore + userdisk
+    bloccato nel polling; ADR-0012/0016 la anticipano ("li' l'async avra'
+    senso"). Vittoria dichiarata: bench A/B stesso host (miglioramento > 10%,
+    regola repo) + gate invariato (5/5+7/7+52/52+shell).
+  - [ ] 38.0 kernel: handler IRQ14/15 come IRQ1 (lookup owner `Disk`,
+    notify `IRQ_NOTIFY_DISK`, EOI) + const in `syscall-numbers` + `io_ranges`
+    userdisk (PCI `0xCF8-0xCFC` + finestra BM); nessuna nuova syscall se basta.
+  - PCI: `libr::pci` condivisa ORA (scan+BAR+IRQ, modulo traslocabile),
+    servizio `userland/pci` al SECONDO consumer (audio). Registry 8 slot NON
+    strutturale (costante+variante+match+docs, discriminant 0-7 stabili).
+    Regola: niente servizio per una costante (YAGNI+kernel neutro); il
+    contenimento vale poco finche' DMA compromesso = game over (no IOMMU).
+  - Vincolo noto: BMIBA runtime vs `io_ranges` statiche → userdisk legge BAR4
+    PIIX3-IDE, verifica finestra `0xC0xx` (QEMU-scoped), altrimenti fallback
+    PIO (codice resta, non-testato su QEMU — dichiarato).
+  - [ ] 38.1 userdisk DMA (IDENTIFY→SET FEATURES→PRD, split oltre 64K,
+    attesa IRQ; protocollo `DISK_*` INVARIATO, userfs intoccato).
+  - [ ] 38.2 attesa event-driven (estensione SM Fase 16, lezioni tty).
+  - [ ] 38.3 misure + gate + docs (ADR-0029 a implementazione, tabelle 13).
+  - Rischi: IRQ level-triggered (clear BM status+EOI), coerenza x86 snooped,
+    PRD a cavallo 64K (split).
+- [ ] Parcheggiate (trigger, non date): audio AC97+CBS (primo client servizio
+  PCI, chiude ADR-0007 davvero); posix-server nucleo (solo per un programma
+  reale concreto; handler catturabili dopo); server-run async userdisk (quando
+  l'overlap DMA lo richiede); Strato 3 credenziali; ext2/ATAPI/write-back/
+  read-ahead/`DISK_STATS`/generazioni PID/thread (solo su pressione reale);
+  OOM-kill a load (negativa ADR-0028).
   - [ ] 37.4 docs (ADR-0028 + checklist anti-marcio)
   - Rischi: cross-cutting come fork (contesto + walk + risorse); teardown
     mai sotto i propri piedi (disciplina reclaim Fase 14); niente redirezioni
