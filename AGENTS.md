@@ -1432,6 +1432,11 @@ velordor/
     `CF8` ok, `in` a `CFC` #GP-kill); (2) QEMU pre-programma BAR4=`0xC041`
     (fuori grant) → non rifiutare ma RIPROGRAMMARE a `BM_BASE` + verifica
     readback (nessun driver live da derubare col boot diretto).
+  - [x] 38.0e unmask cascade IRQ2 (master `0xFC→0xF8` in `pic.rs`): il bit 2
+    mascherato rendeva lo slave sordo (IRQ14/15 pendenti in IRR, CPU mai
+    vettorava 0x2E; QEMU: `pic0 irr=04 imr=fc`, 317 assertion). Il commento
+    "IRQ2 resta aperta" era falso. Prova: `irq_drained` ~1/transfer, gate
+    5/5+7/7+52/52 con `fb=0`.
   - PCI: `libr::pci` condivisa ORA (scan+BAR+IRQ, modulo traslocabile),
     servizio `userland/pci` al SECONDO consumer (audio). Registry 8 slot NON
     strutturale (costante+variante+match+docs, discriminant 0-7 stabili).

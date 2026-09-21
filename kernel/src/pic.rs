@@ -25,9 +25,11 @@ pub fn init() {
     // Maschera tutte le IRQ tranne IRQ 0 (timer), IRQ 1 (keyboard) e
     // IRQ 14/15 (ATA primario/secondario, Fase 38: notify a userdisk; col PIO
     // attuale sono spurie e tollerate, col DMA diventano il completamento).
-    // Bit 0 = IRQ0, ... bit 7 = IRQ7; 1 = masked. IRQ2 (cascade) resta aperta.
+    // Bit 0 = IRQ0, ... bit 7 = IRQ7; 1 = masked. Il bit 2 (IRQ2, cascade
+    // verso lo slave) DEVE restare 0: mascherarlo rende lo slave sordo
+    // (IRQ14/15 pendenti in IRR ma mai vettorati — osservato in 38.1c).
     unsafe {
-        PICS.lock().write_masks(0b1111_1100, 0b0011_1111);
+        PICS.lock().write_masks(0b1111_1000, 0b0011_1111);
     }
 
     crate::serial_println!(
