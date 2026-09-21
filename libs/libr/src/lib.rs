@@ -107,6 +107,10 @@ pub mod task;
 /// Port I/O x86 in ring 3 (A4: prima duplicato in userdisk/userkbd).
 pub mod pio;
 
+/// Spazio di configurazione PCI in ring 3 (Fase 38.0d, ATA DMA): modulo
+/// condiviso e traslocabile (servizio `userland/pci` solo al secondo consumer).
+pub mod pci;
+
 /// Harness condiviso per la test suite (A4: traversal readdir).
 pub mod test;
 

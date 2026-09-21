@@ -108,11 +108,23 @@ struct NamedBinary {
 /// Porte dei controller ATA PIO primario + secondario per il disk driver
 /// (Fase 16, `userdisk`: enumerazione master/slave su entrambi i canali).
 /// `userfs` non tocca piu' porte (Fase 16.2): qualunque `in/out` li' e' #GP.
+/// Fase 38.0d (ATA DMA): + spazio di configurazione PCI (`0xCF8-0xCFF`, per
+/// trovare il PIIX3-IDE e programmarne la BAR4 — col boot diretto PVH nessun
+/// BIOS lo fa) + finestra Bus-Master `0xC000-0xC00F` scelta da userdisk
+/// (`libr::pci::BM_BASE`, QEMU-scoped: sopra il legacy nulla e' programmato).
+/// Il conf arriva a `0xCFF` (NON `0xCFC`): la CPU controlla TUTTE le porte
+/// della width e un DWORD a `0xCFC` tocca `CFD/CFE/CFF` — con fine `0xCFC`
+/// l'`inl` fa #GP (osservato: `out` a `CF8` ok, `in` a `CFC` kill). Stessa
+/// regola per la finestra BM: accessi allineati entro i 16 byte.
+/// Nota onesta (ADR-0026): il conf PCI permette di riprogrammare qualunque
+/// device — contenimento nullo senza IOMMU, dichiarato.
 const ATA_PIO_RANGES: &[(u16, u16)] = &[
     (0x1F0, 0x1F7),
     (0x3F6, 0x3F7),
     (0x170, 0x177),
     (0x376, 0x377),
+    (0xCF8, 0xCFF),
+    (0xC000, 0xC00F),
 ];
 
 /// Porte CRTC del cursore hardware VGA per il console server (terminale).

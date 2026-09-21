@@ -1422,9 +1422,16 @@ velordor/
     notify `IRQ_NOTIFY_DISK` via `disk_irq` condiviso, EOI slave+master con il
     vettore INT) + smascheramento PIC slave bit 6-7; const `IRQ_NOTIFY_DISK`
     (38.0a) + filtro userdisk senza reply (38.0b). Nessuna nuova syscall.
-  - [ ] 38.0d PCI: `io_ranges` userdisk (`0xCF8-0xCFC` + finestra BM runtime
-    da BAR4, fallback PIO fuori `0xC0xx`); `libr::pci` condivisa ORA
-    (scan+BAR+IRQ, modulo traslocabile).
+  - [x] 38.0d PCI: `io_ranges` userdisk (`0xCF8-0xCFF` + finestra BM
+    `0xC000-0xC00F`) + `libr::pci` condivisa ORA (scan bus 0 → PIIX3-IDE
+    8086:7010, programma BAR4 a `BM_BASE` + abilita IO+BM nel command,
+    fallback PIO a qualunque verifica fallita); userdisk negozia a boot
+    (`BMIBA=0xc000`, anche al restart t32) ma il data-plane resta PIO (38.1).
+    Bug veri: (1) range `0xCF8-0xCFC` insufficiente — la CPU controlla tutte
+    le porte della width e un DWORD a `0xCFC` tocca `CFD/CFE/CFF` (`out` a
+    `CF8` ok, `in` a `CFC` #GP-kill); (2) QEMU pre-programma BAR4=`0xC041`
+    (fuori grant) → non rifiutare ma RIPROGRAMMARE a `BM_BASE` + verifica
+    readback (nessun driver live da derubare col boot diretto).
   - PCI: `libr::pci` condivisa ORA (scan+BAR+IRQ, modulo traslocabile),
     servizio `userland/pci` al SECONDO consumer (audio). Registry 8 slot NON
     strutturale (costante+variante+match+docs, discriminant 0-7 stabili).

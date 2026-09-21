@@ -36,3 +36,22 @@ pub unsafe fn outw(port: u16, val: u16) {
         core::arch::asm!("out dx, ax", in("dx") port, in("ax") val, options(nostack, nomem));
     }
 }
+
+// 38.0d — 32 bit per lo spazio di configurazione PCI (0xCF8/0xCFC).
+// Stesso pattern sopra: valgono le stesse regole I/O bitmap (ADR-0006).
+
+#[inline(always)]
+pub unsafe fn outl(port: u16, val: u32) {
+    unsafe {
+        core::arch::asm!("out dx, eax", in("dx") port, in("eax") val, options(nostack, nomem));
+    }
+}
+
+#[inline(always)]
+pub unsafe fn inl(port: u16) -> u32 {
+    let val: u32;
+    unsafe {
+        core::arch::asm!("in eax, dx", out("eax") val, in("dx") port, options(nostack, nomem));
+    }
+    val
+}

@@ -31,6 +31,22 @@ fn real_main(_sp: u64) -> ! {
         println!("[userdisk] nessun disco ATA: solo registrazione servizio");
     }
 
+    // 1b. PCI Bus-Master (Fase 38.0d): trova il PIIX3-IDE, programma la BAR4 a
+    // `BM_BASE` e abilita I/O Space + Bus Master. Qualunque esito avverso
+    // (assente, BAR fuori finestra, readback diversa) = resto in PIO: il
+    // data-plane sotto e' invariato (il DMA vero arriva in 38.1).
+    match libr::pci::find_piix3_ide() {
+        Some(dev) => match libr::pci::enable_bus_master(dev) {
+            Some(bmiba) => println!(
+                "[userdisk] BMIBA={:#x} (irqline={}), DMA negoziato — data-plane ancora PIO fino a 38.1",
+                bmiba,
+                libr::pci::irq_line(dev)
+            ),
+            None => println!("[userdisk] BAR4 fuori finestra/non verificata: resto in PIO"),
+        },
+        None => println!("[userdisk] PIIX3-IDE non trovato su PCI: resto in PIO"),
+    }
+
     // 2. Nodi: whole-disk + partizioni MBR primarie (graceful se assenti).
     // Handle = disco<<16|sub, allocato QUI (Fase 16c): la tabella `nodes' e'
     // la single source of truth nome→handle; userfs lo chiede con DISK_RESOLVE.
