@@ -17,6 +17,28 @@ use libr::{println, print_str};
 // `syscall-numbers`, via `libr` (prima duplicati qui).
 use libr::{SVC_READY, TEST_DONE};
 
+/// Manifest degli hash dei servizi (Fase 36, identita' misurata, Strato 2 di
+/// ADR-0026): generato a build-time da scripts/gen-service-hashes.sh sui
+/// `.bin` finali, incluso qui via `VELORDOR_SERVICE_HASHES` (esportata da
+/// build-userland.sh; senza, questa compilazione fallisce loud).
+include!(env!("VELORDOR_SERVICE_HASHES"));
+
+/// Hash atteso del servizio `bin` (nome display, es. `b"userconsole"`), o
+/// `None` se non e' nel manifest: embedded disk/fs (TCB del kernel — init non
+/// ha i byte in mano per verificarli, li spawna per nome) e binari di test
+/// (solo suite, mai servizi). Solo i servizi da disco sono pinnati.
+fn expected_hash(bin: &[u8]) -> Option<u64> {
+    match bin {
+        b"userconsole" => Some(HASH_USERCONSOLE),
+        b"useruptime" => Some(HASH_USERUPTIME),
+        b"userdevfs" => Some(HASH_USERDEVFS),
+        b"userkbd" => Some(HASH_USERKBD),
+        b"usertty" => Some(HASH_USERTTY),
+        b"usershell" => Some(HASH_USERSHELL),
+        _ => None,
+    }
+}
+
 /// Attende dal canale `chan` un messaggio con tag `tag` e lo consuma SENZA
 /// reply (i READY sono fire-and-forget via send_async: rispondere accoderebbe
 /// uno spurious message nel server). Usato per sincronizzare l'avvio.
@@ -69,6 +91,10 @@ const KBD_PS2_RANGES: &[(u16, u16)] = &[(0x60, 0x64)];
 /// e chiama `spawn_image`. Ritorna il channel id o None (file mancante,
 /// meta invalida, spawn rifiutato). Il boot fallisce loud (panic), la
 /// supervisione ritenta con backoff+hold come per gli embedded.
+/// Fase 36 (identita' misurata): prima dello spawn ricalcola l'hash dei byte
+/// caricati e lo confronta col manifest generato a build-time; mismatch =
+/// None (a boot e' panic come sopra; in restart e' retry-con-hold con log
+/// loud a ogni finestra — un disco manomesso non diventa mai servizio).
 fn spawn_file(meta: &SvcMeta) -> Option<i64> {
     let path = meta.path?;
     print_str!("[init] load ");
@@ -79,6 +105,18 @@ fn spawn_file(meta: &SvcMeta) -> Option<i64> {
             println!(" -> FAILED (file illeggibile)");
             return None;
         }
+    };
+    // `checked` = un pinning da manifest esisteva ed e' passato: solo allora
+    // il log dice `hash-ok` (mai claim senza verifica).
+    let checked = match expected_hash(meta.bin) {
+        Some(expected) => {
+            if libr::image_hash(&img) != expected {
+                println!(" -> FAILED (hash mismatch)");
+                return None;
+            }
+            true
+        }
+        None => false,
     };
     let name = match core::str::from_utf8(meta.bin) {
         Ok(s) => s,
@@ -91,7 +129,11 @@ fn spawn_file(meta: &SvcMeta) -> Option<i64> {
     print_str!(" -> spawn ");
     match libr::spawn_image(&img, &sm) {
         Ok(chan) => {
-            println!("{}B -> child chan={}", img.len(), chan);
+            if checked {
+                println!("{}B hash-ok -> child chan={}", img.len(), chan);
+            } else {
+                println!("{}B -> child chan={}", img.len(), chan);
+            }
             Some(chan)
         }
         Err(()) => {

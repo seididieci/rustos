@@ -37,6 +37,10 @@ pub use syscall_numbers::EXIT_NOTIFY;
 pub use syscall_numbers::IRQ_NOTIFY_KBD;
 /// Bound di scansione PID per `ps` (Fase 19.1, = MAX_PIDS del kernel).
 pub use syscall_numbers::PS_SCAN_MAX;
+/// Identita' misurata di un'immagine ELF (Fase 36, Strato 2 di ADR-0026):
+/// FNV-1a sui byte dell'ELF — stesso valore che il kernel misura allo spawn.
+/// init/userfs la ricalcolano sui byte caricati (manifest, policy FS_REGISTER).
+pub use syscall_numbers::image_hash;
 /// Protocollo DISK_* userfs→userdisk (Fase 16, single source in
 /// `syscall-numbers`, Fase 16c): handshake/open/read/close + resolve
 /// nome→handle di proprieta' del driver.
