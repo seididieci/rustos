@@ -46,16 +46,25 @@ build, tmp = sys.argv[1], sys.argv[2]
 bins = sorted(glob.glob(os.path.join(build, "*.bin")))
 if not bins:
     sys.exit("nessun .bin in %s" % build)
-# userinit.bin ESCLUSO: init e' compilato DOPO la generazione (ha bisogno del
-# manifest) quindi il suo hash sarebbe stale-by-construction. Non serve: init
-# non verifica se stesso (impossibile per costruzione) — lo misura il kernel
-# allo spawn (`image_hash` nel PCB) e init e' TCB come il kernel che lo embedda.
-bins = [p for p in bins if os.path.basename(p) != "userinit.bin"]
+# userinit.bin e userfs.bin ESCLUSI: entrambi includono il manifest a compile
+# time (init: expected_hash; userfs: driver_name_of), quindi il loro hash nel
+# manifest sarebbe stale-by-construction E instabile (ciclo: il binario
+# incorpora l'hash di se stesso → ogni build lo cambia → la successiva lo
+# ricambia, mai fixpoint — osservato: HASH_USERFS flippa a ogni run).
+# Non servono: init non verifica se stesso (impossibile per costruzione, lo
+# misura il kernel) e non controlla fs (embedded, TCB); userfs non pinna se
+# stesso (la regola same-image confronta due peer vivi, niente manifest).
+# Il manifest copre esattamente i servizi caricati da disco + disk (embedded
+# ma senza ciclo: userdisk non include il manifest) — per questi il fixpoint
+# e' raggiunto in UN passaggio (i loro binari non incorporano alcun hash).
+bins = [p for p in bins if os.path.basename(p) not in ("userinit.bin", "userfs.bin")]
 
 lines = [
     "// Generato da scripts/gen-service-hashes.sh — MAI modificare a mano.",
     "// Identita' misurata (Fase 36, Strato 2 di ADR-0026): FNV-1a a 64 bit",
-    "// (`syscall_numbers::image_hash`) sui byte di ogni binario userland.",
+    "// (`syscall_numbers::image_hash`) sui binari userland (esclusi",
+    "// userinit/userfs: incorporano il manifest, il loro hash sarebbe un",
+    "// ciclo instabile — vedi filtro sotto).",
     "// Consumatori via `include!(env!(\"VELORDOR_SERVICE_HASHES\"))`: init",
     "// (manifest pre-spawn), userfs (policy FS_REGISTER su identita'),",
     "// usertests (t51: peer_info atteso). Rigenerato a ogni build.",

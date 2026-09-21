@@ -278,3 +278,173 @@ pub fn t_hardening() -> bool {
     let _ = helpers::wait_exit(b_chan);
     true
 }
+
+/// t51 — identita' misurata (Fase 36, Strato 2 di ADR-0026).
+/// (A) `peer_info` sui servizi caricati da disco (Console, Devfs) == manifest
+/// generato: il kernel misura gli stessi byte che init ha verificato al boot.
+/// (Su userfs embedded non c'e' pinning da manifest: `HASH_USERFS` non esiste
+/// per costruzione — userfs incorpora il manifest e il suo hash sarebbe un
+/// ciclo instabile, vedi gen-service-hashes.sh.)
+/// (B) stabilita': due istanze dello stesso helper hanno lo stesso hash.
+/// (C) same-image positivo: due istanze NON-figlie-di-init dello stesso
+/// binario si passano un prefix (X2 rimpiazza X1 vivo) — con le sole regole
+/// Fase 35 sarebbe rifiutato. Osservabile: kill X1 → il mount sopravvive
+/// (driver X2), open ancora ok.
+/// (D) squat negativo: Y (binario diverso) tenta il replace del prefix di X
+/// vivo → rifiutato; alla morte di X il mount e' purgato (open fallisce).
+/// Se il replace fosse passato, Y servirebbe e l'open riuscirebbe.
+/// (E) `peer_info` a canale morto → Err.
+pub fn t_identity() -> bool {
+    helpers::drain_stray();
+    // (A) hash dal kernel == manifest di build, per due servizi da disco.
+    for (svc, expected, name) in [
+        (libr::Service::Console, crate::HASH_USERCONSOLE, "Console"),
+        (libr::Service::Devfs, crate::HASH_USERDEVFS, "Devfs"),
+    ] {
+        let chan = match libr::service_lookup(svc) {
+            Ok(c) => c as u64,
+            Err(_) => {
+                println!("[usertests] t51: lookup {} FAILED", name);
+                return false;
+            }
+        };
+        match libr::peer_info(chan) {
+            Ok(h) if h == expected => {}
+            Ok(h) => {
+                println!("[usertests] t51: peer_info({})={:#x} != manifest {:#x}", name, h, expected);
+                return false;
+            }
+            Err(_) => {
+                println!("[usertests] t51: peer_info({}) FAILED", name);
+                return false;
+            }
+        }
+    }
+    // (B) due istanze dello stesso helper: stesso hash, entrambe vive.
+    let (k1_chan, k1_pid) = match helpers::spawn_cfg(
+        "/fat/test/testcli.bin", "utcli", 16, helpers::M_KILLME, 0,
+    ) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t51: spawn K1 FAILED");
+            return false;
+        }
+    };
+    let (k2_chan, k2_pid) = match helpers::spawn_cfg(
+        "/fat/test/testcli.bin", "utcli", 16, helpers::M_KILLME, 0,
+    ) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t51: spawn K2 FAILED");
+            let _ = libr::kill(k1_pid as i64, 0);
+            let _ = helpers::wait_exit(k1_chan);
+            return false;
+        }
+    };
+    let (h1, h2) = (libr::peer_info(k1_chan), libr::peer_info(k2_chan));
+    // spawn_cfg riporta in ack.w0 il pid (testcli risponde T_ACK con getpid,
+    // come usa t50): kill diretto, nostre figlie.
+    if h1.is_err() || h1 != h2 {
+        println!("[usertests] t51: hash instabili tra istanze");
+        let _ = libr::kill(k1_pid as i64, 0);
+        let _ = helpers::wait_exit(k1_chan);
+        let _ = libr::kill(k2_pid as i64, 0);
+        let _ = helpers::wait_exit(k2_chan);
+        return false;
+    }
+    let _ = libr::kill(k1_pid as i64, 0);
+    let _ = helpers::wait_exit(k1_chan);
+    let _ = libr::kill(k2_pid as i64, 0);
+    let _ = helpers::wait_exit(k2_chan);
+    // (C) same-image: X1 registra /dev/t51, X2 (stesso binario, non init-child)
+    // lo rimpiazza da vivo. Kill X1 → il mount deve sopravvivere (driver X2).
+    let (x1_chan, _) = match helpers::spawn_cfg(
+        "/fat/test/testcli.bin", "utcli", 16, helpers::M_REG51, 0,
+    ) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t51: spawn X1 FAILED");
+            return false;
+        }
+    };
+    if helpers::recv_ready(x1_chan).is_none() {
+        println!("[usertests] t51: T_READY X1 mancante");
+        return false;
+    }
+    let (x2_chan, _) = match helpers::spawn_cfg(
+        "/fat/test/testcli.bin", "utcli", 16, helpers::M_REG51, 0,
+    ) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t51: spawn X2 FAILED");
+            let _ = libr::kill(libr::peer_pid(x1_chan).unwrap_or(-1), 0);
+            let _ = helpers::wait_exit(x1_chan);
+            return false;
+        }
+    };
+    if helpers::recv_ready(x2_chan).is_none() {
+        println!("[usertests] t51: T_READY X2 mancante");
+        return false;
+    }
+    let x1_pid = libr::peer_pid(x1_chan).unwrap_or(-1);
+    let x2_pid = libr::peer_pid(x2_chan).unwrap_or(-1);
+    let fd = libr::open("/dev/t51/null", 0);
+    if fd < 0 {
+        println!("[usertests] t51: open pre-kill FAILED");
+        let _ = libr::kill(x1_pid, 0);
+        let _ = helpers::wait_exit(x1_chan);
+        let _ = libr::kill(x2_pid, 0);
+        let _ = helpers::wait_exit(x2_chan);
+        return false;
+    }
+    let _ = libr::close(fd);
+    let _ = libr::kill(x1_pid, 0);
+    let _ = helpers::wait_exit(x1_chan);
+    let fd = libr::open("/dev/t51/null", 0);
+    if fd < 0 {
+        println!("[usertests] t51: open post-kill X1 FAILED (replace same-image non passato?)");
+        let _ = libr::kill(x2_pid, 0);
+        let _ = helpers::wait_exit(x2_chan);
+        return false;
+    }
+    let _ = libr::close(fd);
+    // (D) squat: X2 resta vivo e proprietario; Y (binario diverso) tenta il
+    // replace → rifiutato. Kill X2 → mount purgato → open deve FALLIRE (se il
+    // replace fosse passato, Y servirebbe e l'open riuscirebbe).
+    let (y_chan, _) = match helpers::spawn_cfg(
+        "/fat/test/testspin.bin", "utspin", 16, helpers::SPIN_SQUAT_MAGIC, 0,
+    ) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t51: spawn Y FAILED");
+            let _ = libr::kill(x2_pid, 0);
+            let _ = helpers::wait_exit(x2_chan);
+            return false;
+        }
+    };
+    if helpers::recv_ready(y_chan).is_none() {
+        println!("[usertests] t51: T_READY Y mancante");
+        let _ = libr::kill(x2_pid, 0);
+        let _ = helpers::wait_exit(x2_chan);
+        return false;
+    }
+    let y_pid = libr::peer_pid(y_chan).unwrap_or(-1);
+    let _ = libr::kill(x2_pid, 0);
+    let _ = helpers::wait_exit(x2_chan);
+    // (E) canale morto → Err (stesso canale di X2, peer reclamato).
+    if libr::peer_info(x2_chan).is_ok() {
+        println!("[usertests] t51: peer_info a canale morto NON rifiutato!");
+        let _ = libr::kill(y_pid, 0);
+        let _ = helpers::wait_exit(y_chan);
+        return false;
+    }
+    let fd = libr::open("/dev/t51/null", 0);
+    let _ = libr::kill(y_pid, 0);
+    let _ = helpers::wait_exit(y_chan);
+    if fd >= 0 {
+        println!("[usertests] t51: open dopo purge RIUSCITO (squat passato?)");
+        let _ = libr::close(fd);
+        return false;
+    }
+    true
+}

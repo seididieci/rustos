@@ -18,6 +18,12 @@ use alloc::vec::Vec;
 
 use libr::println;
 
+/// Manifest degli hash dei servizi (Fase 36, identita' misurata): generato a
+/// build-time da scripts/gen-service-hashes.sh, incluso via
+/// `VELORDOR_SERVICE_HASHES` (esportata da build-tests.sh; usertests e'
+/// compilato li'). t51 confronta `peer_info` col manifest.
+include!(env!("VELORDOR_SERVICE_HASHES"));
+
 
 mod helpers;
 mod t_async;
@@ -86,6 +92,7 @@ pub extern "C" fn _start() -> ! {
     helpers::report(&mut total, &mut ok, "t48 COW su shm (shared-read + isolamento)", t_basic::t_cow());
     helpers::report(&mut total, &mut ok, "t49 fork COW (isolamento padre/figlio)", t_lifecycle::t_fork());
     helpers::report(&mut total, &mut ok, "t50 hardening (kill/register/map ostili)", t_stable::t_hardening());
+    helpers::report(&mut total, &mut ok, "t51 identita' misurata (peer_info/manifest/squat)", t_stable::t_identity());
     // t34 per ULTIMO: i drop sono irrevocabili sul canale di usertests.
     helpers::report(&mut total, &mut ok, "t34 diritti per-canale lato server", t_fs::t_rights());
 

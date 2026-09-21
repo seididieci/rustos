@@ -4,14 +4,15 @@ use super::*;
 
 /// Nome del driver dietro il canale `chan` dal suo `image_hash` (Fase 36,
 /// identita' misurata): confronto col manifest generato a build-time; `"?"`
-/// se il canale e' morto o l'hash e' ignoto (test/helper). Solo diagnostica
-/// nei log, mai decisioni (la policy confronta gli hash, non i nomi).
+/// se il canale e' morto o l'hash e' ignoto (test/helper, userfs stesso:
+/// `HASH_USERFS` non esiste — userfs incorpora il manifest e il suo hash
+/// sarebbe un ciclo). Solo diagnostica nei log, mai decisioni (la policy
+/// confronta gli hash, non i nomi).
 fn driver_name_of(chan: u64) -> &'static str {
     match libr::peer_info(chan) {
         Ok(h) if h == HASH_USERCONSOLE => "userconsole",
         Ok(h) if h == HASH_USERDEVFS => "userdevfs",
         Ok(h) if h == HASH_USERDISK => "userdisk",
-        Ok(h) if h == HASH_USERFS => "userfs",
         Ok(h) if h == HASH_USERKBD => "userkbd",
         Ok(h) if h == HASH_USERSHELL => "usershell",
         Ok(h) if h == HASH_USERTTY => "usertty",

@@ -43,6 +43,13 @@ pub const M_ORPHAN: u64 = 22;
 // Fase 35 (t50): tentativi ostili che devono fallire (kill non-figlio,
 // register servizio di sistema). w1 = pid target del kill.
 pub const M_HARDEN: u64 = 23;
+// Fase 36 (t51): driver sacrificale su "/dev/t51" (come MNTDIE su /dev/tdie,
+// stesso binario testcli → stesso image_hash per il same-image positivo).
+pub const M_REG51: u64 = 24;
+// Fase 36 (t51): w0 magico per la sonda di squat di usertest-spin (binario
+// diverso da testcli → hash diverso per il negativo). Speculare a
+// SQUAT_MAGIC in usertest-spin (come i tag T_* speculari al client).
+pub const SPIN_SQUAT_MAGIC: u64 = 0x5351_5541_5435_31;
 
 // VA per i test map_physical/aliasing (zona libera tra USER_FS_BUFFER e lo
 // heap: 0x4000_0020_0000..0x4000_0040_0000).

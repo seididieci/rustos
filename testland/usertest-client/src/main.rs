@@ -54,6 +54,11 @@
 //!                 fa scattare il caso (cascata sul normale, reparent a init
 //!                 del detached). Il parent osserva tutto via `ps` (non e'
 //!                 peer delle foglie: niente EXIT_NOTIFY diretta).
+//!   - 24 REG51:    (Fase 36, t51) come MNTDIE ma sul prefix dedicato
+//!                 "/dev/t51": registra, T_READY(w0=1), serve il minimo
+//!                 (DEV_OPEN → fake fd). Due istanze sono lo STESSO binario
+//!                 (stesso image_hash): la seconda puo' rimpiazzare la prima
+//!                 viva (same-image, Fase 36.5) pur non essendo figlia di init.
 //!
 //! In ogni caso termina con `send(T_DONE, ok, dettagli)` e `exit(0)`.
 //! Il processo e' sempre "garantito che risponde": l'orchestratore reply ad
@@ -109,6 +114,9 @@ const MODE_ORPHAN: u64 = 22;
 // pid non-figlio (w1) e register di un servizio di sistema (`Init`) da un
 // processo non figlio di init. Riporta T_DONE(ok, detail) coi due esiti.
 const MODE_HARDEN: u64 = 23;
+// Fase 36 (identita' misurata, t51): driver sacrificale sul prefix dedicato
+// "/dev/t51" (come MNTDIE su /dev/tdie). Due istanze = stesso binario.
+const MODE_REG51: u64 = 24;
 
 // Tag DEV_* + errore IPC (A1): single source in `libr` (prima letterali qui).
 use libr::{DEV_CLOSE, DEV_OPEN, ERR};
@@ -254,6 +262,35 @@ pub extern "C" fn _start() -> ! {
                 libr::exit(1);
             }
             println!("[utcli] pid={} mntdie: registered /tdie", my_pid);
+            if libr::send(parent, T_READY, 1, 0).is_err() {
+                libr::exit(1);
+            }
+            loop {
+                match libr::recv() {
+                    Ok(m) => match m.tag {
+                        DEV_OPEN => {
+                            let _ = libr::reply(0, 1, 0);
+                        }
+                        DEV_CLOSE => {
+                            let _ = libr::reply(0, 0, 0);
+                        }
+                        _ => {
+                            let _ = libr::reply(0, ERR, 0);
+                        }
+                    },
+                    Err(_) => {}
+                }
+            }
+        }
+        MODE_REG51 => {
+            // Driver sacrificale (t51, Fase 36): identico a MNTDIE ma sul
+            // prefix dedicato "/dev/t51" (nessuna interferenza con t25).
+            if libr::fs_register(b"/dev/t51") < 0 {
+                println!("[utcli] pid={} reg51: fs_register FAILED", my_pid);
+                let _ = libr::send(parent, T_READY, 0, 0);
+                libr::exit(1);
+            }
+            println!("[utcli] pid={} reg51: registered /t51", my_pid);
             if libr::send(parent, T_READY, 1, 0).is_err() {
                 libr::exit(1);
             }
