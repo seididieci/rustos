@@ -14,6 +14,10 @@ target/
 userland/build/
 testland/build/
 
+# Manifest hash servizi (build-meta/service_hashes.rs, Fase 36): generato a
+# ogni build da scripts/gen-service-hashes.sh, mai nel repo.
+build-meta/
+
 # Log di boot/debug QEMU (boot-logs/) e log sparsi: mai nel repo.
 boot-logs/
 *.log
