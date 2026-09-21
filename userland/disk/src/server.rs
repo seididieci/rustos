@@ -181,6 +181,15 @@ fn real_main(_sp: u64) -> ! {
             continue;
         }
 
+        // 38.0b — notify IRQ14/15 dal kernel (bridge interrupt→IPC, canale 0
+        // senza peer, come IRQ_NOTIFY_KBD per kbd): MAI reply — non c'e'
+        // nessuno ad aspettarla (risponderla manderebbe spazzatura sul canale
+        // di nascita). Per ora solo tollerata (nessun sender fino a 38.0c);
+        // il drenaggio dello status Bus-Master arriva con il DMA in 38.2.
+        if msg.tag == libr::IRQ_NOTIFY_DISK {
+            continue;
+        }
+
         // ── Data-plane DISK_* (canale diretto userfs) ──
         if msg.tag == DISK_HELLO {
             // Fisici nei registri di reply (tag 0, mai !0 = ERR): niente frame.
