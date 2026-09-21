@@ -29,6 +29,42 @@ impl AtaDisk {
         AtaDisk { cmd, drive, lba48 }
     }
 
+    /// Negozia il modo UDMA del drive (Fase 38.1b, `SET FEATURES 0xEF/0x03`):
+    /// modo = min(max del drive da IDENTIFY word 88, UDMA2 del PIIX3).
+    /// Ritorna il modo negoziato (0-2) o `None` (niente UDMA / comando
+    /// rifiutato → il chiamante resta in PIO). Solo log a questo passo (38.1c
+    /// usera' il modo per i trasferimenti DMA); il PIO non e' toccato dal
+    /// modo (i comandi PIO restano PIO).
+    pub fn set_dma_mode(&self, udma_word: u16) -> Option<u8> {
+        let mut max: Option<u8> = None;
+        for m in 0..=6u8 {
+            if udma_word & (1 << m) != 0 {
+                max = Some(m);
+            }
+        }
+        let mode = max?.min(2);
+        if !self.wait_not_busy() {
+            return None;
+        }
+        unsafe {
+            io::outb(self.cmd + 6, 0xA0 | (self.drive << 4));
+            io::outb(self.cmd + 1, 0x03); // SET TRANSFER MODE
+            io::outb(self.cmd + 2, 0x40 | mode); // UDMA n
+            io::outb(self.cmd + 3, 0x00);
+            io::outb(self.cmd + 4, 0x00);
+            io::outb(self.cmd + 5, 0x00);
+            io::outb(self.cmd + 7, 0xEF); // SET FEATURES
+        }
+        if !self.wait_not_busy() {
+            return None;
+        }
+        let st = unsafe { io::inb(self.cmd + 7) };
+        if st & 0x01 != 0 {
+            return None; // ERR: modo rifiutato
+        }
+        Some(mode)
+    }
+
     /// Attende che il controller non sia piu' busy. Ritorna `false` su timeout.
     fn wait_not_busy(&self) -> bool {
         for _ in 0..TIMEOUT {

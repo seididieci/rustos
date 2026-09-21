@@ -42,6 +42,12 @@ pub struct DiskInfo {
     pub serial: [u8; 20],
     /// Lunghezza significativa di `serial`.
     pub serial_len: usize,
+    /// Modi MDMA supportati (IDENTIFY word 63, bit 0-2, Fase 38.1b):
+    /// diagnostica/futuro, oggi la negoziazione usa solo UDMA.
+    pub mdma_modes: u16,
+    /// Modi UDMA supportati (IDENTIFY word 88, bit 0-6, Fase 38.1b): il bit
+    /// piu' alto e' il modo max del drive (PIIX3 arriva a UDMA2).
+    pub udma_modes: u16,
 }
 
 /// Esito del probe di un singolo drive.
@@ -195,6 +201,8 @@ fn probe_drive(ch: &AtaChannel, drive: u8) -> Probe {
         model_len,
         serial,
         serial_len,
+        mdma_modes: words[63],
+        udma_modes: words[88],
     })
 }
 

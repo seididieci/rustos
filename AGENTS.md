@@ -1445,8 +1445,9 @@ velordor/
     azzerati, mappa RW/NX, ritorna il phys (precedente: `SYS_RING_ALLOC`);
     single-slot, free a teardown/exec, skip in fork come i ring; `libr::
     dma_alloc` + righe 06-syscalls. Zero chiamanti (nessun behavior change).
-  - [ ] 38.1b negotiate: IDENTIFY word 63/88 in `DiskInfo` + SET FEATURES
-    (modo min(drive,UDMA2)) per disco a boot, solo log (nessun trasferimento).
+  - [x] 38.1b negotiate: IDENTIFY word 63/88 in `DiskInfo` + SET FEATURES
+    (modo min(drive,UDMA2)) per disco a boot, solo log (nessun trasferimento);
+    modi in `dma_modes` per il motore (38.1c). Data-plane invariato (PIO).
   - [ ] 38.1c transfer: PRD (split 64K, EOT, cap 8) + READ/WRITE DMA EXT su
     staging 1 pagina + wait blocking-recv (pre-check status, verify a ogni
     wakeup, stash-8, EXIT-abort; self-healing da level-triggered) + routing

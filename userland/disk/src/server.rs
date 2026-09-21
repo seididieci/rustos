@@ -47,6 +47,27 @@ fn real_main(_sp: u64) -> ! {
         None => println!("[userdisk] PIIX3-IDE non trovato su PCI: resto in PIO"),
     }
 
+    // 1c. Modi DMA (Fase 38.1b): `SET FEATURES` per disco, SOLO log (nessun
+    // trasferimento ancora — 38.1c). Qualunque rifiuto = PIO: il data-plane
+    // sotto e' invariato (il modo non tocca i comandi PIO). I modi restano in
+    // `dma_modes` per il motore DMA (38.1c).
+    let mut dma_modes: Vec<Option<u8>> = Vec::new();
+    for (i, disk) in disks.iter().enumerate() {
+        let letter = (b'a' + i as u8) as char;
+        let mode = disk.set_dma_mode(infos[i].udma_modes);
+        match mode {
+            Some(m) => println!(
+                "[userdisk] sd{}: UDMA mode {} negoziato — data-plane ancora PIO fino a 38.1c",
+                letter, m
+            ),
+            None => println!(
+                "[userdisk] sd{}: niente UDMA (word88={:#x}): resto in PIO",
+                letter, infos[i].udma_modes
+            ),
+        }
+        dma_modes.push(mode);
+    }
+
     // 2. Nodi: whole-disk + partizioni MBR primarie (graceful se assenti).
     // Handle = disco<<16|sub, allocato QUI (Fase 16c): la tabella `nodes' e'
     // la single source of truth nome→handle; userfs lo chiede con DISK_RESOLVE.
