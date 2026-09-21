@@ -254,7 +254,9 @@ lo storage-TCB (init/disk/fs); tutto il resto parte da disco via init.
 
 > Le classiche `read`/`open`/`close`/`readdir` non sono syscall kernel:
 > sono wrapper IPC diretti in `libr` (client → userfs, v. [File System](./09-filesystem.md)).
-> `fork`/`exec`/`wait`/`brk`/`mmap` non sono implementate.
+> `fork` (45, Fase 34) e `mmap` (39, Fase 28) esistono; `sbrk` e' la 25.
+> `exec` in-place + `wait` arrivano con la Fase 37; `brk` non esiste come
+> syscall (l'heap cresce via `sbrk`).
 
 ### File System — ritirate (Fase 9.6)
 

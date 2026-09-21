@@ -1362,6 +1362,24 @@ velordor/
         manifest esclude i binari che lo incorporano (userinit/userfs);
         fixpoint in un passaggio (provato: rebuild → diff vuoto).
   - Verifica: gate 5/5 + 7/7 + 51/51 + shell 30/30, zero FAIL/PANIC/FAULT.
+- [ ] Fase 37: `exec` in-place + shell che lancia programmi (PIANIFICATA,
+      ADR-0028 futuro; `exec` era atteso dalle ADR-0025/0026 come "Fase 36",
+      rinumerato qui).
+  - Scopo concordato (full): primitiva kernel + shell (`run`, `&`, `jobs`/
+    `wait` su EXIT_NOTIFY). Semantica POSIX-like: stesso PID/parent/priorita'/
+    canali (fd server-side sopravvivono), cade l'address space, stack nuovo
+    con argv stile Linux come CONVENZIONE DI DATI neutra (ADR-0025 §Neutral),
+    `image_hash` rimisurato (senza: `peer_info` mentirebbe, bypassabile la
+    regola same-image 36.5), porte I/O azzerate. `libr::exec(path, argv)` =
+    `load_file` + `exec_image` (il kernel non tocca il FS, ADR-0005).
+  - [ ] 37.0 syscall + loader riuso (validazione prima di toccare nulla)
+  - [ ] 37.1 contesto CPU/stack-argv + `libr::exec` + convenzione `_start`
+  - [ ] 37.2 shell run/jobs/wait
+  - [ ] 37.3 t52 + gate 52/52
+  - [ ] 37.4 docs (ADR-0028 + checklist anti-marcio)
+  - Rischi: cross-cutting come fork (contesto + walk + risorse); teardown
+    mai sotto i propri piedi (disciplina reclaim Fase 14); niente redirezioni
+    fd in 37 (solo eredita').
 
 ## Important Notes
 

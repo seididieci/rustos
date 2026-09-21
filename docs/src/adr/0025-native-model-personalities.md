@@ -73,4 +73,4 @@ a fronte di software che vuole il metallo; costo/modello inaccettabile
 
 - ADR-0015 (POSIX come API di `libr`), ADR-0008 (canali), ADR-0009/0019 (async),
   ADR-0024 (`fork` e i suoi caveat), Fase 17 (diritti solo in riduzione)
-- Fase 35 (`exec`, prima consumatrice neutra) e Fase "posix-server" (futura)
+- Fase 37 (`exec` in-place, prima consumatrice neutra) e Fase "posix-server" (futura)

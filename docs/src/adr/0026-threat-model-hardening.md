@@ -10,7 +10,7 @@ gate 5/5 + 7/7 + 51/51 + shell 30/30.
 
 Fino alla Fase 34 tutti i processi user si fidano a vicenda (modello
 cooperativo da ricerca). Con `exec` + shell che lancia programmi di terzi
-(Fase 36) il modello non regge più: serve lo sguardo avversariale. Verifica
+(Fase 37) il modello non regge più: serve lo sguardo avversariale. Verifica
 sul codice (Fase 35): `sys_map_physical` non vincola il `phys` (qualunque
 processo mappa qualunque RAM in RW: sandbox escape totale); `kill(pid)` non
 controlla il chiamante (chiunque uccide qualunque server tranne init);
@@ -43,7 +43,7 @@ Strato 1 — cancelli kernel senza identità (Fase 35, prima di `exec`):
    init-child (niente squat persistente di `/dev/null` & co.); la morte purga
    comunque (Fase 14.11, self-healing).
 
-Strato 2 — identità misurata (fase successiva, con o dopo `exec`):
+Strato 2 — identità misurata (implementato in Fase 36, prima di `exec`):
 
 5. Il kernel misura l'immagine allo spawn (hash nel PCB, come `text` già fa
    per lo sharing); `peer_info`/gate su hash noto per i servizi di sistema;
