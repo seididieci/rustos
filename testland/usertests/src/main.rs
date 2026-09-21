@@ -35,8 +35,8 @@ mod t_mapflap;
 mod t_stable;
 // ── main ─────────────────────────────────────────────────────────────
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+libr::entry!(real_main);
+fn real_main(_sp: u64) -> ! {
     let my_pid = libr::getpid();
     println!("[usertests] suite up, pid={}", my_pid);
 

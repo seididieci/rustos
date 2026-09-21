@@ -27,8 +27,8 @@ fn expect(name: &str, got: &[u8], want: &[u8]) -> bool {
     ok
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+libr::entry!(real_main);
+fn real_main(_sp: u64) -> ! {
     let pid = libr::getpid();
     println!("[testfat] starting, pid={}", pid);
     let mut all_ok = true;

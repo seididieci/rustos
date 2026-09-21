@@ -128,8 +128,30 @@ const MODE_EXECDEMO: u64 = 25;
 // Tag DEV_* + errore IPC (A1): single source in `libr` (prima letterali qui).
 use libr::{DEV_CLOSE, DEV_OPEN, ERR};
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+libr::entry!(real_main);
+fn real_main(sp: u64) -> ! {
+    // Fase 37.1 (t52-argv): sonda argv post-exec — convenzione di TEST
+    // esplicita, solo testland la usa: se argv[0] == "ARGPROBE", niente flusso
+    // CFG; riporta T_DONE(argc, fnv(argv[1..])) e esce. La FNV e' calcolata
+    // come il parent (`image_hash` sul join NUL, trailing NUL incluso).
+    if let Some(args) = libr::args_from_stack(sp) {
+        if args.get(0) == Some(b"ARGPROBE".as_slice()) {
+            let mut joined = alloc::vec::Vec::new();
+            let mut i = 1u64;
+            while let Some(a) = args.get(i) {
+                joined.extend_from_slice(a);
+                joined.push(0);
+                i += 1;
+            }
+            let _ = libr::send(
+                libr::CHANNEL_PARENT,
+                T_DONE,
+                args.argc(),
+                libr::image_hash(&joined),
+            );
+            libr::exit(0);
+        }
+    }
     let my_pid = libr::getpid();
     println!("[utcli] pid={} up", my_pid);
 
@@ -260,10 +282,12 @@ pub extern "C" fn _start() -> ! {
             libr::exit(0);
         }
         MODE_EXECDEMO => {
-            // Demo exec (t52, Fase 37): attende il via T_GO, carica testspin
-            // da disco ed exec_into. Successo = mai ritorno (si diventa spin
-            // con stesso PID e hash rimisurato); qualunque fallimento =
-            // T_DONE(w0=0, w1=detail) + exit, mai hang.
+            // Demo exec (t52, Fase 37): attende il via T_GO, poi exec. `rounds`
+            // (cfg.w1) seleziona il target: 0 = testspin senza argv (nucleo
+            // 37.0: stesso PID, hash rimisurato); 1 = testcli con argv
+            // ["ARGPROBE","hello","world"] (37.1: la nuova immagine vede gli
+            // argv e riporta T_DONE da sola). Successo = mai ritorno;
+            // fallimento = T_DONE(w0=0, w1=detail) + exit, mai hang.
             loop {
                 match libr::recv() {
                     Ok(m) if m.tag == T_GO => {
@@ -275,6 +299,28 @@ pub extern "C" fn _start() -> ! {
                     }
                     Err(_) => {
                         libr::exit(1);
+                    }
+                }
+            }
+            if rounds == 1 {
+                let img = match libr::load_file("/fat/test/testcli.bin") {
+                    Some(b) if !b.is_empty() => b,
+                    _ => {
+                        let _ = libr::send(parent, T_DONE, 0, 30);
+                        libr::exit(0);
+                    }
+                };
+                let mut buf = alloc::vec::Vec::new();
+                buf.extend_from_slice(&3u64.to_le_bytes());
+                for s in [b"ARGPROBE".as_slice(), b"hello".as_slice(), b"world".as_slice()] {
+                    buf.extend_from_slice(s);
+                    buf.push(0);
+                }
+                match libr::exec_image_args(&img, &buf) {
+                    Ok(()) => libr::exit(1), // irraggiungibile
+                    Err(()) => {
+                        let _ = libr::send(parent, T_DONE, 0, 31);
+                        libr::exit(0);
                     }
                 }
             }

@@ -630,13 +630,15 @@ pub fn t_fork() -> bool {
     ok
 }
 
-/// t52 — exec in-place, nucleo (Fase 37.0, senza argv): un helper testcli
-/// (EXECDEMO) diventa testspin via `exec_image` su T_GO. Verifiche: stesso
-/// PID (T_ACK pre/post con pid), hash rimisurato (diverso da prima, uguale a
-/// uno spin fresco di riferimento), nuova immagine operativa (T_DONE dopo il
-/// budget). Reap via `poll_gone` (NON `wait_exit`: i `recv_done` consumano e
-/// scartano le EXIT_NOTIFY altrui — aspettarle dopo sarebbe hang garantito).
-/// Entrambi escono da soli.
+/// t52 — exec in-place (Fase 37.0 nucleo + 37.1 argv): un helper testcli
+/// (EXECDEMO) diventa testspin via `exec_image` su T_GO. Verifiche nucleo:
+/// stesso PID (T_ACK pre/post con pid), hash rimisurato (diverso da prima,
+/// uguale a uno spin fresco di riferimento), nuova immagine operativa (T_DONE
+/// dopo il budget). Verifiche argv: secondo helper con w1=1, exec con argv
+/// ["ARGPROBE","hello","world"] — il fresh `_start` riporta T_DONE(argc, fnv)
+/// da solo; il parent confronta. Reap via `poll_gone` (NON `wait_exit`: i
+/// `recv_done` consumano e scartano le EXIT_NOTIFY altrui — aspettarle dopo
+/// sarebbe hang garantito). Entrambi escono da soli.
 pub fn t_exec_core() -> bool {
     helpers::drain_stray();
     let (h_chan, h_pid) = match helpers::spawn_cfg(
@@ -724,6 +726,84 @@ pub fn t_exec_core() -> bool {
     }
     if !gone_h || !gone_r {
         println!("[usertests] t52: reap mancato (h={}, r={})", gone_h, gone_r);
+        return false;
+    }
+    // Leg argv (37.1): secondo helper, exec con argv ["ARGPROBE","hello",
+    // "world"]. Il fresh _start vede argc=3 e riporta T_DONE(argc, fnv) da
+    // solo (nessun T_CFG: la nuova immagine non parla il protocollo CFG).
+    // Stesso binario: hash coerente (uguale al pre-exec); la PROVA dell'exec
+    // e' il report argv (la vecchia immagine non poteva produrlo).
+    let (a_chan, a_pid) = match helpers::spawn_cfg(
+        "/fat/test/testcli.bin", "utcli", 16, helpers::M_EXECDEMO, 1,
+    ) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t52: spawn argv-helper FAILED");
+            return false;
+        }
+    };
+    let a_pre = match libr::peer_info(a_chan) {
+        Ok(h) => h,
+        Err(_) => {
+            println!("[usertests] t52: peer_info argv-helper FAILED");
+            let _ = libr::kill(a_pid as i64, 0);
+            let _ = helpers::wait_exit(a_chan);
+            return false;
+        }
+    };
+    if libr::send(a_chan, helpers::T_GO, 0, 0).is_err() {
+        println!("[usertests] t52: T_GO argv FAILED");
+        let _ = libr::kill(a_pid as i64, 0);
+        let _ = helpers::wait_exit(a_chan);
+        return false;
+    }
+    // Stesso binario prima/dopo: il valore e' deterministico comunque
+    // (l'exec puo' essere gia' avvenuto o no, l'hash non cambia).
+    match libr::peer_info(a_chan) {
+        Ok(h) if h == a_pre => {}
+        Ok(h) => {
+            println!("[usertests] t52: hash incoerente ({:#x} -> {:#x})", a_pre, h);
+            let _ = libr::kill(a_pid as i64, 0);
+            let _ = helpers::wait_exit(a_chan);
+            return false;
+        }
+        Err(_) => {
+            println!("[usertests] t52: peer_info post-GO FAILED");
+            let _ = libr::kill(a_pid as i64, 0);
+            let _ = helpers::wait_exit(a_chan);
+            return false;
+        }
+    }
+    let expected_fnv = libr::image_hash(b"hello\0world\0");
+    let (argc_rep, fnv_rep) = loop {
+        match libr::recv() {
+            Ok(m) if m.tag == helpers::T_DONE && m.channel == a_chan => {
+                let _ = libr::reply(helpers::T_ACK, 0, 0);
+                break (m.w0, m.w1);
+            }
+            Ok(m) if libr::is_exit_notify(&m) => {}
+            Ok(_) => {
+                let _ = libr::reply(helpers::T_ACK, 0, 0);
+            }
+            Err(_) => {
+                println!("[usertests] t52: recv report argv FAILED");
+                let _ = libr::kill(a_pid as i64, 0);
+                let _ = helpers::wait_exit(a_chan);
+                return false;
+            }
+        }
+    };
+    // Reap senza EXIT_NOTIFY (consumata sopra come stray): poll throttled.
+    let gone_a = helpers::poll_gone(a_pid as u64, 200);
+    if argc_rep != 3 || fnv_rep != expected_fnv {
+        println!(
+            "[usertests] t52: report argv errato (argc={}, fnv={:#x}, attesi 3 e {:#x})",
+            argc_rep, fnv_rep, expected_fnv
+        );
+        return false;
+    }
+    if !gone_a {
+        println!("[usertests] t52: reap argv-helper mancato");
         return false;
     }
     true

@@ -12,8 +12,8 @@ use libr::{println};
 const PERIOD_TICKS: i64 = 500; // 100 Hz -> 5 s
 
 /// Entry: loop infinito che stampa l'uptime ogni 5 secondi.
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+libr::entry!(real_main);
+fn real_main(_sp: u64) -> ! {
     println!("[uptime] user process up");
     let mut deadline = PERIOD_TICKS;
 

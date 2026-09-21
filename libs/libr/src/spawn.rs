@@ -80,19 +80,62 @@ pub fn spawn_image(img: &[u8], meta: &SpawnMeta) -> Result<i64, ()> {
 }
 
 /// `exec_image(img)`: sostituisce l'immagine del chiamante con l'ELF `img`
-/// (Fase 37, `SYS_EXEC` in-place). Stesso PID/parent/priorita'/canali; cade
-/// l'address space e ne viene caricato uno nuovo; stack nuovo (argc=0 in
-/// 37.0); `image_hash` rimisurato; porte I/O azzerate. NON ritorna mai in caso
-/// di successo (salta all'entry della nuova immagine con `rax = 0`); ritorna
-/// `Err(())` solo a validazione fallita (processo intatto, completamente
-/// utilizzabile). Il FS va ri-fatto lazy: la nuova immagine parte con stato
-/// `libr` pristine (BSS azzerato) e `fs_init` rifa' handshake al primo uso.
+/// (Fase 37, `SYS_EXEC` in-place, senza argv → argc=0). Stesso PID/parent/
+/// priorita'/canali; cade l'address space e ne viene caricato uno nuovo;
+/// stack nuovo; `image_hash` rimisurato; porte I/O azzerate. NON ritorna mai
+/// in caso di successo (salta all'entry della nuova immagine con `rax = 0`);
+/// ritorna `Err(())` solo a validazione fallita (processo intatto,
+/// completamente utilizzabile). Il FS va ri-fatto lazy: la nuova immagine
+/// parte con stato `libr` pristine (BSS azzerato) e `fs_init` rifa' handshake
+/// al primo uso.
 #[inline]
 pub fn exec_image(img: &[u8]) -> Result<(), ()> {
-    let r = unsafe { syscall4(SYS_EXEC, img.as_ptr() as u64, img.len() as u64, 0, 0) };
+    exec_image_args(img, &[])
+}
+
+/// `exec_image_args(img, args)`: come `exec_image` ma con argv (Fase 37.1).
+/// `args` = blocco `[argc:8][payload NUL-separated]` entro `ARGS_MAX`
+/// (normalmente costruito da `exec`, non a mano); vuoto = argc=0.
+#[inline]
+pub fn exec_image_args(img: &[u8], args: &[u8]) -> Result<(), ()> {
+    let r = unsafe {
+        syscall4(
+            SYS_EXEC,
+            img.as_ptr() as u64,
+            img.len() as u64,
+            args.as_ptr() as u64,
+            args.len() as u64,
+        )
+    };
     // Successo = nessun ritorno (siamo nella nuova immagine); -1 = rifiuto.
     let _ = r;
     Err(())
+}
+
+/// `exec(path, argv)`: lancia il programma `path` nell'immagine corrente
+/// (Fase 37.1): legge il file via FS, serializza gli argv e chiama
+/// `exec_image_args`. Il kernel non tocca mai il FS (ADR-0005). NON ritorna
+/// mai in caso di successo; `Err(())` = file illeggibile/vuoto, argv oltre il
+/// bound o rifiuto del kernel (processo intatto).
+#[inline]
+pub fn exec(path: &str, argv: &[&str]) -> Result<(), ()> {
+    let img = match load_file(path) {
+        Some(b) if !b.is_empty() => b,
+        _ => return Err(()),
+    };
+    if argv.len() > 1024 {
+        return Err(());
+    }
+    let mut buf = alloc::vec::Vec::new();
+    buf.extend_from_slice(&(argv.len() as u64).to_le_bytes());
+    for a in argv {
+        buf.extend_from_slice(a.as_bytes());
+        buf.push(0);
+    }
+    if buf.len() as u64 > ARGS_MAX + 8 {
+        return Err(());
+    }
+    exec_image_args(&img, &buf)
 }
 
 /// `service_register(service)`: occupa lo slot del servizio (ADR-0008). Il

@@ -47,6 +47,8 @@ pub const M_HARDEN: u64 = 23;
 // stesso binario testcli → stesso image_hash per il same-image positivo).
 pub const M_REG51: u64 = 24;
 // Fase 37 (t52): demo exec in-place (diventa testspin su T_GO, stesso PID).
+// w1 seleziona il target: 0 = testspin senza argv (nucleo 37.0); 1 = testcli
+// con argv ["ARGPROBE","hello","world"] (37.1: sonda argv post-exec).
 pub const M_EXECDEMO: u64 = 25;
 // Fase 36 (t51): w0 magico per la sonda di squat di usertest-spin (binario
 // diverso da testcli → hash diverso per il negativo). Speculare a

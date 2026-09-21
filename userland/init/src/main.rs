@@ -411,8 +411,8 @@ fn boot_svc(meta: &'static SvcMeta, wait: bool) -> Option<i64> {
 }
 
 /// Entry di init: spawna i servizi e resta vivo come root della process tree.
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+libr::entry!(real_main);
+fn real_main(_sp: u64) -> ! {
     let my_pid = libr::getpid();
     println!("[init] up, pid={}", my_pid);
 

@@ -77,8 +77,8 @@ fn ensure_mounted() {
     libr::ensure_fs_mount(|| libr::fs_register_multi(&[b"/dev/null", b"/dev/zero"]));
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+libr::entry!(real_main);
+fn real_main(_sp: u64) -> ! {
     println!("[userdevfs] starting, pid={}", libr::getpid());
 
     // Registra il servizio Devfs per nome (ADR-0008).

@@ -130,6 +130,10 @@ pub const SYS_PEER_INFO: u64 = 47;
 /// (salta all'entry nuova); -1 = validazione fallita, processo intatto.
 /// Stesso bound di `spawn_image` (256 KiB).
 pub const SYS_EXEC: u64 = 48;
+/// Bound del blocco argv serializzato (Fase 37.1): `[argc:8][payload
+/// NUL-separated]` oltre cui `exec` rifiuta fail-loud. Single source
+/// kernel+user (`libr` lo riesporta): 8 KiB bastano a shell e test con margine.
+pub const ARGS_MAX: u64 = 8 * 1024;
 /// Protezioni `mmap`/`mprotect` (29: NONE/R/RW con enforcement; W solo e
 /// PROT_EXEC rifiutati — eseguibile solo il codice di spawn).
 pub const PROT_NONE: u64 = 0x0;

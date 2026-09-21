@@ -1,25 +1,40 @@
 // Fase 37 (exec in-place): sys_exec.
 use super::spawn::SPAWN_IMAGE_MAX;
 
-/// exec_image(img_ptr, img_len): sostituisce l'immagine del CHIAMANTE con
-/// l'ELF in sua memoria (Fase 37). Il kernel non tocca mai il FS (ADR-0005):
-/// caricare da path e' compito di `libr::exec` (load_file + questa syscall).
-/// Stesso bound di `spawn_image` (256 KiB); validazione ELF prima di toccare
-/// qualunque stato (fallita = -1, processo intatto). Successo = nessun ritorno
-/// (salto all'entry nuova); il valore 0 non e' mai osservato dal chiamante.
-pub(super) fn sys_exec(img_ptr: u64, img_len: usize) -> i64 {
+/// exec_image(img_ptr, img_len, args_ptr, args_len): sostituisce l'immagine
+/// del CHIAMANTE con l'ELF in sua memoria (Fase 37; argv in 37.1.2). Il kernel
+/// non tocca mai il FS (ADR-0005): caricare da path e' compito di `libr::exec`
+/// (load_file + questa syscall). `args_len == 0` = nessun argv (argc=0, come
+/// `exec_image`); altrimenti blocco `[argc:8][payload]` entro `ARGS_MAX`.
+/// Stesso bound immagine di `spawn_image` (256 KiB); validazione ELF + args
+/// prima di toccare qualunque stato (fallita = -1, processo intatto).
+/// Successo = nessun ritorno (salto all'entry nuova); il valore 0 non e' mai
+/// osservato dal chiamante.
+pub(super) fn sys_exec(img_ptr: u64, img_len: usize, args_ptr: u64, args_len: usize) -> i64 {
     if img_len == 0 || img_len > SPAWN_IMAGE_MAX {
         return -1;
     }
-    if !crate::vmm_user::is_user_range(img_ptr, img_len) {
+    if args_len as u64 > syscall_numbers::ARGS_MAX + 8 {
+        return -1;
+    }
+    if !crate::vmm_user::is_user_range(img_ptr, img_len)
+        || (args_len > 0 && !crate::vmm_user::is_user_range(args_ptr, args_len))
+    {
         crate::serial_println!("[syscall] exec: fuori dallo spazio user");
         return -1;
     }
-    // Copia in heap kernel PRIMA del teardown (la sorgente user sparisce con
+    // Copie in heap kernel PRIMA del teardown (sorgenti user spariscono con
     // lo spazio che stiamo per smantellare — mai leggere user dopo).
     let src = unsafe { core::slice::from_raw_parts(img_ptr as *const u8, img_len) };
     let owned = src.to_vec();
-    match crate::sched::exec_current(&owned) {
+    let args = if args_len == 0 {
+        None
+    } else {
+        let asrc =
+            unsafe { core::slice::from_raw_parts(args_ptr as *const u8, args_len) };
+        Some(asrc.to_vec())
+    };
+    match crate::sched::exec_current(&owned, args.as_deref()) {
         Ok(()) => 0,
         Err(()) => -1,
     }

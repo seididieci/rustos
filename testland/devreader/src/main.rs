@@ -8,8 +8,8 @@
 
 use libr;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+libr::entry!(real_main);
+fn real_main(_sp: u64) -> ! {
     let _ = libr::print_string(b"[devreader] starting\n");
 
     // Retry finche' devfs non ha registrato /dev (race di boot).

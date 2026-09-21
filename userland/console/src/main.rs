@@ -153,8 +153,8 @@ fn ensure_mounted() {
     libr::ensure_fs_mount(|| libr::fs_register(b"/dev/console"));
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+libr::entry!(real_main);
+fn real_main(_sp: u64) -> ! {
     // 1. Mappa il frame buffer VGA.
     let _ = libr::map_physical(VGA_PHYS, USER_VGA, 1);
     let vga = USER_VGA as *mut Buffer;

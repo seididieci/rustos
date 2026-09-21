@@ -445,8 +445,8 @@ impl Tty {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+libr::entry!(real_main);
+fn real_main(_sp: u64) -> ! {
     println!("[usertty] starting, pid={}", libr::getpid());
 
     // Registra il servizio Tty per nome (supervisione init-restart; i client

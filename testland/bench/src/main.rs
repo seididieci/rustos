@@ -57,8 +57,8 @@ fn run(name: &str, iters: u64, bytes: u64, hz: u64, mut f: impl FnMut() -> bool)
     true
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+libr::entry!(real_main);
+fn real_main(_sp: u64) -> ! {
     println!("[bench] starting, pid={}", libr::getpid());
     let hz = libr::tsc_calibrate(20);
     println!("[bench] tsc_hz={}", hz);

@@ -471,7 +471,16 @@ pub fn read_leaf(cr3: u64, vaddr: u64) -> Option<(u64, u64)> {
 
 /// Alloca e mappa lo stack user a `USER_STACK_TOP` (Fase 31: separato dal
 /// caricamento del codice, che ora e' `elf::load`). Ritorna il RSP iniziale.
-/// La pagina guard sotto lo stack (`USER_STACK_GUARD`) resta mai mappata.
+///
+/// Convenzione argv (37.1): OGNI processo nasce con argc valido in cima —
+/// spawn scrive argc=0 + argv NULL + envp NULL (exec stende il layout completo
+/// in `exec_current`). RSP iniziale punta ad argc (`rsp % 16 == 8`, ABI da
+/// CALL). Retrocompatibile: i vecchi `_start` ignorano lo stack; i nuovi
+/// (`entry!`) vedono argc=0. La pagina guard sotto lo stack
+/// (`USER_STACK_GUARD`) resta mai mappata.
+///
+/// Scrittura via direct map (non via VA user: il CR3 attivo qui e' del
+/// creatore, non del nuovo spazio — vedi `create_user`).
 ///
 /// # Safety
 /// `cr3` e' un address space creato da `new_address_space`.
@@ -480,5 +489,11 @@ pub unsafe fn setup_user_stack(cr3: u64) -> u64 {
     let stack_phys = crate::phys_mem::alloc_contiguous(USER_STACK_FRAMES)
         .expect("oom per lo stack user");
     unsafe { map_user_region_owned(cr3, stack_base, stack_phys, USER_STACK_FRAMES); }
-    USER_STACK_TOP
+    let top = crate::addr::phys_to_virt(stack_phys) + (USER_STACK_FRAMES as u64 * PAGE_SIZE);
+    unsafe {
+        core::ptr::write((top - 8) as *mut u64, 0); // argc = 0
+        core::ptr::write((top - 16) as *mut u64, 0); // argv NULL
+        core::ptr::write((top - 24) as *mut u64, 0); // envp NULL
+    }
+    USER_STACK_TOP - 24
 }

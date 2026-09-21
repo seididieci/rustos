@@ -15,8 +15,8 @@ use libr;
 /// Grandezze (in byte) usate a rotazione, tutte multi-pagina.
 const SIZES: [usize; 4] = [64 * 1024, 300_000, 1024 * 1024, 128 * 1024];
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+libr::entry!(real_main);
+fn real_main(_sp: u64) -> ! {
     let _ = libr::print_string(b"[hogheap] starting\n");
 
     let mut round: usize = 0;

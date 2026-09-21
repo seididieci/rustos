@@ -25,8 +25,8 @@ fn start() {
 
 /// Entry della demo: messaggio iniziale poi busy-loop con tick periodici.
 /// Il kernel carica RIP a USER_CODE = indirizzo di `_start` (inizio `.text`).
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+libr::entry!(real_main);
+fn real_main(_sp: u64) -> ! {
     start();
 
     let msg: &[u8] = b"[demo] tick\n";

@@ -21,8 +21,8 @@ fn driver_name_of(chan: u64) -> &'static str {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+libr::entry!(real_main);
+fn real_main(_sp: u64) -> ! {
     println!("[userfs] starting");
 
     // Registra il servizio Fs SUBITO (ADR-0008): il mount FAT32 e' lento, e i

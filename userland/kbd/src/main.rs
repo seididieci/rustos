@@ -205,8 +205,8 @@ fn ensure_mounted() {
     libr::ensure_fs_mount(|| libr::fs_register(b"/dev/kbd"));
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+libr::entry!(real_main);
+fn real_main(_sp: u64) -> ! {
     println!("[userkbd] starting, pid={}", libr::getpid());
 
     // Hardware prima di tutto: da qui in poi gli IRQ1 arrivano e il kernel ci

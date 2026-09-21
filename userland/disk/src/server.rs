@@ -1,7 +1,7 @@
 use super::*;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+libr::entry!(real_main);
+fn real_main(_sp: u64) -> ! {
     println!("[userdisk] starting, pid={}", libr::getpid());
 
     // 1. Rilevamento (solo HW, niente FS coinvolto).

@@ -114,6 +114,11 @@ pub mod spawn;
 pub mod sys;
 pub mod tsc;
 
+/// Convenzione argv sullo stack iniziale (Fase 37.1): macro `entry!` (CRT
+/// minimale) + parser `args_from_stack`. Layout stile Linux come convenzione
+/// di dati neutra (ADR-0025 §Neutral).
+pub mod args;
+
 /// Esegue una syscall a 4 argomenti e ne restituisce il risultato in `rax`.
 ///
 /// # Safety
@@ -184,6 +189,7 @@ pub use print::*;
 pub use spawn::*;
 pub use sys::*;
 pub use tsc::*;
+pub use args::{Args, args_from_stack, ARGS_MAX};
 // `CHANNEL_PARENT` e' anche in `syscall-numbers` (glob privato sopra):
 // il single-item esplicito vince sui glob e preserva `libr::CHANNEL_PARENT`.
 pub use ipc::CHANNEL_PARENT;

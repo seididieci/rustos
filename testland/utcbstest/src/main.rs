@@ -25,8 +25,8 @@ unsafe fn counter_ptr() -> *mut u64 {
     SPIN_VA as *mut u64
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+libr::entry!(real_main);
+fn real_main(_sp: u64) -> ! {
     let cfg: libr::IpcMsg = match libr::recv() {
         Ok(m) => m,
         Err(_) => libr::exit(1),

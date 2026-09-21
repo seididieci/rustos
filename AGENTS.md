@@ -1381,7 +1381,18 @@ velordor/
     dopo `recv_done` che consuma le notify). Bug vero: OOM a load va in panic
     come `create_user` (proprieta' pre-esistente, vedi ADR-0028 futuro).
     Gate 5/5 + 7/7 + 52/52.
-  - [ ] 37.1 contesto CPU/stack-argv + `libr::exec` + convenzione `_start`
+  - [x] 37.1 contesto CPU/stack-argv + `libr::exec` + convenzione `_start`
+    (`libr::entry!` macro + naked shim: CRT minimale esplicito, NON std;
+    `args_from_stack` con bound+validazione; migrazione meccanica 19/19
+    `_start`, zero residui; `setup_user_stack` scrive argc=0+NULL+NULL per ogni
+    spawn; `SYS_EXEC` +arg3/arg4 con blocco `[argc:8][payload]` ≤ `ARGS_MAX`
+    (8 KiB, single source) validato prima del teardown + layout Linux con fit
+    pre-verificato; `libr::exec(path, argv)`; t52-gamba argv via ARGPROBE
+    (T_DONE(argc,fnv), hash coerente). Bug veri: (1) `--gc-sections` scarta
+    `real_main` (solo asm la referenzia) → root `#[used]` + operando `sym`
+    (il `jmp` testuale non risolve il mangling); (2) stringhe SOTTO rsp =
+    red zone le clobbera → ordine Linux (stringhe in alto, argc in basso).
+    Gate 5/5 + 7/7 + 52/52 + shell 30/30.
   - [ ] 37.2 shell run/jobs/wait
   - [ ] 37.3 t52 + gate 52/52
   - [ ] 37.4 docs (ADR-0028 + checklist anti-marcio)

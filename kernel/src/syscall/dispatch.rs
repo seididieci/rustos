@@ -63,8 +63,8 @@ pub(super) extern "C" fn syscall_handler() -> i64 {
             syscall_numbers::SYS_TEXT_STATS => sys_text_stats(),
             // Fase 34: fork COW dell'address space.
             syscall_numbers::SYS_FORK => sys_fork(),
-            // Fase 37: exec in-place (stesso PID, nuova immagine).
-            syscall_numbers::SYS_EXEC => sys_exec((*p).arg1, (*p).arg2 as usize),
+            // Fase 37: exec in-place (stesso PID, nuova immagine; argv in 37.1.2).
+            syscall_numbers::SYS_EXEC => sys_exec((*p).arg1, (*p).arg2 as usize, (*p).arg3, (*p).arg4 as usize),
             // Fase 35: pid del peer di un canale (policy server-side).
             syscall_numbers::SYS_PEER_PID => sys_peer_pid((*p).arg1 as usize),
             // Fase 36: hash immagine del peer di un canale (policy su identita').

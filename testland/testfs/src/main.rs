@@ -12,8 +12,8 @@ use alloc::vec::Vec;
 use libr;
 use libr::{println, print_str};
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+libr::entry!(real_main);
+fn real_main(_sp: u64) -> ! {
     let pid = libr::getpid();
     println!("[testfs] starting, pid={}", pid);
     let mut all_ok = true;
