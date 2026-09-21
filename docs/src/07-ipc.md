@@ -316,6 +316,7 @@ nei test).
 | `EXIT_NOTIFY` | 0x7C | morte peer (kernel→tutti i peer, `w0` = code, `w1` = pid) |
 | `KBD_NOTIFY` | 0x40 | scancode pronti (userkbd→usertty) |
 | `IRQ_NOTIFY_KBD` | 0x41 | bridge interrupt→IPC (kernel→userkbd) |
+| `IRQ_NOTIFY_DISK` | 0x42 | bridge interrupt→IPC (kernel→userdisk, Fase 38 ATA DMA) |
 | `SVC_READY` | 0x7D | servizio pronto (fire-and-forget a init sul canale di nascita) |
 | `TEST_DONE` | 0x7E | fine test (sul canale di nascita verso init) |
 | `CHANNEL_PARENT` | 0 | alias canale di nascita verso il parent |

@@ -35,6 +35,9 @@ pub use syscall_numbers::Service;
 pub use syscall_numbers::EXIT_NOTIFY;
 /// Tag della notify kernel→userkbd su IRQ1 (Fase 15, bridge interrupt→IPC).
 pub use syscall_numbers::IRQ_NOTIFY_KBD;
+/// Tag della notify kernel→userdisk su IRQ14/15 (Fase 38, ATA DMA: stesso
+/// bridge interrupt→IPC — userdisk drena lo status Bus-Master ad ogni giro).
+pub use syscall_numbers::IRQ_NOTIFY_DISK;
 /// Bound di scansione PID per `ps` (Fase 19.1, = MAX_PIDS del kernel).
 pub use syscall_numbers::PS_SCAN_MAX;
 /// Identita' misurata di un'immagine ELF (Fase 36, Strato 2 di ADR-0026):

@@ -378,3 +378,9 @@ pub const CHANNEL_NONE: u64 = u64::MAX;
 /// kbd drena l'hardware ad ogni giro comunque (anche se la notify si perde
 /// per coda piena, il drain successivo recupera).
 pub const IRQ_NOTIFY_KBD: u64 = 0x41;
+/// Tag del messaggio con cui il kernel sveglia `userdisk` su IRQ14/15 (Fase 38,
+/// ATA DMA: bridge interrupt→IPC come IRQ1→kbd — un wake senza messaggio non
+/// farebbe mai ritorno da `recv()`; userdisk drena lo status Bus-Master ad ogni
+/// giro, anche su wake spurio o notify persa per coda piena). Fire-and-forget,
+/// MAI risposta: canale 0, nessun peer.
+pub const IRQ_NOTIFY_DISK: u64 = 0x42;
