@@ -3,7 +3,8 @@
 ## Status
 
 Accepted (implementata, Fase 35 — gate 5/5 + 7/7 + 50/50 + shell 30/30).
-Strato 2 (identità misurata) rimandato alla fase successiva.
+Strato 2 (identità misurata) IMPLEMENTATO nella Fase 36 (ADR-0027) —
+gate 5/5 + 7/7 + 51/51 + shell 30/30.
 
 ## Context
 
@@ -93,4 +94,5 @@ Strato 2 — identità misurata (fase successiva, con o dopo `exec`):
   (`register`), `userland/fs/src/server.rs` (`FS_REGISTER`)
 - ADR-0025 (nucleo neutro, personalità), ADR-0010 (lifecycle/cascade),
   ADR-0014 (diritti per-canale), Fase 16b (Strato 0/permessi rimandati)
-- Fase 35 (hardening), Fase 36 (`exec`), fase "identità misurata" (futura)
+- Fase 35 (hardening), Fase 36 (`peer_info` + manifest + policy su identità,
+  ADR-0027) e fase "Strato 3" (futura: credenziali/login boundary)

@@ -53,3 +53,4 @@
 - [ADR-0024: `fork` — COW dell'address space](./adr/0024-fork.md)
 - [ADR-0025: Modello nativo + POSIX come personalità](./adr/0025-native-model-personalities.md)
 - [ADR-0026: Threat model + hardening](./adr/0026-threat-model-hardening.md)
+- [ADR-0027: Identità misurata (Strato 2)](./adr/0027-measured-identity.md)

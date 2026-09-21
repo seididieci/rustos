@@ -1326,8 +1326,42 @@ velordor/
   - [x] 35.6 Test t50 (helper HARDEN: kill non-figlio + register servizio →
     rifiutati; map_physical RAM kernel → rifiutato; kill devfs non-figlio →
     rifiutato) + docs (06/11/AGENTS/run-tests, ADR status). Gate
-    5/5 + 7/7 + 50/50 + shell 30/30. Strato 2 (identità misurata: hash nel
-    PCB + peer_info + policy su identità) rimandato alla fase successiva.
+    5/5 + 7/7 + 50/50 + shell 30/30. Strato 2 FATTO nella Fase 36 (sotto).
+- [x] Fase 36: identità misurata (Strato 2 di ADR-0026; ADR-0027).
+  - Misura nel kernel, policy fuori (kernel neutro, ADR-0025).
+  - [x] 36.0 `image_hash()` FNV-1a in `syscall-numbers` (single source);
+        `text.rs` adotta la funzione condivisa (t47 verde = bit-identico).
+  - [x] 36.1 Campo `image_hash` nel PCB (0 = processi kernel), misurato in
+        `create_user` sui byte ELF validati (misura ciò che gira), ereditato
+        dal fork.
+  - [x] 36.2 `SYS_PEER_INFO (47)` (rax=0+rdi=hash, -1 a canale morto) +
+        `process_image_hash` + `libr::peer_info`; righe 47 in 06-syscalls.
+        Nessuna policy nel kernel.
+  - [x] 36.3 `scripts/gen-service-hashes.sh`: FNV-1a sui `.bin` finali →
+        `build-meta/service_hashes.rs` (`HASH_*`, fail-loud, idempotente);
+        `build-userland.sh` riordinata (bin → gen → export
+        `VELORDOR_SERVICE_HASHES` → fs, init); `build-tests.sh` riesporta per
+        t51; `build-meta/` in `.gitignore`.
+  - [x] 36.4 init verifica il manifest in `spawn_file` (mismatch = fail-loud
+        a boot, retry-con-hold in supervisione; log `hash-ok` solo a verifica
+        avvenuta); embedded disk/fs e test esclusi per disegno;
+        `libr::image_hash` riesportato.
+  - [x] 36.5 `FS_REGISTER` su identità in userfs: replace di prefix vivo
+        dallo STESSO binario (restart da disco senza init) o init-child o a
+        driver morto; prima registrazione sotto `/dev/` aperta (t25);
+        `driver_name_of` per audit (mai decisioni).
+  - [x] 36.6 t51 (A-E): peer_info(Console/Devfs)==manifest, stabilità tra
+        istanze, same-image positivo (mount sopravvive al kill X1), squat
+        diverso-hash rifiutato (mount purgato), peer_info a canale morto→Err.
+        Helper REG51 (/dev/t51) + ramo SQUAT in spin. Suite → 51/51.
+  - [x] 36.7 Docs (checklist anti-marcio, stesso commit): ADR-0027 + status
+        0026, 06 (47, già in 36.2), 11-testing (gate 51/51 + riga t51),
+        run-tests (commento gate), conteggi qui, SUMMARY (nuovo ADR).
+  - Bug vero trovato: userfs incorporava il manifest CON `HASH_USERFS` →
+        ciclo (hash di sé = mai fixpoint, flippava a ogni run). Regola: il
+        manifest esclude i binari che lo incorporano (userinit/userfs);
+        fixpoint in un passaggio (provato: rebuild → diff vuoto).
+  - Verifica: gate 5/5 + 7/7 + 51/51 + shell 30/30, zero FAIL/PANIC/FAULT.
 
 ## Important Notes
 
@@ -1361,15 +1395,18 @@ velordor/
   servizio → riavvio/riuso sicuri. Lo slot canale 0 NON si assegna mai (id 0 =
   sentinella `CHANNEL_PARENT`: assegnarlo faceva risolvere i messaggi al parent
   sbagliato).
-- **Hardening (Fase 35, ADR-0026)**: cancelli per un avversario "programma
+- **Hardening (Fase 35, ADR-0026 + Fase 36, ADR-0027)**: cancelli per un avversario "programma
   locale malevolo" — (1) `kill` solo parent/init (i test di restart guidano il
   caos via `init_bounce`, non killano i server direttamente); (2) i servizi di
   sistema si registrano solo da figli di init (`Test` aperto per la suite);
   (3) `map_physical`/`map_in` solo frame del sistema (ring/scratch/VGA), mai
   RAM arbitraria; (4) `FS_REGISTER` solo prefix sotto `/dev/`, replace di un
-  driver vivo solo da init-child (`SYS_PEER_PID` 46 per attribuire la
-  richiesta). Il kernel resta neutro (ADR-0025: POSIX e' personalità, non
-  struttura); identità misurata (hash nel PCB) e' lo Strato 2 futuro.
+  driver vivo solo da init-child o dallo STESSO binario (`SYS_PEER_PID` 46 per
+  attribuire, `SYS_PEER_INFO` 47 per l'identita'). Strato 2 (Fase 36): hash
+  FNV-1a nel PCB misurato allo spawn, manifest generato a build-time verificato
+  da init pre-spawn; il kernel resta neutro (ADR-0025: POSIX e' personalità, non
+  struttura). Il manifest esclude i binari che lo incorporano (userinit/userfs:
+  hash di sé = ciclo instabile, mai fixpoint).
 - **IPC reply implicita**: la reply del server va al peer del canale del
   messaggio correntemente elaborato (fissato da `recv` in `reply_chan`), non
   all'ultimo `send`. Piu' client concorrenti su un server sono quindi
@@ -1514,9 +1551,9 @@ rg '\[bench\]' /tmp/bench-run1.log /tmp/bench-run2.log /tmp/bench-run3.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 7/7
-#   [usertests] PASS 50/50
+#   [usertests] PASS 51/51
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 50/50' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 51/51' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 
