@@ -127,22 +127,40 @@ pub fn notify_irq(id: usize, tag: u64) {
         return;
     }
     let mut guard = SCHED.lock();
-    if let Some(sched) = guard.as_mut() {
-        if id < sched.processes.len() {
-            let p = &mut sched.processes[id];
-            let _ = p.msg_queue.try_push(crate::process::PendingMsg {
-                channel: 0,
-                req_id: 0,
-                tag,
-                w0: 0,
-                w1: 0,
-            });
-            if p.state == State::Blocked {
-                p.state = State::Ready;
-                sched.set_ready(id);
-            } else {
-                p.pending_wake = true;
-            }
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
+    if id < sched.processes.len() {
+        let p = &mut sched.processes[id];
+        let _ = p.msg_queue.try_push(crate::process::PendingMsg {
+            channel: 0,
+            req_id: 0,
+            tag,
+            w0: 0,
+            w1: 0,
+        });
+        if p.state == State::Blocked {
+            p.state = State::Ready;
+            sched.set_ready(id);
+        } else {
+            p.pending_wake = true;
         }
+    }
+    // 38.2d — wakeup-preemption CENTRALE (kbd+disk): se lo scheduler
+    // sceglierebbe proprio `id` adesso, vai subito invece di aspettare il tick
+    // (10 ms). Senza, ogni driver event-driven paga ~1 tick per wakeup
+    // (misurato A/B KVM: DMA 1.2 ms → 10 ms/op, 140x su fat_small). L'IPC sync
+    // fa gia' handoff diretto; l'IRQ era l'unico wakeup differito.
+    // Sicuro: gira con IF=0 (gate `x86-interrupt`), il kernel non e' mai
+    // interrotto mid-syscall (SFMASK maschera IF all'entry) quindi il lock
+    // SCHED non e' mai conteso da qui; EOI fatta dal chiamante PRIMA (il PIC
+    // va riarmato prima di cambiare contesto, specie level-triggered).
+    // `select_next` pura: `pick_next` avanzerebbe il cursore RR anche quando
+    // non si cambia contesto. Nessun cambio se il pick cade altrove (prio piu'
+    // alta pendente) o sul corrente: il percorso tick resta invariato.
+    if sched.select_next() == Some(id) && sched.current != Some(id) {
+        let prev = sched.current;
+        switch_to(prev, id, guard);
     }
 }

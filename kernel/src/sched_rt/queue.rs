@@ -121,21 +121,27 @@ impl Scheduler {
         }
     }
 
-    pub(super) fn pick_next(&mut self) -> Option<usize> {
+    /// Selezione pura (38.2d): chi `pick_next` sceglierebbe ADESSO, senza
+    /// avanzare il cursore RR. Serve a `notify_irq` per la wakeup-preemption:
+    /// chiamare `pick_next` a vuoto perturberebbe la rotazione anche quando
+    /// non si cambia contesto. Stesso algoritmo di `pick_next`, zero effetti.
+    pub(super) fn select_next(&self) -> Option<usize> {
         if self.ready_prio_mask == 0 {
             return None;
         }
-        // Livello di priorita' piu' alto con almeno un processo pronto.
         let p = 31 - self.ready_prio_mask.leading_zeros() as usize;
         let mask = self.ready_by_prio[p];
-        // Rotazione dal bit successivo all'ultimo scelto a questo livello:
-        // ogni membro dell'insieme persistente viene scelto entro N pick.
-        // (mask != 0 per invariante: il bit p di ready_prio_mask e' alto solo
-        // se la word del livello non e' vuota — mantenuto sotto lock.)
         let k = (self.rr_cursor[p] + 1) % 32;
         let rot = mask.rotate_right(k);
         let j = rot.trailing_zeros() as usize;
-        let bit = (j + k as usize) % 32;
+        Some((j + k as usize) % 32)
+    }
+
+    pub(super) fn pick_next(&mut self) -> Option<usize> {
+        let bit = self.select_next()?;
+        // (mask != 0 per invariante: il bit p di ready_prio_mask e' alto solo
+        // se la word del livello non e' vuota — mantenuto sotto lock.)
+        let p = 31 - self.ready_prio_mask.leading_zeros() as usize;
         self.rr_cursor[p] = bit as u32;
         Some(bit)
     }

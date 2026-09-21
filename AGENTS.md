@@ -1463,7 +1463,33 @@ velordor/
     NOTA: su QEMU 10.2 l'IRQ14 non arriva mai in userspace (INTR si setta, PIC
     conta 317 assertion, CPU non vettora 0x2E: IRR slave pending; causa ignota
     — da sciogliere in 38.2 che dell'IRQ dipende).
-  - [ ] 38.2 attesa event-driven (estensione SM Fase 16, lezioni tty).
+  - [x] 38.2 attesa event-driven + wakeup-preemption + exit-guard (committati
+    INSIEME: il wait da solo regredisce, vedi sotto).
+    Sotto-passi: guardia 38.2a (`pop_msg` salta la reply quando `channel==0`)
+    + split `start_dma`/`wait_event`/`finish_dma`/`abort` e `wait_dma` in
+    `server.rs` (fast-path pre-check, loop recv con EXIT-abort attribuito via
+    `peer_pid`, contatori `ev_wait/ev_fast/ev_abort`) + 38.2d preemption
+    CENTRALE in `notify_irq` (`select_next` pura — `pick_next` muta il cursore
+    RR — + switch diretto se il pick cade sullo svegliato; EOI prima della
+    notify nei due handler, come il timer) + 38.2e exit-guard (`pop_msg` salta
+    la reply anche per EXIT_NOTIFY: rispondere a un morto e' impossibile per
+    disegno, nessun server lo fa — verificato).
+    Misure A/B stesso host KVM che MOTIVANO la preemption (media 3 run):
+    senza preemption l'event-wait pagava ~1 tick/op (wake differito al tick;
+    firme: `cyc_op` identici tra run = multipli di tick): fat_small_orc
+    1.3M→180M cyc (~140x REGRESS), fat_4K_oow ~20M→810M (~40x); la sda era
+    immune solo perche' il relay DEV e' PIO senza wait (prova vacua, non prova
+    di wake veloce). Con preemption: parita' poll (small ~1.2M, oow ~18M) +
+    CPU liberata (~1,2 ms/op non bruciati in poll).
+    Bug vero trovato (wedge permanente, solo con wait senza exit-guard):
+    EXIT altrui durante `wait_dma` clobberava la reply (canale reale) →
+    morte usertests a fine suite durante una DMA di shell-load → reply persa →
+    userfs↔userdisk fermi, tutto il Normal bloccato (visto in `test-shell.py`:
+    "shell non pronta"). In 38.1c non esisteva (mai recv mid-op: gli EXIT si
+    processavano dopo la reply). Fix 38.2e alla radice (kernel), non nel
+    server (la reply non si puo' ri-armare da userland: niente `reply_to`).
+    Verifica: gate 5/5+7/7+52/52 + shell 38 PASS zero FAIL (lo scenario wedge
+    incluso) + bench KVM 3 run stabili; `ev_wait`≈ok, `fb=0`, `abort=0`.
   - [ ] 38.3 misure + gate + docs (ADR-0029 a implementazione, tabelle 13).
   - Rischi: IRQ level-triggered (clear BM status+EOI), coerenza x86 snooped,
     PRD a cavallo 64K (split).

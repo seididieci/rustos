@@ -268,6 +268,9 @@ extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame) {
     // (bridge interrupt→IPC: un wake senza messaggio non farebbe mai ritorno
     // da `recv()` — vedi `notify_irq`); EOI in ogni caso (mai wedge). Senza
     // driver registrato i tasti vanno persi finche' userkbd non parte.
+    // 38.2d — EOI PRIMA della notify: `notify_irq` puo' cambiare contesto
+    // (wakeup-preemption) e il PIC va riarmato prima (come il timer sopra).
+    unsafe { crate::pic::end_of_interrupt(0x21) };
     if let Some(owner) = crate::channels::lookup(syscall_numbers::Service::Kbd) {
         #[cfg(feature = "sched_debug")]
         crate::serial_println!("[irq1] wake kbd pid={}", owner);
@@ -276,7 +279,6 @@ extern "x86-interrupt" fn keyboard_handler(_stack_frame: InterruptStackFrame) {
         #[cfg(feature = "sched_debug")]
         crate::serial_println!("[irq1] Kbd non registrato");
     }
-    unsafe { crate::pic::end_of_interrupt(0x21) };
 }
 
 extern "x86-interrupt" fn disk_primary_handler(_stack_frame: InterruptStackFrame) {
@@ -289,16 +291,17 @@ extern "x86-interrupt" fn disk_secondary_handler(_stack_frame: InterruptStackFra
 
 /// Corpo comune IRQ14/15 (Fase 38, ATA DMA): routing puro + notify, come
 /// IRQ1→kbd. Il driver vive in userspace (`userdisk`, servizio `Disk`): al
-/// risveglio drena lo status Bus-Master (38.2); col PIO attuale le notify sono
-/// spurie e userdisk le tollera (38.0b). `vector` e' il numero INT (0x2E/0x2F):
-/// `notify_end_of_interrupt` fa EOI slave+master per gli IRQ slave. EOI in ogni
+/// risveglio chiude il DMA event-driven (38.2). `vector` e' il numero INT
+/// (0x2E/0x2F): `notify_end_of_interrupt` fa EOI slave+master per gli IRQ slave.
+/// 38.2d — EOI PRIMA della notify: `notify_irq` puo' cambiare contesto
+/// (wakeup-preemption) e il PIC va riarmato prima (come il timer). EOI in ogni
 /// caso (mai wedge). Senza driver registrato l'IRQ va perso finche' userdisk
 /// non parte (come i tasti senza kbd).
 fn disk_irq(vector: u8) {
+    unsafe { crate::pic::end_of_interrupt(vector) };
     if let Some(owner) = crate::channels::lookup(syscall_numbers::Service::Disk) {
         crate::sched::notify_irq(owner, syscall_numbers::IRQ_NOTIFY_DISK);
     }
-    unsafe { crate::pic::end_of_interrupt(vector) };
 }
 
 extern "x86-interrupt" fn unhandled_irq_handler(_stack_frame: InterruptStackFrame) {

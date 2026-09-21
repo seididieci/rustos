@@ -1,6 +1,69 @@
 use super::*;
 
 libr::entry!(real_main);
+
+/// Esito dell'attesa event-driven di un DMA armato (38.2).
+enum DmaWait {
+    /// INTR/ERROR osservato e verificato: chiudere con `finish_dma`.
+    Done,
+    /// Richiedente morto durante l'attesa: STOP/clear fatti, MAI reply.
+    Aborted,
+}
+
+/// Attende in `recv` il completamento di un DMA armato con `start_dma` (38.2,
+/// event-driven): la CPU e' libera invece di bruciare il poll (~1,2 ms a
+/// transfer). Sicuro grazie alla guardia 38.2a (le notify kernel a canale 0
+/// non toccano la reply implicita) e alle risposte async FS (mai reply state
+/// per costruzione, Fase 13). `requester` = pid del richiedente (da
+/// `peer_pid` sul canale della richiesta): serve l'EXIT-abort.
+/// Ritorna `Done` al primo wakeup con `is_done` vero (fast-path pre-check
+/// incluso: IRQ gia' arrivata o INTR gia' settato), `Aborted` se il
+/// richiedente muore (EXIT_NOTIFY con w1 == requester): STOP/clear fatti,
+/// niente reply (peer morto, convenzione driver).
+/// EXIT altrui = reset fsreg + continua, SENZA perdere la reply (38.2e: la
+/// guardia `pop_msg` non tocca la reply implicita per gli EXIT — rispondere a
+/// un morto e' impossibile per disegno, nessun server lo fa).
+/// Altra richiesta sincrona durante il pending = impossibile (l'unico
+/// richiedente DISK/DEV e' userfs, bloccato sulla reply): si ignora.
+fn wait_dma(
+    eng: &mut dma::DmaEngine,
+    chan: u16,
+    requester: u64,
+    fsreg: &mut fs_reg::FsReg,
+    reg_prefixes: &[String],
+) -> DmaWait {
+    if eng.is_done(chan) {
+        eng.note_ev_fast();
+        return DmaWait::Done;
+    }
+    loop {
+        let msg = match libr::recv() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if msg.tag == libr::IRQ_NOTIFY_DISK {
+            if eng.is_done(chan) {
+                eng.note_ev_wait();
+                return DmaWait::Done;
+            }
+            eng.note_irq_drained(); // stale/re-fire: coda pulita, mai reply
+            continue;
+        }
+        if fsreg.collect_if_mine(msg.req_id, reg_prefixes) {
+            continue; // async FS: reply state intatto
+        }
+        if msg.tag == libr::EXIT_NOTIFY {
+            if msg.w1 == requester {
+                eng.abort(chan);
+                eng.note_ev_abort();
+                return DmaWait::Aborted;
+            }
+            fsreg.reset(); // morte altrui: re-handshake, reply intatta (38.2e)
+            continue;
+        }
+    }
+}
+
 fn real_main(_sp: u64) -> ! {
     println!("[userdisk] starting, pid={}", libr::getpid());
 
@@ -233,14 +296,15 @@ fn real_main(_sp: u64) -> ! {
             continue;
         }
 
-        // 38.1c — drain notify IRQ (bridge interrupt→IPC, canale 0 senza
-        // peer, come IRQ_NOTIFY_KBD per kbd): il completamento DMA e' a poll
-        // (mai `recv` tra richiesta e reply: clobbererebbe la reply implicita
-        // del kernel), quindi queste non servono — si scartano QUI, prima di
-        // qualunque reply (sicuro: `reply_chan` e' None e il prossimo `recv`
-        // lo riscrive). Senza drain si accumulano e la coda piena fa scartare
-        // le send sync di userfs in silenzio (hang permanente).
-        // MAI reply — non c'e' nessuno ad aspettarla.
+        // 38.2 — drain notify IRQ stale (bridge interrupt→IPC, canale 0 senza
+        // peer, come IRQ_NOTIFY_KBD per kbd): i re-fire level-triggered (EOI
+        // dell'handler prima del clear nel nostro `finish`) lasciano stale in
+        // coda tra un'op e l'altra — si scartano QUI, prima di qualunque reply
+        // (sicuro: `reply_chan` e' None e il prossimo `recv` lo riscrive; e dal
+        // 38.2a le notify non lo toccano comunque). Senza drain si accumulano
+        // e la coda piena fa scartare le send sync di userfs in silenzio (hang
+        // permanente, provato in 38.1c). MAI reply — non c'e' nessuno ad
+        // aspettarla.
         if msg.tag == libr::IRQ_NOTIFY_DISK {
             if let Some(eng) = dma_eng.as_mut() {
                 eng.note_irq_drained();
@@ -275,36 +339,64 @@ fn real_main(_sp: u64) -> ! {
                     continue;
                 }
             };
-            // 38.1c — tenta DMA prima del PIO (stesso contratto: bound sul
-            // nodo come il PIO; fallback PIO a qualunque `false`). Niente
-            // `recv` nel mezzo (poll hardware): la reply implicita resta
-            // armata sul messaggio corrente.
+            // 38.2 — DMA event-driven: start, attesa in `recv` (CPU libera
+            // invece del poll), finish. Fallback PIO a qualunque `false`
+            // (stesso contratto). Senza `peer_pid` attribuibile niente attesa
+            // (EXIT-abort impossibile): PIO diretto, mai recv nel mezzo.
+            // Abort (richiedente morto) = mai reply, mai PIO: nessuno legge.
+            let mut dma_done = false;
             if let Some(eng) = dma_eng.as_mut() {
                 if let Some((di, base, sectors)) = nodes::locate(handle, &disk_sectors, &parts) {
                     let end_ok =
                         lba.checked_add(count as u64).map_or(false, |e| e <= sectors);
                     if end_ok && dma_modes.get(di).copied().flatten().is_some() {
                         let disk = &disks[di];
-                        if eng.transfer(
-                            disk,
-                            disk.bm_chan_off(),
-                            base + lba,
-                            count,
-                            &mut buf[..count * 512],
-                            false,
-                        ) {
-                            unsafe {
-                                rings::disk_resp_write(
-                                    (count * 512) as u64,
-                                    0,
-                                    &buf[..count * 512],
-                                )
-                            };
-                            let _ = libr::reply(0, 0, 0);
-                            continue;
+                        let chan = disk.bm_chan_off();
+                        if let Ok(req) = libr::peer_pid(msg.channel) {
+                            let nbytes = count * 512;
+                            if eng.start_dma(
+                                disk,
+                                chan,
+                                base + lba,
+                                count,
+                                &mut buf[..nbytes],
+                                false,
+                            ) {
+                                match wait_dma(
+                                    &mut *eng,
+                                    chan,
+                                    req as u64,
+                                    &mut fsreg,
+                                    &reg_prefixes,
+                                ) {
+                                    DmaWait::Done => {
+                                        if eng.finish_dma(
+                                            disk,
+                                            chan,
+                                            &mut buf[..nbytes],
+                                            count,
+                                            false,
+                                        ) {
+                                            unsafe {
+                                                rings::disk_resp_write(
+                                                    nbytes as u64,
+                                                    0,
+                                                    &buf[..nbytes],
+                                                )
+                                            };
+                                            let _ = libr::reply(0, 0, 0);
+                                            dma_done = true;
+                                        }
+                                    }
+                                    DmaWait::Aborted => continue,
+                                }
+                            }
                         }
                     }
                 }
+            }
+            if dma_done {
+                continue;
             }
             // PIO (invariato).
             if nodes::node_read_multi(
@@ -341,28 +433,51 @@ fn real_main(_sp: u64) -> ! {
                     continue;
                 }
             };
-            // 38.1c — tenta DMA prima del PIO (frame gia' consumato sopra in
-            // ogni caso; fallback PIO a qualunque `false`). Niente `recv`
-            // nel mezzo (poll hardware): la reply implicita resta armata.
+            // 38.2 — DMA event-driven (come il READ sopra): start, attesa in
+            // `recv`, finish. Frame gia' consumato in ogni caso; fallback PIO
+            // a qualunque `false`; abort = mai reply, mai PIO.
+            let mut dma_done = false;
             if let Some(eng) = dma_eng.as_mut() {
                 if let Some((di, base, sectors)) = nodes::locate(handle, &disk_sectors, &parts) {
                     let end_ok =
                         lba.checked_add(count as u64).map_or(false, |e| e <= sectors);
                     if end_ok && dma_modes.get(di).copied().flatten().is_some() {
                         let disk = &disks[di];
-                        if eng.transfer(
-                            disk,
-                            disk.bm_chan_off(),
-                            base + lba,
-                            count,
-                            &mut buf[..count * 512],
-                            true,
-                        ) {
-                            let _ = libr::reply(0, 0, 0);
-                            continue;
+                        let chan = disk.bm_chan_off();
+                        if let Ok(req) = libr::peer_pid(msg.channel) {
+                            let nbytes = count * 512;
+                            if eng.start_dma(
+                                disk,
+                                chan,
+                                base + lba,
+                                count,
+                                &mut buf[..nbytes],
+                                true,
+                            ) {
+                                match wait_dma(
+                                    &mut *eng,
+                                    chan,
+                                    req as u64,
+                                    &mut fsreg,
+                                    &reg_prefixes,
+                                ) {
+                                    DmaWait::Done => {
+                                        if eng.finish_dma(
+                                            disk, chan, &mut buf[..nbytes], count, true,
+                                        ) {
+                                            let _ = libr::reply(0, 0, 0);
+                                            dma_done = true;
+                                        }
+                                    }
+                                    DmaWait::Aborted => continue,
+                                }
+                            }
                         }
                     }
                 }
+            }
+            if dma_done {
+                continue;
             }
             // PIO (invariato).
             let ok = nodes::node_write_multi(

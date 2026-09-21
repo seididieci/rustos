@@ -160,8 +160,20 @@ fn pop_msg(sched: &mut Scheduler, cur: usize) -> Option<IpcResult> {
     }
     let m = sched.processes[cur].msg_queue.pop().expect("coda non vuota");
     if m.req_id >= 0 {
-        sched.processes[cur].reply_chan = Some(m.channel);
-        sched.processes[cur].reply_req = m.req_id;
+        // 38.2a/38.2e — i messaggi che non attendono mai reply NON toccano la
+        // reply implicita: notify kernel senza peer (canale 0: solo
+        // `notify_irq`; mai un canale reale) e EXIT_NOTIFY (peer morto:
+        // rispondere e' impossibile per disegno — tutti i server fanno
+        // `continue` senza reply, verificato). Senza, un server in `recv` con
+        // reply in sospeso (userdisk in `wait_dma`) perde la reply al primo
+        // EXIT altrui: osservato (morte usertests a fine suite durante una DMA
+        // di shell-load → reply persa → wedge userfs↔userdisk permanente,
+        // tutto il Normal bloccato). `rdi` (canale) e tag restano visibili:
+        // gli EXIT si riconoscono dal tag come prima.
+        if m.channel != 0 && m.tag != syscall_numbers::EXIT_NOTIFY {
+            sched.processes[cur].reply_chan = Some(m.channel);
+            sched.processes[cur].reply_req = m.req_id;
+        }
         Some(IpcResult { rax: 0, rdi: m.channel as u64, rsi: m.tag, rdx: m.w0, r10: m.w1 })
     } else {
         Some(IpcResult { rax: 0, rdi: m.req_id as u64, rsi: m.tag, rdx: m.w0, r10: m.w1 })
