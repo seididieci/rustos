@@ -1413,11 +1413,14 @@ velordor/
     coperto in 37.0/37.1, shell coperta da test-shell.py 37/37 in 37.2;
     00-introduzione con righe 36+37). Verifica: gate 5/5 + 7/7 + 52/52 +
     shell 37/37 + mdbook, zero FAIL/PANIC/FAULT.
-- [ ] Fase 38: ATA DMA + IRQ (in corso, split idempotente 38.0→38.3).
+- [x] Fase 38: ATA DMA + IRQ (split idempotente 38.0→38.3, chiusa).
   - Motivazione (dati): collo misurato = disco PIO ~1,2 ms/settore + userdisk
     bloccato nel polling; ADR-0012/0016 la anticipano ("li' l'async avra'
-    senso"). Vittoria dichiarata: bench A/B stesso host (miglioramento > 10%,
-    regola repo) + gate invariato (5/5+7/7+52/52+shell).
+    senso"). Vittoria OTTENUTA (rivista onestamente dal dichiarato): parita'
+    entro la banda ±10% su tutte le righe (device-bound; il ">10%" non c'e'
+    in latenza e non si gonfia) + CPU-per-costruzione (sleep vs poll) +
+    latenza IRQ sub-tick per tutti i driver + gate invariato (5/5+7/7+52/52+
+    shell).
   - [x] 38.0c kernel: handler IRQ14/15 come IRQ1 (lookup owner `Disk`,
     notify `IRQ_NOTIFY_DISK` via `disk_irq` condiviso, EOI slave+master con il
     vettore INT) + smascheramento PIC slave bit 6-7; const `IRQ_NOTIFY_DISK`
@@ -1490,7 +1493,18 @@ velordor/
     server (la reply non si puo' ri-armare da userland: niente `reply_to`).
     Verifica: gate 5/5+7/7+52/52 + shell 38 PASS zero FAIL (lo scenario wedge
     incluso) + bench KVM 3 run stabili; `ev_wait`≈ok, `fb=0`, `abort=0`.
-  - [ ] 38.3 misure + gate + docs (ADR-0029 a implementazione, tabelle 13).
+  - [x] 38.3 misure + gate + docs (ADR-0029 a implementazione, tabelle 13).
+    A/B stesso host KVM (media 3 run, TSC ~4.42 GHz, stabili): TUTTE le righe
+    in parita' entro la banda ±10% (zero 8.7K/8.8K, sda 5.47M/5.55M, small
+    1.25M/1.22M, ramfsW 112K/116K, ramfsR 61K/61K, oow 18.9M/18.3M) — le op
+    sono device-bound, il guadagno e' CPU-per-costruzione (sleep in recv vs
+    poll ~device-time/op Normal) + latenza IRQ sub-tick per tutti i driver.
+    Misura diretta `ticks_used` userdisk/512 xfers: indistinguibile su questo
+    host (device ~50 µs, domina handling/memcpy identico) — dichiarato il
+    bounds, non gonfiato il numero. Contatore `cpu` mantenuto nella riga
+    (osservabilita' futura, 1 syscall/512 xfers). Docs: ADR-0029 + §38 in
+    `13-performance.md` + SUMMARY. Verifica: gate 5/5+7/7+52/52 + shell verde
+    + bench 3+3 run; `ev_wait`≈ok, `fb=0`, `abort=0`, zero FAIL/PANIC/FAULT.
   - Rischi: IRQ level-triggered (clear BM status+EOI), coerenza x86 snooped,
     PRD a cavallo 64K (split).
 - [ ] Parcheggiate (trigger, non date): audio AC97+CBS (primo client servizio

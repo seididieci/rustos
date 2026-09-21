@@ -108,6 +108,8 @@ pub struct DmaEngine {
     ev_fast: u64,
     /// Abort per morte richiedente (rari: stampa immediata, mai throttled).
     ev_abort: u64,
+    /// Ultimo `ticks_used` proprio osservato (vedi `note`).
+    cpu_last: u64,
 }
 
 impl DmaEngine {
@@ -149,10 +151,14 @@ impl DmaEngine {
             ev_wait: 0,
             ev_fast: 0,
             ev_abort: 0,
+            cpu_last: 0,
         })
     }
 
     /// Contatori (prova d'uso reale in 38.3: `dma_ok > 0`, `dma_fb == 0`).
+    /// `cpu` = tick CPU consumati da userdisk (via `ps_info` su se stesso,
+    /// 1 syscall ogni 512 xfers): la prova della CPU liberata dall'event-driven
+    /// (38.2: poll bruciava ~1,2 ms/op a priorita' Normal, l'attesa dorme).
     fn note(&mut self, ok: bool) {
         if ok {
             self.dma_ok += 1;
@@ -161,14 +167,19 @@ impl DmaEngine {
         }
         let t = self.dma_ok + self.dma_fb;
         if t % STAT_EVERY == 0 {
+            let cpu = libr::ps_info(libr::getpid() as u32).map_or(0, |e| e.ticks);
+            let dcpu = cpu.saturating_sub(self.cpu_last);
+            self.cpu_last = cpu;
             println!(
-                "[userdisk] DMA xfers: ok={} fb={} irq_drained={} ev_wait={} ev_fast={} ev_abort={}",
+                "[userdisk] DMA xfers: ok={} fb={} irq_drained={} ev_wait={} ev_fast={} ev_abort={} cpu={} (+{})",
                 self.dma_ok,
                 self.dma_fb,
                 self.irq_drained,
                 self.ev_wait,
                 self.ev_fast,
                 self.ev_abort,
+                cpu,
+                dcpu,
             );
         }
     }

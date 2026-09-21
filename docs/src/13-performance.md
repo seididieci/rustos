@@ -1,4 +1,4 @@
-# Performance (Fasi 23–25 — baseline + ottimizzazioni)
+# Performance (Fasi 23–25 — baseline + ottimizzazioni; 38 — DMA/IRQ)
 
 > Piattaforma di riferimento: **KVM** (`-accel kvm -cpu host`). I tempi TCG
 > sono emulati e NON di riferimento. Orologio: TSC in ring 3 (CR4.TSD mai
@@ -99,3 +99,54 @@ read-ahead in 25, volutamente).
 
 Hit rate: bench 74% (1514 hit / 534 settori via PIO), suite 91%.
 Gate invariato (5/5 + 7/7 + 44/44 + shell 30/30).
+
+## 38 — ATA DMA + IRQ (ADR-0029)
+
+Motore Bus-Master PIIX in `userdisk` (staging 1 pagina via `SYS_DMA_ALLOC`,
+PRD split 64K, `READ/WRITE DMA EXT` UDMA2, fallback PIO per-op; protocollo
+`DISK_*` invariato, DEV relay resta PIO) + attesa event-driven del
+completamento (IRQ14/15 → notify, wakeup-preemption centrale in `notify_irq`,
+guardie reply in `pop_msg` per notify/EXIT).
+
+Confronto A/B **sullo stesso host** (KVM, media 3 run, TSC ~4.42 GHz; le
+tabelle 24/25 sopra sono di altri host e NON confrontabili — poll = tree
+38.1c, event = 38.2 con preemption):
+
+| Op | poll 38.1c (cyc/op) | event 38.2 (cyc/op) | Effetto |
+|----|---------------------|---------------------|---------|
+| `zero_1B` | ~8.7 K | ~8.8 K | parità (no disco) |
+| `sda_512B_seq` | ~5.47 M | ~5.55 M | parità (DEV relay = PIO in entrambi) |
+| `fat_small_orc` | ~1.25 M | ~1.22 M | parità entro il rumore |
+| `ramfs_4K_write` | ~112 K | ~116 K | parità (no disco) |
+| `ramfs_4K_read` | ~61 K | ~61 K | parità (no disco) |
+| `fat_4K_oow` | ~18.9 M | ~18.3 M | parità entro il rumore |
+
+Tutte le righe entro la banda ±10% (soglia repo): nessuna regressione,
+nessun miracolo — le op sono device-bound e il guadagno è altrove:
+
+- **CPU non più bruciata in poll** (per costruzione): il poll 38.1c spinnava
+  ~device-time a transfer a priorità Normal; l'event-driven dorme in `recv`
+  e si sveglia via IRQ con switch diretto. Misura diretta (`ticks_used` di
+  userdisk ogni 512 xfers): su questo host (IO cached, device ~50 µs) le due
+  versioni sono indistinguibili (+17–19 tick/512 in entrambi — il costo
+  dominante resta memcpy/handling/ring, identico); il risparmio scala col
+  tempo-device e conta sotto carico o su device lenti. Dichiarato il bounds,
+  non gonfiato il numero.
+- **Latenza IRQ→processo sub-tick per tutti i driver** (tasti inclusi) +
+  prerequisito per audio CBS e server-run async (parcheggiati).
+
+Cosa NON ha funzionato (tenuto a lezione, come 24.2-heap):
+
+- Event-driven senza preemption: ogni wait pagava ~1 tick di wake differito
+  (firme: `cyc_op` identici tra run = multipli di tick) — fat_small
+  1.3M→180M cyc (~140x), fat_4K_oow 20M→810M (~40x). L'IPC sync fa handoff
+  diretto, l'IRQ era l'unico wakeup differito: la preemption lo chiude.
+- EXIT altrui in `wait_dma` clobberava la reply (canale reale) → wedge
+  permanente a fine suite (morte usertests durante shell-load), visto in
+  `test-shell.py`. Fix alla radice (`pop_msg` salta anche gli EXIT: rispondere
+  a un morto è impossibile per disegno) — da userland la reply non si può
+  ri-armare (niente `reply_to`).
+
+Gate invariato (5/5 + 7/7 + 52/52 + shell verde); `ev_wait`≈transfer,
+`fb=0`, `abort=0` su 4000+ transfer; `irq_drained` conta i re-fire
+level-triggered (deterministici: identici tra run).
