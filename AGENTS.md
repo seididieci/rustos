@@ -1394,7 +1394,19 @@ velordor/
     red zone le clobbera → ordine Linux (stringhe in alto, argc in basso).
     Gate 5/5 + 7/7 + 52/52 + shell 30/30.
   - [ ] 37.2 shell run/jobs/wait
-  - [ ] 37.3 t52 + gate 52/52
+  - [x] 37.2 shell run/jobs/wait (`run <path> [args] [&]`, `jobs`, `wait`
+    [pid]): parent carica file+argv prima del fork (figlio con FS avvelenato:
+    solo `exec_image_args`), job non-detached osservati via EXIT_NOTIFY
+    (nessun wait kernel); fg annuncia `[exit N]` se N!=0, `&` prompt subito.
+    Nuovo `userland/runhello` (/bin, NON servizio: stampa argv, `fail`→exit 3)
+    + `libr::serialize_argv`; KEYMAP `&`=shift-7 in test-shell. Bug vero (mio,
+    non dell'OS): path senza `.bin` + dir sbagliata nei primi comandi di test
+    ("cannot load" CORRETTO: run vuole path esatti, niente ricerca).
+    Lezione: il manifest 36.4 ha bloccato il boot quando ho sovrascritto
+    shell.bin a mano (mcopy senza rebuild kernel) — Strato 2 che morde.
+    Verifica: test-shell.py 37/37 (8 check nuovi) + gate 52/52 invariato.
+  - [ ] 37.3 gate finale + docs (ADR-0028 + checklist anti-marcio; t52 gia'
+    coperto in 37.0/37.1, shell coperta da test-shell.py 37/37 in 37.2)
   - [ ] 37.4 docs (ADR-0028 + checklist anti-marcio)
   - Rischi: cross-cutting come fork (contesto + walk + risorse); teardown
     mai sotto i propri piedi (disciplina reclaim Fase 14); niente redirezioni

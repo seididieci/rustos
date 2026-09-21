@@ -13,7 +13,7 @@ byte diversi sull'ultima riga a meno del cursore).
 
 Da eseguire dopo build-userland + build kernel (run.sh fa entrambe).
 """
-import socket, subprocess, sys, time, os
+import socket, subprocess, sys, time, os, re
 
 KERNEL = "target/x86_64-unknown-none/release/velordor-kernel"
 SERIAL = "/tmp/velordor-serial.log"
@@ -29,7 +29,7 @@ FAT2 = "userland/fs/fat2.img"
 # silenzio): 'period' NON esiste (il punto e' 'dot'), le MAIUSCOLE non
 # esistono (si mandano come combo 'shift-x', verificato: 'H' invalido,
 # 'shift-h' ok).
-KEYMAP = {" ": "spc", ".": "dot", "-": "minus", "/": "slash"}
+KEYMAP = {" ": "spc", ".": "dot", "-": "minus", "/": "slash", "&": "shift-7"}
 KEYMAP.update({chr(c): "shift-%s" % chr(c).lower() for c in range(ord("A"), ord("Z") + 1)})
 
 SHOT0 = "/tmp/velordor-shot0.ppm"
@@ -509,6 +509,52 @@ def main():
             found = b"alive" in data
             print(("PASS " if found else "FAIL ") + "shell viva dopo clear")
             ok = ok and found
+
+        # Fase 37.2: run/jobs/wait (fork+exec, EXIT_NOTIFY).
+        # Foreground veloce con argv: runhello stampa gli argv su seriale.
+        out = run_out("run /fat/bin/runhello.bin hello world")
+        found = b"runhello: hello" in out and b"runhello: world" in out
+        print(("PASS " if found else "FAIL ") + "run fg con argv (echo)")
+        ok = ok and found
+
+        # Exit code != 0 annunciato dal fg come [exit N] (runhello esce 3
+        # se un argv e' "fail").
+        out = run_out("run /fat/bin/runhello.bin fail")
+        found = b"[exit 3]" in out
+        print(("PASS " if found else "FAIL ") + "run fg exit code ([exit 3])")
+        ok = ok and found
+
+        # Errori: path inesistente, wait su job ignoto.
+        out = run_out("run /nonexistent")
+        found = b"run: cannot load" in out
+        print(("PASS " if found else "FAIL ") + "run su path ignoto")
+        ok = ok and found
+        out = run_out("wait 99999")
+        found = b"wait: no such job" in out
+        print(("PASS " if found else "FAIL ") + "wait su job ignoto")
+        ok = ok and found
+
+        # Background: uptime longevo, jobs lo elenca, kill+wait lo chiudono
+        # (kill parent-scoped: la shell E' il parent, consentito).
+        out = run_out("run /fat/bin/uptime.bin &")
+        m = re.search(rb"\[bg pid (\d+)\]", out)
+        found = m is not None
+        print(("PASS " if found else "FAIL ") + "run bg annuncia pid")
+        ok = ok and found
+        pid = m.group(1).decode() if m else "0"
+        out = run_out("jobs")
+        found = b"/fat/bin/uptime.bin" in out and b"run" in out
+        print(("PASS " if found else "FAIL ") + "jobs elenca il bg")
+        ok = ok and found
+        run_out("kill %s" % pid)
+        out = run_out("wait %s" % pid)
+        found = ("pid %s: exit" % pid).encode() in out
+        print(("PASS " if found else "FAIL ") + "wait chiude il bg con codice")
+        ok = ok and found
+        out = run_out("jobs")
+        found = b"no jobs" in out
+        print(("PASS " if found else "FAIL ") + "jobs vuota dopo wait")
+        ok = ok and found
 
         if not ok:
             print("---- output seriale (tail) ----")

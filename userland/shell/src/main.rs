@@ -20,6 +20,7 @@ use libr;
 
 mod cmd_fs;
 mod cmd_info;
+mod cmd_run;
 mod cwd;
 mod repl;
 mod term;

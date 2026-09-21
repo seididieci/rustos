@@ -54,6 +54,9 @@ fn real_main(_sp: u64) -> ! {
             "rm" => cmd_fs::cmd_rm(&args),
             "rmdir" => cmd_fs::cmd_rmdir(&args),
             "ps" => cmd_info::cmd_ps(),
+            "run" => cmd_run::cmd_run(&args),
+            "jobs" => cmd_run::cmd_jobs(),
+            "wait" => cmd_run::cmd_wait(&args),
             "exit" => libr::exit(0),
             "help" => cmd_info::cmd_help(),
             _ => {

@@ -41,8 +41,24 @@ la mostra (`/prova$ `, `$ ` a root).
 | `rm <file>` | Cancella file (`R_DELETE`; su `/fat` rifiutato: niente unlink, fuori scope) |
 | `rmdir <dir>` | Cancella directory vuota (rifiutata se piena) |
 | `ps` | Tabella processi stile Linux: PID NAME PRIO STATE TIME PARENT (syscall 37, Fase 19.1) |
+| `run <path> [args...] [&]` | Lancia un programma via fork+exec (Fase 37.2): path esatto (niente ricerca: `/fat/bin/runhello.bin`, non `runhello`), argv[0] = path digitato; `&` = background (prompt subito), senza = foreground (attende; `[exit N]` se N != 0) |
+| `jobs` | Tabella job (`[id] pid P run\|done C cmd`; i finiti restano finche' `wait`) |
+| `wait [pid]` | Attende i job (tutti o uno) e li rimuove, stampa `pid P: exit C` |
 | `help` | Mostra comandi disponibili |
 | `exit` | Termina la shell |
+
+> **Fase 37.2**: job = figli diretti (non-detached: muoiono con la shell);
+> uscita via `EXIT_NOTIFY` (nessun `wait` kernel). Il parent carica file+argv
+> prima del fork (il figlio ha l'FS avvelenato: solo `exec_image_args`).
+> Niente job control interattivo (foreground senza scampo: i longevi con `&`;
+> segnali → posix-server futuro).
+
+### runhello
+
+Primo programma lanciabile (`userland/runhello`, `/bin/runhello.bin` su disco
+— non un servizio: init non lo spawna). Stampa gli argv (uno per riga) su
+seriale ed esce 0; con argomento `fail` esce 3 (dopo aver stampato). Serve a
+`test-shell.py` come target fg/bg con exit code osservabile.
 
 Line editing: il backspace a riga vuota non mangia il prompt (disciplina di
 linea in `usertty`: conta i digitati, ingoia il resto — Fase 18.0).
@@ -52,11 +68,11 @@ linea in `usertty`: conta i digitati, ingoia il resto — Fase 18.0).
 - **Write su `/fat`, si** (Fase 20, scrivibile write-through): `cp` verso
   `/fat` crea/scrive con persistenza al reboot (ramfs resta volatile). Resta
   rifiutato: `rm`/`rmdir`/`mkdir` su `/fat` (niente unlink, fuori scope).
-- **Niente `argv` per binari separati**: i comandi sono builtin; `spawn`/
-  `spawn_image` passano solo il nome (gli helper di test usano il canale di
-  nascita come argv). Lo split in binari separati potra' appoggiarsi
-  all'avvio servizi da disco (Fase 21: `spawn_image` da `/bin`+`/test`, solo
-  lo storage-TCB e' embedded).
+- **argv ai binari, si** (Fase 37.1/37.2, supera il limite Fase 18): stack
+  stile Linux come convenzione di dati neutra, `_start` via macro `entry!`,
+  `libr::exec(path, argv)` (il kernel non tocca il FS). I builtin restano
+  builtin; i programmi separati partono con `run` (split futuro: ogni `.bin`
+  in piu' resta piccolo, ~17 KiB runhello).
 - **`ls -l` minimale**: 1 round trip `R_STAT` per entry (ok per dir piccole);
   niente owner/mtime (`Stat` non li ha); entry sparita tra `readdir` e `stat`
   → riga `? nome`, mai abortito.

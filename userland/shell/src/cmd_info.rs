@@ -1,7 +1,7 @@
 use super::*;
 
 pub(crate) fn cmd_help() {
-    term::term_print("Commands: ls [-l] [path], cat <file>, touch <file>, mkdir <dir>, mount <src> <tgt>, umount <tgt>, echo [args], clear, wc <file>, hexdump <file>, kill <pid|service>, cd [dir], pwd, cp <src> <dst>, mv <src> <dst>, rm <file>, rmdir <dir>, ps, exit, help\n");
+    term::term_print("Commands: ls [-l] [path], cat <file>, touch <file>, mkdir <dir>, mount <src> <tgt>, umount <tgt>, echo [args], clear, wc <file>, hexdump <file>, kill <pid|service>, cd [dir], pwd, cp <src> <dst>, mv <src> <dst>, rm <file>, rmdir <dir>, ps, run <path> [args...] [&], jobs, wait [pid], exit, help\n");
 }
 
 /// Accoda `s` paddata a `width` con spazi (colonne `ps`, niente format!).
@@ -188,7 +188,8 @@ pub(crate) fn cmd_hexdump(args: &[&str]) {
     libr::close(fd);
 }
 
-fn parse_i64(s: &str) -> Option<i64> {
+/// Parsa un intero decimale (usato anche da `wait` in cmd_run).
+pub(crate) fn parse_i64(s: &str) -> Option<i64> {
     if s.is_empty() {
         return None;
     }

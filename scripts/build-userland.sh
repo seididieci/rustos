@@ -41,6 +41,9 @@ build_one userland/kbd     userland/kbd/src/kbd.ld         userkbd.bin     userk
 build_one userland/tty     userland/tty/src/tty.ld         usertty.bin     usertty
 build_one userland/uptime  userland/uptime/src/uptime.ld   useruptime.bin  useruptime
 build_one userland/shell   userland/shell/src/shell.ld     usershell.bin   usershell
+# Primo programma lanciabile dalla shell (Fase 37.2, `run`): NON e' un
+# servizio (init non lo spawna), vive in /bin come gli altri binari da disco.
+build_one userland/runhello userland/runhello/src/runhello.ld userrunhello.bin userrunhello
 
 # Manifest degli hash dei servizi (Fase 36, Strato 2): FNV-1a sui `.bin`
 # appena prodotti. fs e init vengono DOPO perche' lo includono a compile time

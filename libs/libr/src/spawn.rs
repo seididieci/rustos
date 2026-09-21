@@ -112,6 +112,26 @@ pub fn exec_image_args(img: &[u8], args: &[u8]) -> Result<(), ()> {
     Err(())
 }
 
+/// Serializza gli argv nel blocco `[argc:8][payload NUL-separated]` per
+/// `exec_image_args`/`SYS_EXEC` (Fase 37.1/37.2): `None` se troppi (> 1024)
+/// o oltre `ARGS_MAX`. Usato da `exec` e da chi carica prima del fork (la
+/// shell: il figlio post-fork ha l'FS avvelenato e non puo' piu' allocare
+/// comodo — il parent prepara tutto, il figlio solo esegue).
+pub fn serialize_argv(argv: &[&str]) -> Option<alloc::vec::Vec<u8>> {
+    if argv.len() > 1024 {
+        return None;
+    }
+    let mut buf = alloc::vec::Vec::new();
+    buf.extend_from_slice(&(argv.len() as u64).to_le_bytes());
+    for a in argv {
+        buf.extend_from_slice(a.as_bytes());
+        buf.push(0);
+    }
+    if buf.len() as u64 > ARGS_MAX + 8 {
+        return None;
+    }
+    Some(buf)
+}
 /// `exec(path, argv)`: lancia il programma `path` nell'immagine corrente
 /// (Fase 37.1): legge il file via FS, serializza gli argv e chiama
 /// `exec_image_args`. Il kernel non tocca mai il FS (ADR-0005). NON ritorna
@@ -123,18 +143,10 @@ pub fn exec(path: &str, argv: &[&str]) -> Result<(), ()> {
         Some(b) if !b.is_empty() => b,
         _ => return Err(()),
     };
-    if argv.len() > 1024 {
-        return Err(());
-    }
-    let mut buf = alloc::vec::Vec::new();
-    buf.extend_from_slice(&(argv.len() as u64).to_le_bytes());
-    for a in argv {
-        buf.extend_from_slice(a.as_bytes());
-        buf.push(0);
-    }
-    if buf.len() as u64 > ARGS_MAX + 8 {
-        return Err(());
-    }
+    let buf = match serialize_argv(argv) {
+        Some(b) => b,
+        None => return Err(()),
+    };
     exec_image_args(&img, &buf)
 }
 

@@ -18,6 +18,7 @@ mcopy -i "$IMG" userland/build/userdevfs.bin   ::/bin/devfs.bin   || exit 1
 mcopy -i "$IMG" userland/build/userkbd.bin     ::/bin/kbd.bin     || exit 1
 mcopy -i "$IMG" userland/build/usertty.bin     ::/bin/tty.bin     || exit 1
 mcopy -i "$IMG" userland/build/usershell.bin   ::/bin/shell.bin   || exit 1
+mcopy -i "$IMG" userland/build/userrunhello.bin ::/bin/runhello.bin || exit 1
 mcopy -i "$IMG" testland/build/usertestfs.bin   ::/test/testfs.bin   || exit 1
 mcopy -i "$IMG" testland/build/usertestfat.bin  ::/test/testfat.bin  || exit 1
 mcopy -i "$IMG" testland/build/usertests.bin    ::/test/tests.bin    || exit 1
