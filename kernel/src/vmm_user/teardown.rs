@@ -4,6 +4,7 @@ use super::paging::{kernel_cr3, PTE_PRESENT};
 use super::heap_brk::HEAP_BRK;
 use super::vma::vma_clear;
 use super::rings::free_ring_pages;
+use super::dma::free_dma_pages;
 
 // ── Teardown dell'address space (Fase 14, ADR-0010) ────────────────
 //
@@ -97,6 +98,8 @@ pub unsafe fn teardown_user_space(cr3: u64, pid: usize) {    let kernel_pml4 = k
     vma_clear(pid);
     // Ring: free via record (le PTE ring sono NON-owned, il walk le salta).
     free_ring_pages(pid);
+    // Staging DMA (38.1): stesso pattern dei ring (NON-owned + record).
+    free_dma_pages(pid);
 }
 
 /// Svuota la meta' user dell'address space `cr3` TENENDO il PML4 (Fase 37,

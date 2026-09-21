@@ -115,6 +115,7 @@ La numerazione e' definita nel dispatch di `syscall_handler` in `kernel/src/sysc
 | 46 | `peer_pid(chan)` | pid del peer del canale `chan` (0 = nascita), o -1 (Fase 35, hardening: i server attribuiscono le richieste; abilita la policy `FS_REGISTER`) |
 | 47 | `peer_info(chan)` | hash dell'immagine del peer del canale `chan` (0 = nascita): 0 + hash in rdi, o -1 (Fase 36, identita' misurata: policy su identita' in init/userfs) |
 | 48 | `exec_image(img, len, args, argslen)` | sostituisce l'immagine del chiamante (Fase 37, exec in-place): stesso PID/canali, nuovo address space + stack argv stile Linux (`args` = blocco `[argc:8][payload]` entro `ARGS_MAX`, 0/0 = argc=0), hash rimisurato; mai ritorno (salta all'entry), -1 a validazione fallita (processo intatto) |
+| 49 | `dma_alloc(pages)` | alloca `pages` (1..=`DMA_PAGES_MAX`) frame contigui azzerati per DMA Bus-Master (Fase 38.1): mappa RW/NX a `USER_DMA_VA`, ritorna il fisico base (il device vuole phys per PRD/BMIBA); single-slot (seconda alloc = -1), free a teardown/exec, mai ereditata dal fork |
 
 > **Fase 29 (protezioni)**: `PROT_NONE`/`PROT_READ`/`PROT_READ|PROT_WRITE` sono
 > enforced dal page-fault handler. Un fault di protezione da user mode (write
@@ -230,6 +231,7 @@ extern "C" fn syscall_handler() -> i64 {
 | `exec_image` | 48 | Exec in-place senza argv (Fase 37.0) → mai ritorno, `Err` a validazione fallita |
 | `exec_image_args` | 48 | Come sopra con blocco argv grezzo (Fase 37.1) |
 | `exec` | 48 | `exec(path, argv)` = load_file + serialize + exec_args (Fase 37.1; il kernel non tocca il FS) |
+| `dma_alloc` | 49 | Alloca frame contigui per DMA (Fase 38.1, single-slot) → fisico base |
 | `text_stats` | 44 | Contatori shared text (Fase 32): hits/misses/live (+ Fase 33: fault COW in rdx) |
 
 `spawn(name_ptr, name_len)` (Fase 8.1 + 13) crea un nuovo processo a partire dal

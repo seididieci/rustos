@@ -278,6 +278,38 @@ pub(super) fn sys_ring_alloc() -> i64 {
     apply_ipc(crate::sched::IpcResult { rax: req_phys as i64, rdi: resp_phys, rsi: 0, rdx: 0, r10: 0 })
 }
 
+// ── Staging DMA per-processo (Fase 38.1) ─────────────────────────
+// Il device Bus-Master attraversa la RAM in hardware: servono frame FISICI
+// contigui (il PRD li elenca per phys) e il driver deve conoscerne il phys.
+// Come i ring, la syscall mappa e ritorna il phys (neutralita' ADR-0025:
+// allocazione frame, mai accesso al disco).
+
+/// dma_alloc(pages): alloca `pages` (1..=DMA_PAGES_MAX) frame contigui
+/// azzerati al processo corrente, li mappa RW/NX a `USER_DMA_VA` e ritorna il
+/// fisico base in rax (VA fissa e nota, niente da ritornare) e `pages` in
+/// rdi. Single-slot: seconda alloc = -1. -1 anche su OOM/range invalido.
+pub(super) fn sys_dma_alloc(pages: usize) -> i64 {
+    let cur = current_id() as usize;
+    let cr3 = unsafe { (*(addr_of!(PERCPU))).current_cr3 };
+    if cr3 == 0 {
+        return -1; // cr3 non impostata (prima di allocare: mai record orfani)
+    }
+    let (phys, n) = match crate::vmm_user::alloc_dma_pages(cur, pages) {
+        Some(p) => p,
+        None => {
+            crate::serial_println!("[syscall] dma_alloc: oom/busy/range");
+            return -1;
+        }
+    };
+    unsafe {
+        crate::vmm_user::map_user_region(cr3, crate::vmm_user::USER_DMA_VA, phys, n);
+    }
+    for i in 0..n {
+        crate::vmm_user::flush_page(crate::vmm_user::USER_DMA_VA + (i as u64) * 4096);
+    }
+    apply_ipc(crate::sched::IpcResult { rax: phys as i64, rdi: n as u64, rsi: 0, rdx: 0, r10: 0 })
+}
+
 /// map_in(chan, phys, virt, count): mappa `count` pagine fisiche a partire da
 /// `phys` all'indirizzo virtuale `virt` nello spazio del PEER del canale
 /// `chan` (ADR-0008). Mapper generico cross-process: usato da userfs per

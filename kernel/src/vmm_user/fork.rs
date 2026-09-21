@@ -3,8 +3,9 @@
 //! `fork_share` duplica le foglie user del padre nello spazio del figlio:
 //!   - foglie `owned` → condivise in COW (ref++, entrambi i lati `RO`+`COW`);
 //!   - foglie non-owned (text image, shm, iniettate) → specchiate identiche;
-//!   - finestre ring (`USER_FS_BUFFER`/`USER_RESP_RING`) → SALTATE (il figlio
-//!     non eredita i ring FS: usarli Killed col page-fault, mai corruzione);
+//!   - finestre ring (`USER_FS_BUFFER`/`USER_RESP_RING`) e staging DMA
+//!     (`USER_DMA_VA`) → SALTATE (il figlio non eredita ne' i ring FS ne' la
+//!     staging device-mem: usarli Killed col page-fault, mai corruzione);
 //!   - foglie large-page (PS) → errore (lo user usa solo 4 KiB; fallire forte
 //!     invece di divergere in silenzio).
 //!
@@ -15,7 +16,7 @@
 //! (assert: saturazione irraggiungibile con 32 processi): su OOM nessun ghost
 //! ref (l'inc avviene solo a mappa riuscita).
 
-use super::layout::{USER_FS_BUFFER, USER_RESP_RING};
+use super::layout::{USER_FS_BUFFER, USER_RESP_RING, USER_DMA_VA};
 use super::paging::{kernel_cr3, map_leaf_raw, read_leaf, share_parent_leaf, PTE_PRESENT};
 use super::teardown::raw_entry;
 
@@ -84,8 +85,11 @@ fn fork_pt(parent_cr3: u64, child_cr3: u64, pde: u64, i: usize, j: usize, k: usi
         }
         // Large-page 1G non possibile a questo livello (saremmo nel ramo PS
         // sopra); le PT contengono solo foglie 4 KiB.
-        if va == USER_FS_BUFFER || va == USER_RESP_RING {
-            continue; // ring FS: non ereditati (il figlio li faulta)
+        if va == USER_FS_BUFFER || va == USER_RESP_RING
+            || (va >= USER_DMA_VA
+                && va < USER_DMA_VA + syscall_numbers::DMA_PAGES_MAX as u64 * 0x1000)
+        {
+            continue; // ring FS / staging DMA: non ereditati (il figlio li faulta)
         }
         // Foglia owned → COW simmetrico; altrimenti mirror identico.
         match share_parent_leaf(parent_cr3, va) {

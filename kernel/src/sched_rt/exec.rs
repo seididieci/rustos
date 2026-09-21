@@ -138,10 +138,12 @@ pub fn exec_current(bytes: &[u8], args_block: Option<&[u8]>) -> Result<(), ()> {
         x86_64::registers::control::Cr3::write(frame, flags);
     }
     // 3. Reset bookkeeping: heap, VMA (+ref shm rilasciati), ring (i frame
-    // verranno riallocati al primo handshake lazy), text image vecchia.
+    // verranno riallocati al primo handshake lazy), staging DMA (38.1: la
+    // nuova immagine rialloca se serve), text image vecchia.
     crate::vmm_user::set_heap_brk(me, 0);
     crate::vmm_user::vma_clear(me);
     crate::vmm_user::free_ring_pages(me);
+    crate::vmm_user::free_dma_pages(me);
     if old_text != 0 {
         crate::text::release(old_text);
     }

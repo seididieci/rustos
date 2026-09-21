@@ -1440,8 +1440,17 @@ velordor/
   - Vincolo noto: BMIBA runtime vs `io_ranges` statiche → userdisk legge BAR4
     PIIX3-IDE, verifica finestra `0xC0xx` (QEMU-scoped), altrimenti fallback
     PIO (codice resta, non-testato su QEMU — dichiarato).
-  - [ ] 38.1 userdisk DMA (IDENTIFY→SET FEATURES→PRD, split oltre 64K,
-    attesa IRQ; protocollo `DISK_*` INVARIATO, userfs intoccato).
+  - [x] 38.1a staging DMA: `SYS_DMA_ALLOC` (49) + `USER_DMA_VA`
+    (`+0x260_000`, single source) + `DMA_PAGES_MAX` (4): frame contigui
+    azzerati, mappa RW/NX, ritorna il phys (precedente: `SYS_RING_ALLOC`);
+    single-slot, free a teardown/exec, skip in fork come i ring; `libr::
+    dma_alloc` + righe 06-syscalls. Zero chiamanti (nessun behavior change).
+  - [ ] 38.1b negotiate: IDENTIFY word 63/88 in `DiskInfo` + SET FEATURES
+    (modo min(drive,UDMA2)) per disco a boot, solo log (nessun trasferimento).
+  - [ ] 38.1c transfer: PRD (split 64K, EOT, cap 8) + READ/WRITE DMA EXT su
+    staging 1 pagina + wait blocking-recv (pre-check status, verify a ogni
+    wakeup, stash-8, EXIT-abort; self-healing da level-triggered) + routing
+    con fallback PIO per-op; protocollo `DISK_*` INVARIATO, userfs intoccato.
   - [ ] 38.2 attesa event-driven (estensione SM Fase 16, lezioni tty).
   - [ ] 38.3 misure + gate + docs (ADR-0029 a implementazione, tabelle 13).
   - Rischi: IRQ level-triggered (clear BM status+EOI), coerenza x86 snooped,

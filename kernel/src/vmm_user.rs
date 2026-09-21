@@ -14,11 +14,13 @@ mod heap_brk;
 mod vma;
 mod shm;
 mod rings;
+mod dma;
 mod paging;
 mod teardown;
 mod fork;
 
 pub use layout::{USER_BASE, USER_CODE, USER_FS_BUFFER, USER_RESP_RING, USER_HEAP_BASE, USER_HEAP_LIMIT, MMAP_BASE, MMAP_END};
+pub use layout::USER_DMA_VA;
 // Compat: erano `pub` prima dello split (nessun uso interno attuale).
 #[allow(unused_imports)]
 pub use layout::{USER_STACK_TOP, USER_STACK_FRAMES, USER_STACK_GUARD};
@@ -27,6 +29,8 @@ pub use vma::{vma_lookup, vma_map, vma_unmap, vma_protect, vma_clone, is_user_ra
 pub(crate) use vma::vma_clear;
 pub use rings::{alloc_ring_pages, is_ring_page};
 pub(crate) use rings::free_ring_pages;
+pub use dma::alloc_dma_pages;
+pub(crate) use dma::free_dma_pages;
 pub use fork::fork_share;
 pub use shm::{shm_create, shm_region, shm_ref};
 pub use paging::{active_cr3, flush_page, init, kernel_cr3, new_address_space, map_user_region, map_user_region_owned, map_user_region_owned_ro, map_user_region_shared, map_user_region_cow, map_user_leaf, map_user_leaf_shared, setup_user_stack, cow_fault, remap_shared_holes, range_has_cow};

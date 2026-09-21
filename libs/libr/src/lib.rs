@@ -29,6 +29,8 @@ use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering
 
 /// Pagina fisica scratch riservata dal kernel per i test `map_physical`.
 pub use syscall_numbers::MAP_TEST_PHYS;
+/// Finestra staging DMA (Fase 38.1): `dma_alloc` mappa qui i frame contigui.
+pub use syscall_numbers::USER_DMA_VA;
 /// Servizi di sistema raggiungibili per nome (ADR-0008).
 pub use syscall_numbers::Service;
 /// Tag della notifica kernel→parent della morte di un figlio (Fase 14).

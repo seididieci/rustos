@@ -5,7 +5,7 @@ use super::ipc::{sys_send, sys_send_async, sys_recv, sys_recv_nonblock, sys_repl
 use super::service::{sys_service_register, sys_service_lookup, sys_service_pid, sys_peer_pid, sys_peer_info};
 use super::spawn::{sys_spawn, sys_spawn_image, sys_fork};
 use super::exec::sys_exec;
-use super::mem::{sys_mmap, sys_munmap, sys_mprotect, sys_shm_create, sys_shm_map, sys_map_physical, sys_sbrk, sys_ring_alloc, sys_map_in};
+use super::mem::{sys_mmap, sys_munmap, sys_mprotect, sys_shm_create, sys_shm_map, sys_map_physical, sys_sbrk, sys_ring_alloc, sys_map_in, sys_dma_alloc};
 use super::misc::{sys_exit, sys_write, sys_getpid, sys_kill, sys_get_ticks, sys_cbs_create, sys_cbs_attach, sys_cbs_get_info, sys_ps_info, sys_text_stats};
 
 /// Handler di dispatch: legge gli argomenti riempiti dall'entry e chiama la
@@ -36,6 +36,8 @@ pub(super) extern "C" fn syscall_handler() -> i64 {
             syscall_numbers::SYS_SBRK => sys_sbrk((*p).arg1),
             // Ring buffer SPSC per-processo (Fase 10.2).
             syscall_numbers::SYS_RING_ALLOC => sys_ring_alloc(),
+            // Fase 38.1: staging DMA (frame contigui + phys al chiamante).
+            syscall_numbers::SYS_DMA_ALLOC => sys_dma_alloc((*p).arg1 as usize),
             syscall_numbers::SYS_MAP_IN => sys_map_in((*p).arg1 as usize, (*p).arg2, (*p).arg3, (*p).arg4 as usize),
             // CBS bandwidth reservation (Fase 11.4).
             syscall_numbers::SYS_CBS_CREATE => sys_cbs_create((*p).arg1, (*p).arg2),

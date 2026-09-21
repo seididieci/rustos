@@ -2,6 +2,9 @@
 /// Indirizzo virtuale del codice user (inizio della regione user).
 /// Single source in `syscall-numbers` (Fase 31: serve anche al loader/test).
 pub use syscall_numbers::USER_CODE;
+/// Finestra staging DMA (Fase 38.1): single source in `syscall-numbers`
+/// (come `USER_CODE`: serve anche a userdisk via `libr`).
+pub use syscall_numbers::USER_DMA_VA;
 pub const USER_BASE: u64 = USER_CODE;
 pub(super) const USER_PRESENT_WRITABLE: u64 = 0x4 | 0x3; // U + P + W
 /// Bit NX sulla PTE (bit 63, Fase 29): richiede EFER.NXE (abilitato in

@@ -156,6 +156,20 @@ pub fn shm_map_cow(id: u32, hint: usize) -> Result<usize, ()> {
 }
 
 
+/// Fase 38.1 — `dma_alloc(pages)`: alloca `pages` (1..=DMA_PAGES_MAX) frame
+/// fisici contigui azzerati, li mappa RW/NX a `USER_DMA_VA` e ritorna il
+/// fisico base (serve il phys per programmare PRD/BMIBA del device).
+/// Single-slot: seconda alloc = `Err`. I frame cadono a teardown/exec.
+#[inline]
+pub fn dma_alloc(pages: usize) -> Result<u64, ()> {
+    let r = unsafe { syscall4(SYS_DMA_ALLOC, pages as u64, 0, 0, 0) };
+    if r < 0 {
+        Err(())
+    } else {
+        Ok(r as u64)
+    }
+}
+
 /// Termina il processo corrente con il codice `code`. Non ritorna.
 #[inline]
 pub fn exit(code: i64) -> ! {

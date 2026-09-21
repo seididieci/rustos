@@ -130,6 +130,16 @@ pub const SYS_PEER_INFO: u64 = 47;
 /// (salta all'entry nuova); -1 = validazione fallita, processo intatto.
 /// Stesso bound di `spawn_image` (256 KiB).
 pub const SYS_EXEC: u64 = 48;
+/// Alloca `pages` (1..=DMA_PAGES_MAX) frame fisici CONTIGUI azzerati per DMA
+/// Bus-Master (Fase 38.1, ATA DMA): li mappa RW/NX a `USER_DMA_VA` e ritorna
+/// il fisico base (il chiamante programma PRD e BMIBA con phys reali — VA
+/// non bastano al device). Single-slot per processo (seconda alloc = -1);
+/// free a teardown/exec, mai ereditata dal fork. Precedente: `SYS_RING_ALLOC`
+/// (26) ritorna gia' phys alle ring — stessa neutralita' (ADR-0005: il kernel
+/// non tocca il disco, alloca solo frame).
+pub const SYS_DMA_ALLOC: u64 = 49;
+/// Cap pagine di `SYS_DMA_ALLOC` (38.1: 1 pagina = PRD + 7 settori bastano).
+pub const DMA_PAGES_MAX: usize = 4;
 /// Bound del blocco argv serializzato (Fase 37.1): `[argc:8][payload
 /// NUL-separated]` oltre cui `exec` rifiuta fail-loud. Single source
 /// kernel+user (`libr` lo riesporta): 8 KiB bastano a shell e test con margine.
@@ -164,6 +174,11 @@ pub const FAULT_EXIT_CODE: i64 = 139;
 /// kernel+test): il loader ELF mappa i segmenti al `p_vaddr` di link e
 /// l'entry e' `e_entry`. Prima solo nel kernel (`layout.rs`).
 pub const USER_CODE: u64 = 0x0000_4000_0000_0000;
+/// Finestra staging DMA del processo corrente (Fase 38.1, single source
+/// kernel+user come `USER_CODE`): `SYS_DMA_ALLOC` mappa qui i frame contigui
+/// (PRD + dati). Dopo CLI_RESP (`+0x230_000`) e DISK_RESP (`+0x250_000`):
+/// prima VA libera.
+pub const USER_DMA_VA: u64 = 0x0000_4000_0026_0000;
 /// Flag `SpawnMeta.flags` (Fase 22, detach): il figlio non partecipa alla
 /// cascata di morte del parent — alla morte del parent viene ri-parentato a
 /// init invece di terminare. Deciso dallo spawner (il figlio non puo'
