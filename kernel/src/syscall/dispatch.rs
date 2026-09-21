@@ -2,7 +2,7 @@
 use core::ptr::addr_of_mut;
 use super::entry::PERCPU;
 use super::ipc::{sys_send, sys_send_async, sys_recv, sys_recv_nonblock, sys_reply};
-use super::service::{sys_service_register, sys_service_lookup, sys_service_pid, sys_peer_pid};
+use super::service::{sys_service_register, sys_service_lookup, sys_service_pid, sys_peer_pid, sys_peer_info};
 use super::spawn::{sys_spawn, sys_spawn_image, sys_fork};
 use super::mem::{sys_mmap, sys_munmap, sys_mprotect, sys_shm_create, sys_shm_map, sys_map_physical, sys_sbrk, sys_ring_alloc, sys_map_in};
 use super::misc::{sys_exit, sys_write, sys_getpid, sys_kill, sys_get_ticks, sys_cbs_create, sys_cbs_attach, sys_cbs_get_info, sys_ps_info, sys_text_stats};
@@ -64,6 +64,8 @@ pub(super) extern "C" fn syscall_handler() -> i64 {
             syscall_numbers::SYS_FORK => sys_fork(),
             // Fase 35: pid del peer di un canale (policy server-side).
             syscall_numbers::SYS_PEER_PID => sys_peer_pid((*p).arg1 as usize),
+            // Fase 36: hash immagine del peer di un canale (policy su identita').
+            syscall_numbers::SYS_PEER_INFO => sys_peer_info((*p).arg1 as usize),
             _ => -1,
         }
     }

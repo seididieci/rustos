@@ -30,7 +30,7 @@ pub use ipc::{IpcResult, ipc_send, ipc_send_async, ipc_recv, ipc_recv_nonblock, 
 // Compat: PsSnap era `pub` prima dello split (nessun uso interno attuale).
 #[allow(unused_imports)]
 pub use ps::PsSnap;
-pub use ps::{process_state, process_ps, set_owned_name, set_parent_chan, parent_channel, process_of, process_name, process_cr3};
+pub use ps::{process_state, process_ps, set_owned_name, set_parent_chan, parent_channel, process_of, process_name, process_cr3, process_image_hash};
 pub use lifecycle::{exit_current, kill};
 
 /// Quanto dura il timeslice in tick di PIT (100 Hz) → 2 tick = 20 ms.

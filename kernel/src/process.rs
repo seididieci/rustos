@@ -207,6 +207,12 @@ pub struct Process {
     /// `crate::text`): 0 = nessuna (load privato o slot pieni). Rilasciato in
     /// `reclaim_one` dopo il teardown (i frame condivisi non sono owned).
     pub text_id: u32,
+    /// Identita' misurata dell'immagine ELF (Fase 36, Strato 2 di ADR-0026):
+    /// FNV-1a (`syscall_numbers::image_hash`) sui byte caricati allo spawn.
+    /// 0 = nessuna immagine (processi kernel). Ereditato dal fork (stessi
+    /// byte). Meccanismo neutro: il kernel misura ed espone (36.2), la policy
+    /// vive fuori (init manifest, `FS_REGISTER` in userfs).
+    pub image_hash: u64,
 }
 
 impl Process {
@@ -281,6 +287,7 @@ impl Process {
             pending_wake: false,
             cbs_server: None,
             text_id: 0,
+            image_hash: 0,
             exit_code: 0,
             waiting_pid: None,
             die_peers: [(0, 0); MAX_NOTIFY_PEERS],
@@ -310,6 +317,11 @@ impl Process {
     ) -> Option<Process> {
         // Validazione PRIMA di allocare (ELF malformato = nessun leak).
         let layout = crate::elf::validate(elf)?;
+
+        // Identita' misurata (Fase 36): sui byte validati, gli stessi che il
+        // loader mappa qui sotto — misura cio' che gira, mai cio' che il
+        // chiamante dichiara (nome owned, SpawnMeta).
+        let image_hash = syscall_numbers::image_hash(elf);
 
         // Kernel stack: RSP0 (per rientrare a ring 0 su interrupt) + frame.
         // Come sopra: base PHYS (teardown), top VIRT (RSP0 + frame iniziale).
@@ -356,6 +368,7 @@ impl Process {
             pending_wake: false,
             cbs_server: None,
             text_id,
+            image_hash,
             exit_code: 0,
             waiting_pid: None,
             die_peers: [(0, 0); MAX_NOTIFY_PEERS],
@@ -370,8 +383,9 @@ impl Process {
     /// trampoline `fork_child_exit`). Kernel stack, TSS (senza porte: il figlio
     /// non eredita la bitmap I/O del padre, least privilege) e `text_id` sono
     /// del chiamante; IPC/ring/fd/canali NON si ereditano (solo il canale di
-    /// nascita, impostato dopo come in `finish_spawn`). Nome, priorita' e
-    /// `req_next` (i req_id divergono dopo il fork) copiati dal padre.
+    /// nascita, impostato dopo come in `finish_spawn`). Nome, priorita',
+    /// `image_hash` (stessi byte del padre, Fase 36) e `req_next` (i req_id
+    /// divergono dopo il fork) copiati dal padre.
     ///
     /// # Safety
     /// `child_cr3`/`stack_base`/`saved` devono essere validi e del figlio.
@@ -389,6 +403,7 @@ impl Process {
         tss_slot: usize,
         tss_sel: SegmentSelector,
         text_id: u32,
+        image_hash: u64,
     ) -> Process {
         Process {
             name,
@@ -414,6 +429,7 @@ impl Process {
             pending_wake: false,
             cbs_server: None,
             text_id,
+            image_hash,
             exit_code: 0,
             waiting_pid: None,
             die_peers: [(0, 0); MAX_NOTIFY_PEERS],

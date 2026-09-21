@@ -37,7 +37,7 @@ pub fn fork_current() -> Option<(usize, usize)> {
         }
     };
     // Snapshot scalari del padre (il borrow finisce qui).
-    let (p_cr3, p_top, p_prio, p_req, p_text, p_name, p_owned, p_nlen, p_brk) = {
+    let (p_cr3, p_top, p_prio, p_req, p_text, p_hash, p_name, p_owned, p_nlen, p_brk) = {
         let p = &sched.processes[parent_pid];
         (
             p.cr3,
@@ -45,6 +45,7 @@ pub fn fork_current() -> Option<(usize, usize)> {
             p.priority,
             p.req_next,
             p.text_id,
+            p.image_hash,
             p.name,
             p.name_owned,
             p.name_len,
@@ -134,7 +135,7 @@ pub fn fork_current() -> Option<(usize, usize)> {
     let child = unsafe {
         Process::create_fork(
             p_name, p_owned, p_nlen, p_prio, p_req, parent_pid, child_cr3,
-            stack_base, stack_top, saved, tss_slot, tss_sel, p_text,
+            stack_base, stack_top, saved, tss_slot, tss_sel, p_text, p_hash,
         )
     };
     sched.place_process(child_pid, child);

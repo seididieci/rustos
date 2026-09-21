@@ -113,6 +113,7 @@ La numerazione e' definita nel dispatch di `syscall_handler` in `kernel/src/sysc
 | 44 | `text_stats()` | contatori shared text (Fase 32, debug/test): `hits` in rax, `misses` in rdi, `live` in rsi; dalla Fase 33 `rdx` = fault COW gestiti (`cow_count`) |
 | 45 | `fork()` | duplica il chiamante in COW (Fase 34, nessun argomento): padre `(pid_figlio, canale)` (rax + rdi multi-registro), figlio `(0, canale)`; -1 su PID/canali/OOM esauriti |
 | 46 | `peer_pid(chan)` | pid del peer del canale `chan` (0 = nascita), o -1 (Fase 35, hardening: i server attribuiscono le richieste; abilita la policy `FS_REGISTER`) |
+| 47 | `peer_info(chan)` | hash dell'immagine del peer del canale `chan` (0 = nascita): 0 + hash in rdi, o -1 (Fase 36, identita' misurata: policy su identita' in init/userfs) |
 
 > **Fase 29 (protezioni)**: `PROT_NONE`/`PROT_READ`/`PROT_READ|PROT_WRITE` sono
 > enforced dal page-fault handler. Un fault di protezione da user mode (write
@@ -224,6 +225,7 @@ extern "C" fn syscall_handler() -> i64 {
 | `shm_map_cow` | 43 | Mappa una regione in COW (Fase 33, `MAP_COW`, solo `PROT_READ`) → base (copia privata al primo write) |
 | `fork` | 45 | Duplica il processo in COW (Fase 34) → padre `(pid, chan)`, figlio `(0, chan)` |
 | `peer_pid` | 46 | Pid del peer di un canale (Fase 35) → pid o `Err` |
+| `peer_info` | 47 | Hash immagine del peer di un canale (Fase 36) → hash o `Err` |
 | `text_stats` | 44 | Contatori shared text (Fase 32): hits/misses/live (+ Fase 33: fault COW in rdx) |
 
 `spawn(name_ptr, name_len)` (Fase 8.1 + 13) crea un nuovo processo a partire dal

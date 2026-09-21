@@ -115,6 +115,17 @@ pub fn peer_pid(chan: u64) -> Result<i64, ()> {
     if p < 0 { Err(()) } else { Ok(p) }
 }
 
+/// Fase 36 (identita' misurata, Strato 2 di ADR-0026) — `peer_info(chan)`:
+/// hash dell'immagine del peer del canale `chan` (0 = canale di nascita),
+/// o `Err` se il canale non esiste/il peer e' morto. I server lo usano per
+/// la policy su identita' (es. userfs accetta il replace di un prefix solo
+/// dallo stesso binario; init verifica il manifest prima dello spawn).
+#[inline]
+pub fn peer_info(chan: u64) -> Result<u64, ()> {
+    let (rax, rdi, _, _, _) = unsafe { syscall4_out(SYS_PEER_INFO, chan, 0, 0, 0) };
+    if rax != 0 { Err(()) } else { Ok(rdi) }
+}
+
 /// Fase 35 (hardening) — `init_bounce(service)`: chiede a init (canale di
 /// nascita, solo per figli di init) di uccidere+riavviare il servizio
 /// supervisionato `service`. Uccidere un server supervisionato e' operazione

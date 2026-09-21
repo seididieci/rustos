@@ -1,5 +1,6 @@
 // Split from syscall.rs (byte-identical move; see facade).
-use super::entry::current_id;
+use core::ptr::addr_of_mut;
+use super::entry::{current_id, PERCPU};
 
 /// ADR-0008 — `service_register(service)`: il chiamante occupa lo slot del
 /// servizio `service`. -1 se gia' occupato da un processo vivo.
@@ -85,6 +86,39 @@ pub(super) fn sys_peer_pid(chan: usize) -> i64 {
     };
     match crate::channels::peer(real, me) {
         Some(p) => p as i64,
+        None => -1,
+    }
+}
+
+/// Fase 36 (identita' misurata, Strato 2 di ADR-0026) — `peer_info(chan)`:
+/// hash dell'immagine del peer del canale `chan` (0 = canale di nascita, come
+/// `peer_pid`), o -1 se il canale non esiste/il peer e' morto. Multi-registro
+/// (pattern `ps_info`): rax = 0 + rdi = hash. I server lo usano per la policy
+/// su identita' (manifest init, `FS_REGISTER` in userfs); non rivela nulla
+/// oltre l'identita' del binario (nomi/pid gia' pubblici via `ps`).
+pub(super) fn sys_peer_info(chan: usize) -> i64 {
+    let me = current_id() as usize;
+    let real = if chan == syscall_numbers::CHANNEL_PARENT as usize {
+        match crate::sched::parent_channel(me) {
+            Some(c) => c,
+            None => return -1,
+        }
+    } else {
+        chan
+    };
+    let peer = match crate::channels::peer(real, me) {
+        Some(p) => p,
+        None => return -1,
+    };
+    match crate::sched::process_image_hash(peer) {
+        Some(h) => {
+            unsafe {
+                let p = addr_of_mut!(PERCPU);
+                (*p).ipc_override = 1;
+                (*p).ret_rdi = h;
+            }
+            0
+        }
         None => -1,
     }
 }

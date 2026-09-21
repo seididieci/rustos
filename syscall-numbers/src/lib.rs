@@ -113,6 +113,14 @@ pub const SYS_FORK: u64 = 45;
 /// processo — es. la policy `FS_REGISTER` di userfs distingue i figli di
 /// init). Non rivela nulla che `ps_info` non mostri gia'.
 pub const SYS_PEER_PID: u64 = 46;
+/// `peer_info(chan)`: hash dell'immagine (`image_hash`, FNV-1a sull'ELF) del
+/// peer del canale `chan` (0 = canale di nascita), o -1 se il canale non
+/// esiste/il peer e' morto (Fase 36, identita' misurata, Strato 2 di ADR-0026).
+/// Multi-registro (pattern `PS_INFO`): rax = 0 + rdi = hash; -1 = errore.
+/// I server lo usano per la policy su identita' (manifest init, `FS_REGISTER`
+/// in userfs). Non rivela nulla oltre l'identita' del binario (nomi e pid sono
+/// gia' visibili via `ps_info`/`peer_pid`).
+pub const SYS_PEER_INFO: u64 = 47;
 /// Protezioni `mmap`/`mprotect` (29: NONE/R/RW con enforcement; W solo e
 /// PROT_EXEC rifiutati — eseguibile solo il codice di spawn).
 pub const PROT_NONE: u64 = 0x0;
@@ -285,6 +293,21 @@ pub const MAP_TEST_PHYS: u64 = 0x4_000000;
 /// diversi). Fase 35: solo questi frame + ring + VGA sono mappabili via
 /// `map_physical`; con 1 frame il secondo scratch veniva rifiutato.
 pub const MAP_TEST_FRAMES: u64 = 2;
+
+/// Identita' misurata di un'immagine ELF (Fase 36, Strato 2 di ADR-0026):
+/// FNV-1a a 64 bit sui byte dell'ELF. Single source kernel+user: il kernel la
+/// misura allo spawn (`image_hash` nel PCB) e la espone via `SYS_PEER_INFO`;
+/// init/userfs la ricalcolano sui byte caricati per la policy (manifest,
+/// `FS_REGISTER`). Stesso algoritmo dello sharing text (Fase 32, che ora usa
+/// questa funzione): sui `.bin` di build i due valori coincidono bit-per-bit.
+pub fn image_hash(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
 
 /// Servizi di sistema raggiungibili per nome (ADR-0008, IPC per nome).
 /// Il discriminant coincide con l'indice di slot nel registry del kernel
