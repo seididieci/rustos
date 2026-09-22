@@ -11,72 +11,56 @@ pub fn handle_open(
     flags: u64,
     path: &str,
     fgen: &mut u64,
-) -> Option<u64> {
+) -> Result<u64, u64> {
     if path.is_empty() || path.len() > MAX_PATH {
-        return None;
+        return Err(ERR_INVALID);
     }
+    let flags = flags as u32;
+    let creat = flags & libr::O_CREAT != 0;
+    let trunc = flags & libr::O_TRUNC != 0;
+    let append = flags & libr::O_APPEND != 0;
 
     // Cerca nei mount point registrati (devfs, console, userdisk, futuri driver).
     if let Some((driver_chan, rel)) = mount_legacy::resolve_mount(path, mounts) {
-        // Nodo disco raw (Fase 16/16d): open("/dev/sda") o degli alias
-        // stabili ("/dev/disk/by-uuid/<H>", "/dev/disk/by-label/<N>") matcha
-        // il prefix del nodo stesso (rel vuota) — e cosi' i device registrati
-        // per-nome ("/dev/null": rel vuota sul prefix esatto, Fase 16d).
-        // L'handle/tipo si chiede al driver (nomi `sdX` via parse locale +
-        // validazione, by-path via DISK_RESOLVE, device via dev_type
-        // sull'ultimo componente). Impossibile o driver irraggiungibile →
-        // None (-1, mai wedge).
+        // (Ramo device invariato: gli errori dei driver restano opachi —
+        // nessun dominio attribuibile senza interrogarli.)
         if rel.is_empty() {
             let prefix = path.trim_start_matches('/');
             if let Some(name) = prefix.strip_prefix("dev/") {
-                // Alias stabili (by-uuid/by-label): SOLO qui si interroga
-                // userdisk (DISK_RESOLVE). Un open di /dev/null NON deve fare
-                // un round-trip al disco a ogni chiamata (il flood di t30 lo
-                // amplificava a ~1000 HELLO).
                 if name.starts_with("disk/by-") {
-                    let h = mount::resolve_mount_source(&alloc::format!("/dev/{}", name))?;
-                    let reply = libr::send(driver_chan, DEV_OPEN, h as u64, 0).ok()?;
+                    let h = mount::resolve_mount_source(&alloc::format!("/dev/{}", name)).ok_or(ERR)?;
+                    let reply = libr::send(driver_chan, DEV_OPEN, h as u64, 0).map_err(|_| ERR)?;
                     if reply.w0 == ERR {
-                        return None;
+                        return Err(ERR);
                     }
-                    return Some(ftable.open_remote(chan, driver_chan, reply.w0 as u32));
+                    return Ok(ftable.open_remote(chan, driver_chan, reply.w0 as u32));
                 }
-                // Nodo disco raw (/dev/sda, /dev/sdb...): parse locale
-                // validato dal driver con DEV_OPEN.
                 if let Some(h) = mount_legacy::disk_handle(name) {
-                    let reply = libr::send(driver_chan, DEV_OPEN, h as u64, 0).ok()?;
+                    let reply = libr::send(driver_chan, DEV_OPEN, h as u64, 0).map_err(|_| ERR)?;
                     if reply.w0 == ERR {
-                        return None;
+                        return Err(ERR);
                     }
-                    return Some(ftable.open_remote(chan, driver_chan, reply.w0 as u32));
+                    return Ok(ftable.open_remote(chan, driver_chan, reply.w0 as u32));
                 }
-                // Device registrato per-nome (null/zero/...): tipo dall'ultimo
-                // componente del prefix esatto.
                 if let Some(dev) = name.rsplit('/').next().and_then(mount_legacy::dev_type) {
-                    let reply = libr::send(driver_chan, DEV_OPEN, dev, 0).ok()?;
+                    let reply = libr::send(driver_chan, DEV_OPEN, dev, 0).map_err(|_| ERR)?;
                     if reply.w0 == ERR {
-                        return None;
+                        return Err(ERR);
                     }
-                    return Some(ftable.open_remote(chan, driver_chan, reply.w0 as u32));
+                    return Ok(ftable.open_remote(chan, driver_chan, reply.w0 as u32));
                 }
             }
-            return None;
+            return Err(ERR_NOTFOUND);
         }
-        let device_type = mount_legacy::dev_type(rel)?;
-        let reply = libr::send(driver_chan, DEV_OPEN, device_type, 0).ok()?;
+        let device_type = mount_legacy::dev_type(rel).ok_or(ERR_NOTFOUND)?;
+        let reply = libr::send(driver_chan, DEV_OPEN, device_type, 0).map_err(|_| ERR)?;
         let remote_fd = reply.w0 as u32;
-        return Some(ftable.open_remote(chan, driver_chan, remote_fd));
+        return Ok(ftable.open_remote(chan, driver_chan, remote_fd));
     }
 
     // Filesystem locali: prima i mount FAT (con attivazione lazy), poi ramfs.
-    // resolve_local copre ramfs + il caso "mount noto ma inattivo" (→ None,
-    // mai shadow in ramfs: stesso contratto di prima).
     if let Some((mi, rel)) = mount::resolve_fsmount(mounts_fat, path, fgen) {
-        // POSIX come ramfs (20.4): con O_CREAT crea l'entry 8.3 se manca
-        // (no LFN, mkdir-su-FAT fuori scope); senza, il file deve esistere.
-        // La creazione muta la directory: bumpa la generazione (invalida le
-        // cache FileInfo: la nuova entry cambia il layout dir).
-        if flags as u32 & libr::O_CREAT != 0 {
+        if creat {
             if let Some(fat) = mounts_fat.get(mi).and_then(|m| m.fat()) {
                 if fat.find(rel).is_none() {
                     let _ = fat.create_file(rel);
@@ -84,22 +68,41 @@ pub fn handle_open(
                 }
             }
         }
-        let fat = mounts_fat[mi].fat()?;
-        let info = fat.find(rel)?;
-        return Some(ftable.open_fat(chan, rel, mi, info, *fgen));
+        let fat = mounts_fat[mi].fat().ok_or(ERR)?;
+        let info = fat.find(rel).ok_or(ERR_NOTFOUND)?;
+        if info.is_dir {
+            return Err(ERR_ISDIR);
+        }
+        // O_TRUNC su FAT: libera la catena e azzera la entry (write_grow non
+        // tronca). A fallimento: rifiuto, mai fd su file non troncato.
+        if trunc {
+            if !fat.truncate(&info) {
+                return Err(ERR);
+            }
+            *fgen = fgen.wrapping_add(1);
+            let info = fat.find(rel).ok_or(ERR_NOTFOUND)?;
+            return Ok(ftable.open_fat(chan, rel, mi, info, *fgen, append));
+        }
+        return Ok(ftable.open_fat(chan, rel, mi, info, *fgen, append));
     }
-    match mount_legacy::resolve_local(mounts_fat, path)? {
-        mount_legacy::FsKind::Fat => None, // mount inattivo: errore, mai shadow ramfs
+    match mount_legacy::resolve_local(mounts_fat, path).ok_or(ERR_NOTFOUND)? {
+        mount_legacy::FsKind::Fat => Err(ERR), // mount inattivo: errore, mai shadow ramfs
         mount_legacy::FsKind::Ram => {
-            // POSIX (Fase 18.2, ADR-0015): senza O_CREAT il file deve
-            // esistere — mai creare. Con O_CREAT, crea se manca (su dir
-            // esistente resta apribile come prima: create_file → None
-            // ignorato, poi find).
-            if flags as u32 & libr::O_CREAT != 0 {
+            if creat {
                 let _ = fs.create_file(path);
             }
-            fs.find(path)?;
-            Some(ftable.open(chan, path, mount_legacy::FsKind::Ram, None))
+            match fs.find(path).ok_or(ERR_NOTFOUND)? {
+                ramfs::FsNode::File { .. } => {}
+                ramfs::FsNode::Dir { .. } => return Err(ERR_ISDIR),
+            }
+            // O_TRUNC su ramfs: svuota il vettore (in-memoria, infallibile a
+            // path esistente — appena verificato sopra).
+            if trunc {
+                if let Some(ramfs::FsNode::File { data, .. }) = fs.find_or_create(path) {
+                    data.clear();
+                }
+            }
+            Ok(ftable.open(chan, path, mount_legacy::FsKind::Ram, None, append))
         }
     }
 }
@@ -113,9 +116,9 @@ pub fn handle_read(
     fd: u32,
     count: usize,
     fgen: &mut u64,
-) -> Option<u64> {
+) -> Result<u64, u64> {
     if count > 4096 {
-        return None;
+        return Err(ERR_INVALID);
     }
 
     // File remoto: inoltro al driver. userfs inietta entrambi i ring del
@@ -124,18 +127,18 @@ pub fn handle_read(
     if let Some((driver_chan, remote_fd)) = ftable.get_remote(chan, fd) {
         let (req_phys, resp_phys) = match rings.get(&chan) {
             Some(&r) => r,
-            None => return None,
+            None => return Err(ERR),
         };
-        libr::map_in(driver_chan, req_phys, libr::CLI_REQ_VA, 1).ok()?;
-        libr::map_in(driver_chan, resp_phys, libr::CLI_RESP_VA, 1).ok()?;
-        let reply = libr::send(driver_chan, DEV_READ, remote_fd as u64, count as u64).ok()?;
-        return Some(reply.w0);
+        libr::map_in(driver_chan, req_phys, libr::CLI_REQ_VA, 1).map_err(|_| ERR)?;
+        libr::map_in(driver_chan, resp_phys, libr::CLI_RESP_VA, 1).map_err(|_| ERR)?;
+        let reply = libr::send(driver_chan, DEV_READ, remote_fd as u64, count as u64).map_err(|_| ERR)?;
+        return Ok(reply.w0);
     }
     if ftable.get(chan, fd).is_none() {
-        return None;
+        return Err(ERR_INVALID);
     }
 
-    let (path, kind, offset, mnt) = ftable.get(chan, fd)?;
+    let (path, kind, offset, mnt) = ftable.get(chan, fd).ok_or(ERR_INVALID)?;
 
     // 24.2 — buffer di risposta sullo stack (count ≤ 4096 per il check in
     // testa): niente `to_vec()`/`Vec` temporanei per-op (la free-list
@@ -144,9 +147,10 @@ pub fn handle_read(
     let mut buf_stack = [0u8; 4096];
     let data: &[u8] = match kind {
         mount_legacy::FsKind::Ram => {
-            let d = match fs.find(path)? {
+            let d = match fs.find(path).ok_or(ERR_NOTFOUND)? {
                 ramfs::FsNode::File { data: d, .. } => d,
-                _ => return None,
+                // Dir aperta (solo via fd pre-40): leggere una dir e' IsDir.
+                _ => return Err(ERR_ISDIR),
             };
             if offset >= d.len() {
                 &[]
@@ -158,16 +162,19 @@ pub fn handle_read(
             }
         }
         mount_legacy::FsKind::Fat => {
-            let mi = mnt?;
+            let mi = mnt.ok_or(ERR)?;
             // Il mount puo' essere caduto inattivo alla morte di userdisk
             // (drop d'epoca in `note_peer_death`): riattiva per nome qui, come
             // `resolve_fsmount` fa per open/readdir (fail-loud, mai shadow).
             if !mount::reactivate_mount(mounts_fat, mi, fgen) {
-                return None;
+                return Err(ERR);
             }
             let g = *fgen;
-            let fat = mounts_fat.get(mi)?.fat()?;
-            let info = ftable::fd_fat_info(ftable, fat, chan, fd, g)?;
+            let fat = mounts_fat.get(mi).ok_or(ERR)?.fat().ok_or(ERR)?;
+            let info = ftable::fd_fat_info(ftable, fat, chan, fd, g).ok_or(ERR_NOTFOUND)?;
+            if info.is_dir {
+                return Err(ERR_ISDIR);
+            }
             let n = fat.read_file(&info, offset, count, &mut buf_stack[..count]);
             &buf_stack[..n]
         }
@@ -182,7 +189,7 @@ pub fn handle_read(
         rings::resp_ring_write(bytes_read as u64, 0, &data);
     }
     ftable.set_offset(chan, fd, offset + bytes_read);
-    Some(bytes_read as u64)
+    Ok(bytes_read as u64)
 }
 
 /// File remoto: inoltro al driver. Il payload del WRITE RESTA nel request ring
@@ -196,19 +203,19 @@ pub fn handle_write_remote(
     chan: u64,
     fd: u32,
     count: usize,
-) -> Option<u64> {
+) -> Result<u64, u64> {
     let (driver_chan, remote_fd) = match ftable.get_remote(chan, fd) {
         Some(r) => r,
-        None => return None,
+        None => return Err(ERR_INVALID),
     };
     let (req_phys, resp_phys) = match rings.get(&chan) {
         Some(&r) => r,
-        None => return None,
+        None => return Err(ERR),
     };
-    libr::map_in(driver_chan, req_phys, libr::CLI_REQ_VA, 1).ok()?;
-    libr::map_in(driver_chan, resp_phys, libr::CLI_RESP_VA, 1).ok()?;
-    let reply = libr::send(driver_chan, DEV_WRITE, remote_fd as u64, count as u64).ok()?;
-    Some(reply.w0)
+    libr::map_in(driver_chan, req_phys, libr::CLI_REQ_VA, 1).map_err(|_| ERR)?;
+    libr::map_in(driver_chan, resp_phys, libr::CLI_RESP_VA, 1).map_err(|_| ERR)?;
+    let reply = libr::send(driver_chan, DEV_WRITE, remote_fd as u64, count as u64).map_err(|_| ERR)?;
+    Ok(reply.w0)
 }
 
 /// Write locale (ramfs): il frame e' gia' stato consumato e il payload e' in
@@ -224,59 +231,65 @@ pub fn handle_write_local(
     count: usize,
     payload: &[u8],
     fgen: &mut u64,
-) -> Option<u64> {
-    let (path, kind, offset, mnt) = ftable.get(chan, fd)?;
+) -> Result<u64, u64> {
+    let (path, kind, offset, mnt) = ftable.get(chan, fd).ok_or(ERR_INVALID)?;
+    let append = ftable.is_append(chan, fd);
     if kind == mount_legacy::FsKind::Fat {
         // Scrittura FAT (Fase 20): overwrite + crescita con allocazione
         // (write-through, niente cache FileInfo: la scrittura puo' cambiare
         // size/first_cluster, quindi dopo si bumpa la generazione e si
         // riaggiorna la cache con un find fresco — un find per write, rumore
         // contro le centinaia di round-trip DISK della scrittura stessa).
-        let mi = mnt?;
+        let mi = mnt.ok_or(ERR)?;
         if !mount::reactivate_mount(mounts_fat, mi, fgen) {
-            return None;
+            return Err(ERR);
         }
         let g = *fgen;
-        let fat = mounts_fat.get(mi)?.fat()?;
-        let info = ftable::fd_fat_info(ftable, fat, chan, fd, g)?;
+        let fat = mounts_fat.get(mi).ok_or(ERR)?.fat().ok_or(ERR)?;
+        let info = ftable::fd_fat_info(ftable, fat, chan, fd, g).ok_or(ERR_NOTFOUND)?;
         if info.is_dir {
-            return None;
+            return Err(ERR_ISDIR);
         }
+        // O_APPEND: l'offset del fd e' ignorato, si accoda a size corrente.
+        let offset = if append { info.size as usize } else { offset };
         let n = fat.write_grow(&info, offset, &payload[..count.min(payload.len())]);
         *fgen = fgen.wrapping_add(1);
         let g2 = *fgen;
         // Rileggi l'entry dopo la mutazione (size/first_cluster possono aver
         // cambiato valore): la cache resta valida alla nuova generazione.
-        let fat = mounts_fat.get(mi)?.fat()?;
+        let fat = mounts_fat.get(mi).ok_or(ERR)?.fat().ok_or(ERR)?;
         let rel: String = match ftable.files.get(&(chan, fd)) {
             Some(ftable::FileEntry::Local { path, kind: mount_legacy::FsKind::Fat, .. }) => path.clone(),
-            _ => return Some(n as u64),
+            _ => return Ok(n as u64),
         };
         let fresh = fat.find(&rel);
         ftable.refresh_fat_info(chan, fd, fresh, g2);
         ftable.set_offset(chan, fd, offset + n);
-        return Some(n as u64);
+        return Ok(n as u64);
     }
 
-    match fs.find_or_create(path)? {
+    match fs.find_or_create(path).ok_or(ERR_NOTFOUND)? {
         ramfs::FsNode::File { data: file_data, .. } => {
+            // O_APPEND: accoda a len corrente invece dell'offset del fd.
+            let offset = if append { file_data.len() } else { offset };
             if offset + count > file_data.len() {
                 file_data.resize(offset + count, 0);
             }
             file_data[offset..offset + count].copy_from_slice(&payload[..count]);
             ftable.set_offset(chan, fd, offset + count);
-            Some(count as u64)
+            Ok(count as u64)
         }
-        _ => None,
+        // Dir aperta (solo via fd pre-40): scrivere una dir e' IsDir.
+        _ => Err(ERR_ISDIR),
     }
 }
 
-pub fn handle_close(ftable: &mut ftable::FileTable, chan: u64, fd: u32) -> Option<u64> {
+pub fn handle_close(ftable: &mut ftable::FileTable, chan: u64, fd: u32) -> Result<u64, u64> {
     // File remoto: chiudi anche sul server.
     if let Some((driver_chan, remote_fd)) = ftable.get_remote(chan, fd) {
         let _ = libr::send(driver_chan, DEV_CLOSE, remote_fd as u64, 0);
     }
-    if ftable.close(chan, fd) { Some(0) } else { None }
+    if ftable.close(chan, fd) { Ok(0) } else { Err(ERR_INVALID) }
 }
 
 pub fn handle_readdir(
@@ -287,19 +300,19 @@ pub fn handle_readdir(
     chan: u64,
     path: &str,
     fgen: &mut u64,
-) -> Option<u64> {
+) -> Result<u64, u64> {
     // Directory remota (device): inoltro al driver, che scrive le entry nella
     // response ring del client (mappata li' da map_in).
     if let Some((driver_chan, _rel)) = mount_legacy::resolve_mount(path, mounts) {
-        let (req_phys, resp_phys) = rings.get(&chan)?;
-        libr::map_in(driver_chan, *req_phys, libr::CLI_REQ_VA, 1).ok()?;
-        libr::map_in(driver_chan, *resp_phys, libr::CLI_RESP_VA, 1).ok()?;
-        let reply = libr::send(driver_chan, DEV_READDIR, 0, 0).ok()?;
-        return Some(reply.w0);
+        let (req_phys, resp_phys) = rings.get(&chan).ok_or(ERR)?;
+        libr::map_in(driver_chan, *req_phys, libr::CLI_REQ_VA, 1).map_err(|_| ERR)?;
+        libr::map_in(driver_chan, *resp_phys, libr::CLI_RESP_VA, 1).map_err(|_| ERR)?;
+        let reply = libr::send(driver_chan, DEV_READDIR, 0, 0).map_err(|_| ERR)?;
+        return Ok(reply.w0);
     }
 
     if let Some((mi, rel)) = mount::resolve_fsmount(mounts_fat, path, fgen) {
-        let fat = mounts_fat[mi].fat()?;
+        let fat = mounts_fat[mi].fat().ok_or(ERR)?;
         let entries: Vec<String> =
             fat.list_dir(rel).into_iter().map(|d| d.name).collect();
         // Mount annidati sotto dir FAT (edge raro, gratis col design union).
@@ -314,7 +327,7 @@ pub fn handle_readdir(
             rings::map_client_resp_ring(rings, chan);
             rings::resp_ring_write(entries.len() as u64, 0, &buf);
         }
-        return Some(entries.len() as u64);
+        return Ok(entries.len() as u64);
     }
 
     // Listing sintetizzato dai prefix registrati (Fase 16d, discovery):
@@ -334,12 +347,18 @@ pub fn handle_readdir(
             Some(e) => (true, e),
             None => (false, Vec::new()),
         },
-        Some(mount_legacy::FsKind::Fat) => return None, // mount noto ma inattivo: errore
+        // Mount noto ma inattivo: NotFound, mai shadow ramfs.
+        Some(mount_legacy::FsKind::Fat) => return Err(ERR_NOTFOUND),
         None => (false, Vec::new()),
     };
     let entries = mount_legacy::union_mount_children(base, mounts, mounts_fat, path);
     if !exists && entries.is_empty() {
-        return None;
+        // Distingue "e' un file" (NotDir) da "non esiste" (NotFound): la
+        // union sopra e' invariata (mai shadow), si raffina solo l'errore.
+        match fs.find(path) {
+            Some(ramfs::FsNode::File { .. }) => return Err(ERR_NOTDIR),
+            _ => return Err(ERR_NOTFOUND),
+        }
     }
 
     let mut buf = Vec::new();
@@ -353,7 +372,7 @@ pub fn handle_readdir(
         rings::map_client_resp_ring(rings, chan);
         rings::resp_ring_write(entries.len() as u64, 0, &buf);
     }
-    Some(entries.len() as u64)
+    Ok(entries.len() as u64)
 }
 
 /// Scrive il response frame di R_STAT (`[size:8][kind:8]`, payload vuoto) e
@@ -383,65 +402,72 @@ pub fn handle_stat(
     chan: u64,
     path: &str,
     fgen: &mut u64,
-) -> Option<u64> {
+) -> Result<u64, u64> {
     if path.is_empty() || path.len() > MAX_PATH {
-        return None;
+        return Err(ERR_INVALID);
     }
     // Root ramfs: esiste sempre.
     if path == "/" {
-        return Some(stat_reply(rings, chan, 0, libr::STAT_DIR));
+        return Ok(stat_reply(rings, chan, 0, libr::STAT_DIR));
     }
     // Device registrati: foglie (rel non vuota = path sotto un device: None,
     // come open che rifiuta i dev_type sconosciuti).
     if let Some((_driver_chan, rel)) = mount_legacy::resolve_mount(path, mounts) {
         if rel.is_empty() {
-            return Some(stat_reply(rings, chan, 0, libr::STAT_DEVICE));
+            return Ok(stat_reply(rings, chan, 0, libr::STAT_DEVICE));
         }
-        return None;
+        return Err(ERR_NOTFOUND);
     }
     // FAT con attivazione lazy; mount noto ma inattivo = errore, mai shadow.
     // (find fresco a ogni stat: niente fd, niente cache — i metadati non
     // devono mai essere stale.)
     if let Some((mi, rel)) = mount::resolve_fsmount(mounts_fat, path, fgen) {
-        let fat = mounts_fat[mi].fat()?;
+        let fat = mounts_fat[mi].fat().ok_or(ERR)?;
         if rel.is_empty() {
-            return Some(stat_reply(rings, chan, 0, libr::STAT_DIR));
+            return Ok(stat_reply(rings, chan, 0, libr::STAT_DIR));
         }
-        let info = fat.find(rel)?;
+        let info = fat.find(rel).ok_or(ERR_NOTFOUND)?;
         let kind = if info.is_dir { libr::STAT_DIR } else { libr::STAT_FILE };
-        return Some(stat_reply(rings, chan, info.size as u64, kind));
+        return Ok(stat_reply(rings, chan, info.size as u64, kind));
     }
     match mount_legacy::resolve_local(mounts_fat, path) {
         // Mount noto ma inattivo: errore, mai shadow ramfs.
-        Some(mount_legacy::FsKind::Fat) => None,
+        Some(mount_legacy::FsKind::Fat) => Err(ERR),
         Some(mount_legacy::FsKind::Ram) => match fs.find(path) {
             Some(ramfs::FsNode::File { data, .. }) => {
-                Some(stat_reply(rings, chan, data.len() as u64, libr::STAT_FILE))
+                Ok(stat_reply(rings, chan, data.len() as u64, libr::STAT_FILE))
             }
             Some(ramfs::FsNode::Dir { .. }) => {
-                Some(stat_reply(rings, chan, 0, libr::STAT_DIR))
+                Ok(stat_reply(rings, chan, 0, libr::STAT_DIR))
             }
             // Non in ramfs: puo' essere un padre sintetizzato (sotto).
             None => mount_legacy::synth_children(mounts, path)
-                .map(|_| stat_reply(rings, chan, 0, libr::STAT_DIR)),
+                .map(|_| stat_reply(rings, chan, 0, libr::STAT_DIR))
+                .ok_or(ERR_NOTFOUND),
         },
         // /dev/* senza prefix noto: solo sintesi (sotto).
         None => mount_legacy::synth_children(mounts, path)
-            .map(|_| stat_reply(rings, chan, 0, libr::STAT_DIR)),
+            .map(|_| stat_reply(rings, chan, 0, libr::STAT_DIR))
+            .ok_or(ERR_NOTFOUND),
     }
 }
 
-pub fn handle_mkdir(fs: &mut ramfs::RamFs, mounts: &[mount::FsMount], path: &str) -> Option<u64> {
+pub fn handle_mkdir(fs: &mut ramfs::RamFs, mounts: &[mount::FsMount], path: &str) -> Result<u64, u64> {
     if path.is_empty() || path.len() > MAX_PATH {
-        return None;
+        return Err(ERR_INVALID);
     }
     // mkdir solo su ramfs (i mount FAT/remoti non hanno mkdir).
-    match mount_legacy::resolve_local(mounts, path)? {
+    match mount_legacy::resolve_local(mounts, path).ok_or(ERR_NOTFOUND)? {
         mount_legacy::FsKind::Ram => {
-            fs.mkdir(path)?;
-            Some(0)
+            // Distingue "esiste gia'" (Exists) da "padre mancante" (NotFound):
+            // prima sonda, poi crea (single-thread: nessuna race tra i due).
+            if fs.find(path).is_some() {
+                return Err(ERR_EXISTS);
+            }
+            fs.mkdir(path).ok_or(ERR_NOTFOUND)?;
+            Ok(0)
         }
-        _ => None,
+        _ => Err(ERR),
     }
 }
 
@@ -454,42 +480,47 @@ pub fn handle_delete(
     mounts_fat: &[mount::FsMount],
     mounts: &[mount_legacy::Mount],
     path: &str,
-) -> Option<u64> {
+) -> Result<u64, u64> {
     if path.is_empty() || path.len() > MAX_PATH {
-        return None;
+        return Err(ERR_INVALID);
     }
     // Mai dentro driver remoti…
     if mount_legacy::resolve_mount(path, mounts).is_some() {
-        return None;
+        return Err(ERR_INVALID);
     }
-    // …e mai su mount FAT (unlink non implementato): solo ramfs.
-    match mount_legacy::resolve_local(mounts_fat, path)? {
+    // …e mai su mount FAT (unlink non implementato: per questa op il volume
+    // e' readonly): solo ramfs.
+    match mount_legacy::resolve_local(mounts_fat, path).ok_or(ERR_NOTFOUND)? {
         mount_legacy::FsKind::Ram => {
-            fs.remove(path)?;
-            Some(0)
+            fs.remove(path).ok_or(ERR_NOTFOUND)?;
+            Ok(0)
         }
-        _ => None,
+        _ => Err(ERR_READONLY),
     }
 }
 
 /// Monta una sorgente sul target (Fase 16b, payload "source\0target\0").
-/// Ritorna Some(0) se il mount e' ATTIVO, None altrimenti: a resolve fallito
-/// (sorgente/target invalidi, nome ignoto, driver irraggiungibile) nessun
-/// cambio di stato; a BPB illeggibile la spec resta registrata INATTIVA e
-/// ritenta lazy (mai shadow ramfs).
-pub fn handle_mount(mounts: &mut Vec<mount::FsMount>, payload: &str, fgen: &mut u64) -> Option<u64> {
+/// Ritorna Ok(0) se il mount e' ATTIVO, Err tipizzato altrimenti: a resolve
+/// fallito (sorgente/target invalidi, nome ignoto, driver irraggiungibile)
+/// nessun cambio di stato; a BPB illeggibile la spec resta registrata
+/// INATTIVA e ritenta lazy (mai shadow ramfs).
+pub fn handle_mount(mounts: &mut Vec<mount::FsMount>, payload: &str, fgen: &mut u64) -> Result<u64, u64> {
     let mut parts = payload.split('\0');
-    let source = parts.next()?;
-    let target = parts.next()?;
+    let source = parts.next().ok_or(ERR_INVALID)?;
+    let target = parts.next().ok_or(ERR_INVALID)?;
     if source.is_empty() || target.is_empty() {
-        return None;
+        return Err(ERR_INVALID);
     }
     if mount::apply_mount_spec(mounts, source, target, "") {
         // La tabella e' cambiata (spec nuova/sostituita): invalida le cache.
         *fgen = fgen.wrapping_add(1);
-        Some(0)
+        Ok(0)
     } else {
-        None
+        // apply fallisce a resolve sorgente (nome ignoto/driver morto) o a
+        // target invalido: NotFound nel primo caso. Senza visibilita' interna,
+        // NotFound e' il rifiuto piu' onesto (il client tipico ha sbagliato la
+        // sorgente; il target malformato e' gia' filtrato sopra).
+        Err(ERR_NOTFOUND)
     }
 }
 
@@ -502,13 +533,68 @@ pub fn handle_umount(
     ftable: &ftable::FileTable,
     target: &str,
     fgen: &mut u64,
-) -> Option<u64> {
-    let norm = mount::normalize_target(target)?;
-    let idx = mounts.iter().position(|m| m.target == norm)?;
+) -> Result<u64, u64> {
+    let norm = mount::normalize_target(target).ok_or(ERR_INVALID)?;
+    let idx = mounts.iter().position(|m| m.target == norm).ok_or(ERR_NOTFOUND)?;
     if ftable.has_mount_users(idx) {
-        return None;
+        return Err(ERR_BUSY);
     }
     mounts.remove(idx);
     *fgen = fgen.wrapping_add(1);
-    Some(0)
+    Ok(0)
+}
+
+/// Sposta l'offset di un fd LOCALE (Fase 40, R_LSEEK): `off` con segno,
+/// `whence` = SEEK_SET/CUR/END. Solo Local (Remote → ERR_INVALID: l'offset
+/// vive in userfs, i driver non lo conoscono). Ritorna il nuovo offset.
+/// Two-phase: valida tutto PRIMA di `set_offset` (a rifiuto l'offset resta
+/// quello di prima, mai stato intermedio).
+pub fn handle_lseek(
+    fs: &ramfs::RamFs,
+    ftable: &mut ftable::FileTable,
+    mounts_fat: &mut Vec<mount::FsMount>,
+    chan: u64,
+    fd: u32,
+    off: i64,
+    whence: u64,
+    fgen: &mut u64,
+) -> Result<u64, u64> {
+    // `get` ritorna Some solo per i Local (Remote e fd ignoti → Invalid:
+    // niente EBADF nel nativo; l'offset vive in userfs, i driver non lo
+    // conoscono).
+    let (path, kind, cur, mnt) = ftable.get(chan, fd).ok_or(ERR_INVALID)?;
+    let base: i64 = match whence {
+        libr::SEEK_SET => 0,
+        libr::SEEK_CUR => cur as i64,
+        libr::SEEK_END => {
+            let size = match kind {
+                mount_legacy::FsKind::Ram => match fs.find(path).ok_or(ERR_NOTFOUND)? {
+                    ramfs::FsNode::File { data, .. } => data.len() as i64,
+                    // Dir: size 0 (lseek lecito, le read restano IsDir).
+                    _ => 0,
+                },
+                mount_legacy::FsKind::Fat => {
+                    let mi = mnt.ok_or(ERR)?;
+                    if !mount::reactivate_mount(mounts_fat, mi, fgen) {
+                        return Err(ERR);
+                    }
+                    let g = *fgen;
+                    let fat = mounts_fat.get(mi).ok_or(ERR)?.fat().ok_or(ERR)?;
+                    match ftable::fd_fat_info(ftable, fat, chan, fd, g).ok_or(ERR_NOTFOUND)? {
+                        info if info.is_dir => 0,
+                        info => info.size as i64,
+                    }
+                }
+            };
+            size
+        }
+        _ => return Err(ERR_INVALID),
+    };
+    let new = base.checked_add(off).ok_or(ERR_INVALID)?;
+    if new < 0 {
+        return Err(ERR_INVALID);
+    }
+    // Oltre EOF lecito (le read tornano 0, le write crescono): solo >= 0.
+    ftable.set_offset(chan, fd, new as usize);
+    Ok(new as u64)
 }

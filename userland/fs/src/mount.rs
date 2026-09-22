@@ -282,8 +282,9 @@ pub fn resolve_fsmount<'a>(mounts: &mut Vec<FsMount>, path: &'a str, fgen: &mut 
 
 // ── Helper conversione ─────────────────────────────────────────────
 
-/// Converte `Option<u64>` in valore IPC: `Some(v)` → `v`, `None` → `ERR`.
+/// Converte `Result<u64, u64>` in valore IPC (Fase 40, errori tipizzati):
+/// `Ok(v)` → `v`, `Err(code)` → la sentinella del rifiuto.
 #[inline]
-pub fn to_reply(val: Option<u64>) -> u64 {
-    val.unwrap_or(ERR)
+pub fn to_reply_res(val: Result<u64, u64>) -> u64 {
+    val.unwrap_or_else(|e| e)
 }

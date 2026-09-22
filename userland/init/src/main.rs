@@ -34,6 +34,7 @@ fn expected_hash(bin: &[u8]) -> Option<u64> {
         b"userdevfs" => Some(HASH_USERDEVFS),
         b"userkbd" => Some(HASH_USERKBD),
         b"usertty" => Some(HASH_USERTTY),
+        b"userposix" => Some(HASH_USERPOSIX),
         b"usershell" => Some(HASH_USERSHELL),
         _ => None,
     }
@@ -275,7 +276,7 @@ fn wait_ready(chan: i64) -> bool {
 }
 
 /// Morti altrui viste dentro `wait_ready` (vedi sopra): init e' single-thread
-/// e single-loop, un array statico basta (cap 8 > 6 servizi supervisionati).
+/// e single-loop, un array statico basta (cap 8 > 7 servizi supervisionati).
 /// Accesso via `addr_of_mut!` (edition 2024: niente `static_mut_refs`).
 static mut STRAY_DEATHS: [(i64, i64); STRAY_CAP] = [(0, 0); STRAY_CAP];
 static mut N_STRAY: usize = 0;
@@ -383,6 +384,15 @@ const SVC_TTY: SvcMeta = SvcMeta {
     prio: 16,
     io: &[],
 };
+/// Server di personalita' POSIX (Fase 40.3, P1): skeleton supervisionato
+/// (tabelle stub per la Fase 42). Dopo tty: non dipende da nessuno, ma la
+/// supervisione vive con gli altri servizi (stessa tabella, stesso loop).
+const SVC_POSIX: SvcMeta = SvcMeta {
+    bin: b"userposix",
+    path: Some("/fat/bin/posix.bin"),
+    prio: 16,
+    io: &[],
+};
 const SVC_SHELL: SvcMeta = SvcMeta {
     bin: b"usershell",
     path: Some("/fat/bin/shell.bin"),
@@ -424,7 +434,8 @@ fn real_main(_sp: u64) -> ! {
     // prima di kbd, che risolve `Console` per nome:
     // 1. userdisk + attesa READY e userfs SUBITO DOPO + attesa READY.
     // 2. userconsole da disco + attesa READY + uptime.
-    // 3. devfs + attesa READY, kbd + attesa READY, tty + attesa READY.
+    // 3. devfs + attesa READY, kbd + attesa READY, tty + attesa READY,
+    //    posix + attesa READY (skeleton 40.3: nessuna dipendenza).
     // A boot ogni spawn mancato e' FAIL LOUD (exit → panic kernel): un
     // sistema senza servizi e' inutilizzabile, mai degradato silenzioso.
     // userdisk PRIMA di userfs (Fase 16): userfs monta /fat via IPC DISK a
@@ -469,9 +480,15 @@ fn real_main(_sp: u64) -> ! {
         println!("[init] boot FAILED (tty), panic");
         libr::exit(1);
     }
+    // 6. userposix + attesa READY (Fase 40.3, P1): skeleton senza dipendenze
+    //    (registra solo il servizio e resta in recv), riesce subito a boot.
+    if boot_svc(&SVC_POSIX, true).is_none() {
+        println!("[init] boot FAILED (posix), panic");
+        libr::exit(1);
+    }
 
     // Tabella supervisione (Fase 14, init-restart): console/fs/devfs/kbd/tty/
-    // disk vengono riavviati alla morte (dalla loro sorgente: embedded per
+    // disk/posix vengono riavviati alla morte (dalla loro sorgente: embedded per
     // disk/fs, disco per gli altri — Fase 21); gli altri figli solo loggati.
     // Costruita prima dei test cosi' anche run_test supervisiona (t27 uccide
     // devfs a suite in corso). NOTA: un restart di userfs wipa la ramfs
@@ -489,6 +506,7 @@ fn real_main(_sp: u64) -> ! {
         Supervised { meta: &SVC_DEVFS, svc: libr::Service::Devfs, chan: -1, pid: -1, restarts: 0, window_start: 0, held: false },
         Supervised { meta: &SVC_KBD, svc: libr::Service::Kbd, chan: -1, pid: -1, restarts: 0, window_start: 0, held: false },
         Supervised { meta: &SVC_TTY, svc: libr::Service::Tty, chan: -1, pid: -1, restarts: 0, window_start: 0, held: false },
+        Supervised { meta: &SVC_POSIX, svc: libr::Service::Posix, chan: -1, pid: -1, restarts: 0, window_start: 0, held: false },
     ];
     for e in supervised.iter_mut() {
         e.pid = libr::service_pid(e.svc).unwrap_or(-1);

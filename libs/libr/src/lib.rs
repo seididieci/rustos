@@ -56,19 +56,25 @@ pub use syscall_numbers::{DISK_CLOSE, DISK_HELLO, DISK_OPEN, DISK_READ, DISK_RES
 // userfs e (R_REGISTER) userdisk.
 pub use syscall_numbers::{
     R_CLOSE, R_DELETE, R_MKDIR, R_MOUNT, R_OPEN, R_READ, R_READDIR, R_REGISTER, R_UMOUNT,
-    R_WRITE, R_RIGHTS_DROP, R_RIGHTS_GET, R_STAT,
+    R_WRITE, R_RIGHTS_DROP, R_RIGHTS_GET, R_STAT, R_LSEEK, R_DUP_GRANT, R_DUP_CLAIM,
+    R_DUP_CANCEL,
 };
-/// Bit dei diritti per-canale (Fase 17, self-restriction; DELETE in 18.2):
-/// mask per `rights_drop`, valore di ritorno di `rights_get`.
+/// Bit dei diritti per-canale (Fase 17, self-restriction; DELETE in 18.2;
+/// SEEK in 40): mask per `rights_drop`, valore di ritorno di `rights_get`.
 pub use syscall_numbers::{
     RIGHTS_ALL, RIGHTS_DELETE, RIGHTS_MKDIR, RIGHTS_MOUNT, RIGHTS_OPEN, RIGHTS_READ,
-    RIGHTS_READDIR, RIGHTS_UMOUNT, RIGHTS_WRITE,
+    RIGHTS_READDIR, RIGHTS_SEEK, RIGHTS_UMOUNT, RIGHTS_WRITE,
 };
 /// `kind` per R_STAT (Fase 19.2): bit 0-1 tipo + bit 7 readonly.
 pub use syscall_numbers::{STAT_DEVICE, STAT_DIR, STAT_FILE, STAT_READONLY};
 
-/// Flag `open` (Fase 18.2): crea il file se non esiste.
-pub use syscall_numbers::O_CREAT;
+/// Flag `open` (Fase 18.2: O_CREAT; Fase 40: O_TRUNC/O_APPEND) + origini
+/// `SEEK_*` per R_LSEEK + sentinelle di errore FS (Fase 40: il server
+/// distingue i rifiuti, il client li mappa in `posix::Error`).
+pub use syscall_numbers::{
+    O_APPEND, O_CREAT, O_TRUNC, SEEK_CUR, SEEK_END, SEEK_SET, ERR_BUSY, ERR_EXISTS,
+    ERR_INVALID, ERR_ISDIR, ERR_NOTDIR, ERR_NOTFOUND, ERR_READONLY,
+};
 
 /// Fase 29 (mmap/mprotect): protezioni + codice di uscita per fault di
 /// memoria, e layout stack condiviso (guard page) per i test.
@@ -126,6 +132,12 @@ pub mod fs;
 pub mod ipc;
 pub mod print;
 pub mod spawn;
+
+/// Tabelle stdio vfd + routing stdout/stdin (Fase 40.2, redirect P1):
+/// `set_stdio`/`clear_stdio`/`stdio_active`/`stdin_byte` (il sink seriale
+/// `print_string`/`sys::write` resta sempre seriale per disegno).
+pub mod stdio;
+pub use stdio::{clear_stdio, set_stdio, stdio_active, stdin_byte};
 pub mod sys;
 pub mod tsc;
 

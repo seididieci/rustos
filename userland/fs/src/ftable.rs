@@ -2,6 +2,7 @@ use super::*;
 
 // ── Open file table ────────────────────────────────────────────────
 
+#[derive(Clone)]
 pub enum FileEntry {
     /// File locale: `path` e' relativo al suo filesystem (ramfs: path assoluto
     /// senza slash iniziale; FAT: relativo al mount). `mnt` = indice in
@@ -13,7 +14,9 @@ pub enum FileEntry {
     /// generazione globale `fat_gen` viene bumpata a OGNI mutazione FAT
     /// (write/create/mount/umount/remount/drop d'epoca); a mismatch si rifa
     /// `find` e si riaggiorna. Mai stale oltre l'op corrente (single-thread).
-    Local { path: String, kind: mount_legacy::FsKind, offset: usize, mnt: Option<usize>, fat_info: Option<FileInfo>, fat_gen: u64 },
+    /// `append` (Fase 40, O_APPEND): le write ignorano `offset` e accodano a
+    /// fine file; le read usano `offset` normalmente.
+    Local { path: String, kind: mount_legacy::FsKind, offset: usize, mnt: Option<usize>, fat_info: Option<FileInfo>, fat_gen: u64, append: bool },
     Remote { server_chan: u64, remote_fd: u32 },
 }
 
@@ -37,7 +40,7 @@ impl FileTable {
         current
     }
 
-    pub fn open(&mut self, chan: u64, path: &str, kind: mount_legacy::FsKind, mnt: Option<usize>) -> u64 {
+    pub fn open(&mut self, chan: u64, path: &str, kind: mount_legacy::FsKind, mnt: Option<usize>, append: bool) -> u64 {
         let fd = self.alloc_fd(chan);
         self.files.insert((chan, fd), FileEntry::Local {
             path: String::from(path),
@@ -46,13 +49,14 @@ impl FileTable {
             mnt,
             fat_info: None,
             fat_gen: 0,
+            append,
         });
         fd as u64
     }
 
     /// Come `open` ma con FileInfo FAT gia' risolto (evita un find al primo
     /// uso): `gen` e' la generazione corrente (la cache nasce valida).
-    pub fn open_fat(&mut self, chan: u64, path: &str, mnt: usize, info: FileInfo, fgen: u64) -> u64 {
+    pub fn open_fat(&mut self, chan: u64, path: &str, mnt: usize, info: FileInfo, fgen: u64, append: bool) -> u64 {
         let fd = self.alloc_fd(chan);
         self.files.insert((chan, fd), FileEntry::Local {
             path: String::from(path),
@@ -61,8 +65,33 @@ impl FileTable {
             mnt: Some(mnt),
             fat_info: Some(info),
             fat_gen: fgen,
+            append,
         });
         fd as u64
+    }
+
+    /// Inserisce una entry LOCALE clonata da uno snapshot (Fase 40, claim di
+    /// un grant): fd fresco sul canale del claimant, entry indipendente. La
+    /// cache FAT NON si eredita (fat_info = None: il primo uso rifa `find`
+    /// — grant e claim sono vicini ma mai assumere freschezza oltre l'op).
+    /// Ritorna None se lo snapshot non e' Local (mai, per costruzione).
+    pub fn open_cloned(&mut self, chan: u64, snap: &FileEntry) -> Option<u64> {
+        match snap {
+            FileEntry::Local { path, kind, offset, mnt, append, .. } => {
+                let fd = self.alloc_fd(chan);
+                self.files.insert((chan, fd), FileEntry::Local {
+                    path: path.clone(),
+                    kind: *kind,
+                    offset: *offset,
+                    mnt: *mnt,
+                    fat_info: None,
+                    fat_gen: 0,
+                    append: *append,
+                });
+                Some(fd as u64)
+            }
+            FileEntry::Remote { .. } => None,
+        }
     }
 
     pub fn open_remote(&mut self, chan: u64, server_chan: u64, remote_fd: u32) -> u64 {
@@ -120,6 +149,14 @@ impl FileTable {
         if let Some(FileEntry::Local { offset: o, .. }) = self.files.get_mut(&(chan, fd)) {
             *o = offset;
         }
+    }
+
+    /// True se il fd e' aperto in O_APPEND (Fase 40): le write accodano.
+    pub fn is_append(&self, chan: u64, fd: u32) -> bool {
+        matches!(
+            self.files.get(&(chan, fd)),
+            Some(FileEntry::Local { append: true, .. })
+        )
     }
 
     /// Aggiorna la cache FileInfo del fd (dopo una scrittura che puo' aver

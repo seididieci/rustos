@@ -2,7 +2,7 @@
 # Build dei binari userspace in modalita' freestanding.
 #
 # Qui stanno SOLO i servizi utente (userland/): init, console, fs, devfs,
-# disk, shell, uptime, kbd, tty — i binari "ad uso utente" dell'OS. I binari della test suite
+# disk, shell, uptime, kbd, tty, posix — i binari "ad uso utente" dell'OS. I binari della test suite
 # (testland/) sono compilati da scripts/build-tests.sh.
 #
 # Prodotto: userland/build/*.bin, codice raw caricato a USER_CODE dai processi
@@ -40,6 +40,9 @@ build_one userland/console userland/console/src/console.ld userconsole.bin userc
 build_one userland/kbd     userland/kbd/src/kbd.ld         userkbd.bin     userkbd
 build_one userland/tty     userland/tty/src/tty.ld         usertty.bin     usertty
 build_one userland/uptime  userland/uptime/src/uptime.ld   useruptime.bin  useruptime
+# Server di personalita' POSIX (Fase 40.3, P1): skeleton supervisionato, prima
+# di gen-service-hashes cosi' il manifest Strato 2 lo copre (HASH_USERPOSIX).
+build_one userland/posix    userland/posix/src/posix.ld     userposix.bin   userposix
 build_one userland/shell   userland/shell/src/shell.ld     usershell.bin   usershell
 # Primo programma lanciabile dalla shell (Fase 37.2, `run`): NON e' un
 # servizio (init non lo spawna), vive in /bin come gli altri binari da disco.

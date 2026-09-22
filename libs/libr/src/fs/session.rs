@@ -86,11 +86,22 @@ pub(crate) fn fs_gate() -> Result<(), Error> {
     Ok(())
 }
 
-/// Converte il result di una reply FS (Fase 39): `!0` (ERR) → `Failed` (in
-/// Fase 39 userfs non distingue i rifiuti; la Fase 40 produrra' le varianti
-/// di dominio qui).
+/// Converte il result di una reply FS (Fase 39 + 40): il server distingue i
+/// rifiuti con le sentinelle `ERR_*` (Fase 40, P1), qui mappate nelle varianti
+/// di dominio di `Error` (ADR-0030: i numeri POSIX restano solo in `to_errno`).
+/// `ERR` resta `Failed` (rifiuto opaco: driver remoti, mount inattivi, IO).
 pub(crate) fn fs_reply_check(w0: u64) -> Result<u64, Error> {
-    if w0 == ring::ERR { Err(Error::Failed) } else { Ok(w0) }
+    match w0 {
+        ring::ERR => Err(Error::Failed),
+        ERR_NOTFOUND => Err(Error::NotFound),
+        ERR_ISDIR => Err(Error::IsDir),
+        ERR_NOTDIR => Err(Error::NotDir),
+        ERR_EXISTS => Err(Error::Exists),
+        ERR_READONLY => Err(Error::ReadOnly),
+        ERR_BUSY => Err(Error::Busy),
+        ERR_INVALID => Err(Error::Invalid),
+        v => Ok(v),
+    }
 }
 
 /// Bound per il re-lookup runtime (Fase 14, init-restart): ~200 tick di spin

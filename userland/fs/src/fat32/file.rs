@@ -271,6 +271,44 @@ impl<B: BlockSource> Fat32<B> {
         }
         self.disk.write_sector(lba, &sec)
     }
+    /// Tronca il file a size 0 (Fase 40, O_TRUNC): libera la catena cluster
+    /// (ogni entry torna a 0 in tutte le copie FAT, come `free` — niente leak
+    /// a ogni `>` redirect) e azzera first_cluster+size nella dir-entry PER
+    /// ULTIMA (i dati restano sui settori ma irraggiungibili, come un unlink).
+    /// FSInfo bumpata dei cluster liberati. Ritorna false su catena corrotta
+    /// o errore IO (il chiamante tratta come rifiuto: mai truncate parziale
+    /// dichiarato riuscito — a walk interrotto la size resta invariata).
+    pub fn truncate(&self, info: &FileInfo) -> bool {
+        if info.is_dir {
+            return false;
+        }
+        let mut freed = 0i64;
+        let mut c = info.first_cluster;
+        // Bound come chain_tail (capacita' FAT): mai loop infiniti su catene
+        // circolari corrotte (a interruzione: false, size invariata).
+        let max = self.fat_size as usize * 128;
+        let mut steps = 0usize;
+        while c >= 2 {
+            steps += 1;
+            if steps > max {
+                return false;
+            }
+            let next = self.next_cluster(c);
+            if !self.set_fat_entry(c, 0) {
+                return false;
+            }
+            freed += 1;
+            match next {
+                Some(n) => c = n,
+                None => break,
+            }
+        }
+        if !self.patch_entry(info.dir_cluster, info.entry_off, 0, 0) {
+            return false;
+        }
+        let _ = self.fsinfo_bump(freed, 2);
+        true
+    }
     /// Scrive con crescita (Fase 20.3): se `offset+len` supera `size`, alloca
     /// i cluster mancanti (linkati subito), azzera la coda [size, new_end) e
     /// aggiorna la dir-entry. Ritorna i byte scritti; la size cresce solo di

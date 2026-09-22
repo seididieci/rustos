@@ -1528,10 +1528,18 @@ velordor/
         intatto). Vittoria: gate 5/5+7/7+53/53+shell, zero FAIL/PANIC/FAULT;
         `heap_out` piatto a 28160 (+256 vs 27904 = `image_hash` Fase 36,
         pre-esistente; il diff kernel di Fase 39 non alloca nulla).
-  - [ ] Fase 40 (P1, fd virtuali + redirect): `userland/posix` (tabella
-        `(chan,pid)→vfd`; open autorizzato + data plane diretto; `R_LSEEK`;
-        codici errore da userfs), shell `> >> < 2>`. Vittoria:
-        `echo hi > /f`, `run ./x > /o`, `ENOENT` distinto da `EROFS`.
+  - [ ] Fase 40 (P1, fd virtuali + redirect; ADR-0031): `userland/posix`
+        come skeleton supervisionato (register/ready/tabelle stub per la 42;
+        handoff P1 via memoria COW, nessun protocollo IPC nuovo), userfs con
+        codici errore per handler + `R_LSEEK` (0x1C, solo Local) + `O_TRUNC`/
+        `O_APPEND` + `R_DUP_*` (modello B: grant single-use con nonce via COW +
+        doppia attestazione `ps_info`/`peer_pid`, offset copiato, entry
+        indipendente; Remote→`Invalid`), `libr` con wrapper + layer stdio-vfd
+        (print/stdin instradati quando redirect attivo, fallback seriale),
+        shell `> >> < 2> 2>&1` (pipe/heredoc restano 42). Sotto-passi
+        40.0 costanti → 40.1 userfs → 40.2 libr → 40.3 posix+init →
+        40.4 shell → 40.5 t54+docs. Vittoria: `echo hi > /f`,
+        `run ./x > /o`, `ENOENT` distinto da `EROFS`.
   - [ ] Fase 41 (P2, parser shell, parallela alla 40): quoting/escape,
         `$VAR/$?/~`, `; && ||`, commenti, glob via `readdir`. Zero cambi IPC.
         Vittoria: `test-shell.py` esteso verde.

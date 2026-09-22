@@ -301,6 +301,92 @@ pub fn umount(target: &str) -> Result<(), Error> {
     }
 }
 
+/// `lseek(fd, off, whence)`: sposta l'offset di un fd LOCALE (Fase 40, P1).
+/// `whence` = `SEEK_SET`/`SEEK_CUR`/`SEEK_END`; `off` con segno (negativo
+/// lecito verso SEEK_END/CUR, mai sotto zero). Solo Local: su device remoti
+/// il server risponde `Invalid` (l'offset vive in userfs). Ritorna il nuovo
+/// offset. A rifiuto l'offset resta quello di prima (two-phase server-side).
+#[inline]
+pub fn lseek(fd: i64, off: i64, whence: u64) -> Result<u64, Error> {
+    session::fs_gate()?;
+    let w = [whence as u8];
+    if !ring::req_ring_write(R_LSEEK, fd as u64, off as u64, &w) {
+        return Err(Error::RingFull);
+    }
+    match session::fs_notify_result(FS_NOTIFY, || {
+        ring::req_ring_write(R_LSEEK, fd as u64, off as u64, &w)
+    }) {
+        Some((result, _, _)) => {
+            ring::resp_ring_consume(16);
+            session::fs_reply_check(result)
+        }
+        None => Err(Error::NotReady),
+    }
+}
+
+/// `dup_grant(fd)`: registra un grant single-use per handoff al figlio
+/// (Fase 40, modello B). Solo fd locali (Remote → `Invalid`). Ritorna il
+/// nonce da passare al figlio (via memoria COW pre-fork, mai via IPC).
+/// Il grant vive finche' il figlio lo riscuote, il parent lo cancella, o il
+/// parent muore (purge server-side: mai grant orfani riusabili).
+#[inline]
+pub fn dup_grant(fd: i64) -> Result<u64, Error> {
+    session::fs_gate()?;
+    if !ring::req_ring_write(R_DUP_GRANT, fd as u64, 0, &[]) {
+        return Err(Error::RingFull);
+    }
+    match session::fs_notify_result(FS_NOTIFY, || {
+        ring::req_ring_write(R_DUP_GRANT, fd as u64, 0, &[])
+    }) {
+        Some((result, _, _)) => {
+            ring::resp_ring_consume(16);
+            session::fs_reply_check(result)
+        }
+        None => Err(Error::NotReady),
+    }
+}
+
+/// `dup_claim(nonce)`: riscuote un grant (Fase 40). Solo il FIGLIO del
+/// registrante (doppia attestazione server-side: parentela + canale vivo).
+/// Ritorna un fd indipendente sul PROPRIO canale, con offset copiato
+/// (semantica handoff). Single-use: il grant viene consumato.
+#[inline]
+pub fn dup_claim(nonce: u64) -> Result<i64, Error> {
+    session::fs_gate()?;
+    let n = nonce.to_le_bytes();
+    if !ring::req_ring_write(R_DUP_CLAIM, 0, 0, &n) {
+        return Err(Error::RingFull);
+    }
+    match session::fs_notify_result(FS_NOTIFY, || ring::req_ring_write(R_DUP_CLAIM, 0, 0, &n)) {
+        Some((result, _, _)) => {
+            ring::resp_ring_consume(16);
+            session::fs_reply_check(result).map(|v| v as i64)
+        }
+        None => Err(Error::NotReady),
+    }
+}
+
+/// `dup_cancel(nonce)`: cancella un grant pendente (Fase 40, cleanup parent).
+/// Best-effort idempotente server-side (sempre Ok, anche a nonce assente);
+/// qui si mappa comunque la reply (morte server → `Err`, mai `Ok` bugiardo).
+#[inline]
+pub fn dup_cancel(nonce: u64) -> Result<(), Error> {
+    session::fs_gate()?;
+    let n = nonce.to_le_bytes();
+    if !ring::req_ring_write(R_DUP_CANCEL, 0, 0, &n) {
+        return Err(Error::RingFull);
+    }
+    match session::fs_notify_result(FS_NOTIFY, || {
+        ring::req_ring_write(R_DUP_CANCEL, 0, 0, &n)
+    }) {
+        Some((result, _, _)) => {
+            ring::resp_ring_consume(16);
+            session::fs_reply_check(result).map(|_| ())
+        }
+        None => Err(Error::NotReady),
+    }
+}
+
 /// `rights_drop(keep_mask, subtree)`: riduce i propri diritti sul canale
 /// verso userfs (Fase 17, self-restriction only). Solo shrink: il server fa
 /// AND con la mask corrente; il subtree puo' solo restringersi (widen =

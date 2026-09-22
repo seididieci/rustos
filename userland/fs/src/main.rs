@@ -41,6 +41,8 @@ mod ramfs;
 mod rights;
 mod rings;
 mod server;
+// Grant single-use per handoff fd al figlio (Fase 40, modello B).
+mod dup;
 
 // Geometria ring + errori IPC (A1): single source in `libr`.
 use libr::{
@@ -49,11 +51,16 @@ use libr::{
 };
 
 // ── Tag delle operazioni (nei frame del ring) ─────────────────────
-// Single source in `syscall-numbers` (Fase 17): include R_RIGHTS_DROP/GET.
+// Single source in `syscall-numbers` (Fase 17): include R_RIGHTS_DROP/GET;
+// Fase 40: R_LSEEK + R_DUP_*.
 use libr::{
     R_CLOSE, R_DELETE, R_MKDIR, R_MOUNT, R_OPEN, R_READ, R_READDIR, R_REGISTER, R_UMOUNT,
-    R_WRITE, R_RIGHTS_DROP, R_RIGHTS_GET, R_STAT,
+    R_WRITE, R_RIGHTS_DROP, R_RIGHTS_GET, R_STAT, R_LSEEK, R_DUP_GRANT, R_DUP_CLAIM,
+    R_DUP_CANCEL,
 };
+// Sentinelle di errore FS (Fase 40): i rifiuti tipizzati viaggiano qui invece
+// del generico ERR; il client li mappa in `posix::Error`.
+use libr::{ERR_NOTFOUND, ERR_ISDIR, ERR_NOTDIR, ERR_EXISTS, ERR_READONLY, ERR_BUSY, ERR_INVALID};
 // Tag DEV_* op + device types (DocsD: single source in `syscall-numbers`).
 use libr::{
     DEV_CLOSE, DEV_CONSOLE, DEV_KBD, DEV_KEYBOARD, DEV_NULL, DEV_OPEN, DEV_READ,

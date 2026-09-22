@@ -59,7 +59,9 @@ pub fn within_subtree(sub: &str, p: &str) -> bool {
             && p.starts_with(sub))
 }
 
-/// Bit ops richiesto dall'op_tag. None = sempre consentito (CLOSE, DROP, GET).
+/// Bit ops richiesto dall'op_tag. None = sempre consentito (CLOSE, DROP, GET,
+/// DUP_* — gestire i propri fd/grant non si nega; GRANT/CLAIM/CANCEL non
+/// toccano path e operano solo su fd propri o nonce propri).
 pub fn op_bit(op_tag: u32) -> Option<u32> {
     match op_tag {
         R_OPEN => Some(libr::RIGHTS_OPEN),
@@ -70,6 +72,7 @@ pub fn op_bit(op_tag: u32) -> Option<u32> {
         R_MOUNT => Some(libr::RIGHTS_MOUNT),
         R_UMOUNT => Some(libr::RIGHTS_UMOUNT),
         R_DELETE => Some(libr::RIGHTS_DELETE),
+        R_LSEEK => Some(libr::RIGHTS_SEEK),
         // R_STAT e' metadato di listing: stesso bit di READDIR (Fase 19.2).
         R_STAT => Some(libr::RIGHTS_READDIR),
         _ => None,

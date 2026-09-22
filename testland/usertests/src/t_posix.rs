@@ -1,27 +1,41 @@
 use super::*;
 
-// ── Fase 39 (P0, fondamenta posix) ─────────────────────────────────────
-// t53: (a) lookup/pid di Posix pre-server = NotFound pulito (nessun hang);
-// (b) tabella to_errno totale e fissata; (c) gate di registrazione sul nuovo
-// slot 8 via helper non-figlio-di-init (stesso probe di t50, che resta
-// intatto: qui si esercita service_from_disc(8) + braccio nome "posix").
+// ── Fase 39 (P0, fondamenta posix) + 40.3 (skeleton supervisionato) ───
+// t53: (a) Posix registrato e supervisionato: lookup riesce, pid noto e
+// figlio di init (lineage di supervisione, mai squat); (b) tabella to_errno
+// totale e fissata; (c) gate di registrazione sul nuovo slot 8 via helper
+// non-figlio-di-init (stesso probe di t50, che resta intatto: qui si esercita
+// service_from_disc(8) + braccio nome "posix").
+//
+// Nota storica: in Fase 39 (a) asseriva lookup/pid = NotFound (nessun server).
+// Dalla 40.3 il skeleton gira supervisionato: l'assenza sarebbe un FAIL.
 
 /// t53 — fondamenta posix: registry, errore nativo, gate.
 pub fn t_posix_foundation() -> bool {
     helpers::drain_stray();
-    // (a) Nessun server Posix registrato: lookup e pid falliscono puliti.
-    // Il lookup ha bound interno (ritenta a boot); pre-server deve dare
-    // NotFound, mai hang: il servizio non esiste e non esistera' in Fase 39.
-    match libr::service_lookup(libr::Service::Posix) {
-        Err(libr::Error::NotFound) => {}
-        other => {
-            println!("[usertests] t53: lookup Posix = {:?} (atteso Err(NotFound))", other);
+    // (a) Server Posix su e supervisionato: lookup riesce subito (niente
+    // bound da attendere: init lo spawna prima della suite) e il pid e'
+    // figlio di init (stessa lineage degli altri servizi).
+    let _ = match libr::service_lookup(libr::Service::Posix) {
+        Ok(chan) => chan,
+        Err(e) => {
+            println!("[usertests] t53: lookup Posix = Err({:?}) (atteso Ok)", e);
             return false;
         }
-    }
-    if libr::service_pid(libr::Service::Posix) != Err(libr::Error::NotFound) {
-        println!("[usertests] t53: service_pid Posix non NotFound");
-        return false;
+    };
+    let pid = match libr::service_pid(libr::Service::Posix) {
+        Ok(p) => p,
+        Err(e) => {
+            println!("[usertests] t53: service_pid Posix = Err({:?}) (atteso Ok)", e);
+            return false;
+        }
+    };
+    match libr::ps_info(pid as u32) {
+        Some(e) if e.parent == Some(1) => {}
+        other => {
+            println!("[usertests] t53: posix pid={} parent illegittimo: {:?}", pid, other.map(|e| e.parent));
+            return false;
+        }
     }
     // (b) UNICA traduzione nativo→errno: tabella totale e fissata. Se una
     // variante futura nasce senza braccio qui, non compila (match totale).

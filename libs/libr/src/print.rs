@@ -7,12 +7,17 @@ static mut LINE_BUF: [u8; LINE_BUF_SIZE] = [0u8; LINE_BUF_SIZE];
 static LINE_LEN: AtomicUsize = AtomicUsize::new(0);
 
 /// Svuota il line buffer scrivendo il contenuto su stdout (fd 1) tramite
-/// una singola syscall, poi resetta il buffer.
+/// una singola syscall, poi resetta il buffer. Con redirect attivo (Fase 40,
+/// `stdio::set_stdio`) va sul file invece che sul seriale, con fallback
+/// seriale a errore (l'output non si perde mai).
 pub fn flush() {
     let len = LINE_LEN.swap(0, Ordering::Relaxed);
     if len > 0 {
         let ptr = core::ptr::addr_of!(LINE_BUF) as *const u8;
-        sys::write(1, ptr, len);
+        let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
+        if !crate::stdio::route_out(bytes) {
+            sys::write(1, ptr, len);
+        }
     }
 }
 

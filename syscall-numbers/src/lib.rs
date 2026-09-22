@@ -277,6 +277,27 @@ pub const R_DELETE: u32 = 0x1A;
 /// Metadati del path (Fase 19.2, zero kernel): payload = path; risposta
 /// self-written `[size:8][kind:8]`, payload vuoto. Nessun fd coinvolto.
 pub const R_STAT: u32 = 0x1B;
+/// Sposta l'offset di un fd LOCALE (Fase 40, P1): w0 = fd, w1 = offset (bit
+/// reinterpretati come i64: negativi leciti per SEEK_END/SEEK_CUR), payload
+/// 1 byte = whence (SEEK_*). Solo Local (Remote → ERR_INVALID); dir →
+/// ERR_ISDIR. Ritorna il nuovo offset o una sentinella ERR_*. Nessun cambio
+/// se il check fallisce (two-phase: valida prima, applica dopo).
+pub const R_LSEEK: u32 = 0x1C;
+/// Grant single-use per handoff fd al figlio (Fase 40, modello B): w0 = fd
+/// locale del chiamante, nessun payload. Registra uno snapshot dell'entry
+/// (offset copiato al claim, entry indipendente) e ritorna un nonce u64 che
+/// il figlio usa in CLAIM. Solo Local (Remote → ERR_INVALID).
+pub const R_DUP_GRANT: u32 = 0x1D;
+/// Claim di un grant (Fase 40): payload `[nonce:8]`. Solo il FIGLIO del
+/// registrante (`ps_info(me).parent == registrant_pid` + `peer_pid` sul
+/// canale del registrante). Ritorna il nuovo fd o ERR_INVALID. Single-use:
+/// il grant viene consumato (retry = nuovo grant).
+pub const R_DUP_CLAIM: u32 = 0x1E;
+/// Cancella un grant pendente (Fase 40, cleanup parent): payload `[nonce:8]`.
+/// Best-effort idempotente: sempre Ok, anche se il nonce non esiste (mai
+/// wedge il parent nel cleanup dei job). Come CLOSE/DROP/GET, sempre
+/// consentito (nessun bit di diritto).
+pub const R_DUP_CANCEL: u32 = 0x1F;
 /// `kind` per R_STAT (Fase 19.2): bit 0-1 tipo + bit 7 readonly.
 pub const STAT_FILE: u64 = 0;
 pub const STAT_DIR: u64 = 1;
@@ -287,6 +308,19 @@ pub const STAT_READONLY: u64 = 0x80;
 /// esistere). Viaggia in w1 del frame R_OPEN (libr lo passava gia', il server
 /// lo ignorava).
 pub const O_CREAT: u32 = 0x200;
+/// Flag `open` (Fase 40, P1): azzera il file esistente (size → 0). Con O_CREAT
+/// su file esistente: tronca invece di aprire intatto. Viaggia in w1 di
+/// R_OPEN come O_CREAT (bit indipendenti, combinabili).
+pub const O_TRUNC: u32 = 0x400;
+/// Flag `open` (Fase 40, P1): ogni write accoda a fine file (l'offset del fd
+/// e' ignorato in scrittura; la lettura usa l'offset normale). Viaggia in w1
+/// di R_OPEN. Combinabile con O_CREAT (crea se manca, poi accoda).
+pub const O_APPEND: u32 = 0x800;
+/// Origini di R_LSEEK (Fase 40, P1): dall'inizio, dal corrente, dalla fine.
+/// Payload 1 byte del frame R_LSEEK; altri valori → ERR_INVALID.
+pub const SEEK_SET: u64 = 0;
+pub const SEEK_CUR: u64 = 1;
+pub const SEEK_END: u64 = 2;
 /// Un driver registra il proprio prefix di mount.
 pub const R_REGISTER: u32 = 0x30;
 /// Riduce i propri diritti sul canale (Fase 17, self-restriction only):
@@ -310,7 +344,25 @@ pub const RIGHTS_MOUNT: u32 = 0x20;
 pub const RIGHTS_UMOUNT: u32 = 0x40;
 /// Cancellazione file/dir vuote (Fase 18.2, `R_DELETE`).
 pub const RIGHTS_DELETE: u32 = 0x80;
-pub const RIGHTS_ALL: u32 = 0xFF;
+/// Spostamento offset via R_LSEEK (Fase 40, P1): senza, lseek e' negato ma
+/// read/write sull'offset corrente restano (bit indipendenti).
+pub const RIGHTS_SEEK: u32 = 0x100;
+pub const RIGHTS_ALL: u32 = 0x1FF;
+
+// ── Sentinelle di errore FS (Fase 40, P1) ─────────────────────────────
+// userfs distingue i rifiuti invece del generico ERR: il client li mappa
+// nelle varianti di dominio di `libr::posix::Error` (ADR-0030: i numeri POSIX
+// restano solo in `to_errno`, mai nel kernel/wire). Valori ALTI da `!0` a
+// scendere, MAI `-errno`: `-2` colliderebbe con ERR_NOHANDSHAKE (retry
+// handshake) e `-1` con ERR generico. `R_DUP_*` usa solo ERR_INVALID
+// (capability, mai path: un grant o e' valido o non esiste).
+pub const ERR_NOTFOUND: u64 = !0u64 - 2;
+pub const ERR_ISDIR: u64 = !0u64 - 3;
+pub const ERR_NOTDIR: u64 = !0u64 - 4;
+pub const ERR_EXISTS: u64 = !0u64 - 5;
+pub const ERR_READONLY: u64 = !0u64 - 6;
+pub const ERR_BUSY: u64 = !0u64 - 7;
+pub const ERR_INVALID: u64 = !0u64 - 8;
 
 // ── Costanti condivise kernel/userland ─────────────────────────────────────
 // Pagina fisica scratch riservata dal kernel all'avvio (phys_mem::reserve):

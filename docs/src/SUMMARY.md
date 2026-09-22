@@ -57,3 +57,4 @@
 - [ADR-0028: `exec` in-place + shell che lancia programmi](./adr/0028-exec-in-place.md)
 - [ADR-0029: ATA DMA + IRQ](./adr/0029-ata-dma-irq.md)
 - [ADR-0030: Fondamenta posix (Fase 39)](./adr/0030-posix-fondamenta.md)
+- [ADR-0031: fd handoff + redirect file (disegno Fase 40)](./adr/0031-fd-handoff-redirect.md)

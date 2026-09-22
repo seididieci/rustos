@@ -67,6 +67,9 @@ fn real_main(_sp: u64) -> ! {
     // Diritti per-canale (Fase 17): entry assente = {ALL, root}.
     let mut rights: BTreeMap<u64, rights::ChanRights> = BTreeMap::new();
 
+    // Grant single-use per handoff fd (Fase 40, modello B): nonce → snapshot.
+    let mut grants = dup::GrantTable::new();
+
     // Pre-populate: file di esempio
     if let Some(data) = fs.create_file("hello.txt") {
         data.extend_from_slice(b"Hello from Velordor ramfs!\n");
@@ -222,6 +225,10 @@ fn real_main(_sp: u64) -> ! {
             // Diritti effimeri (Fase 17): col peer muore anche la sua riga —
             // al re-handshake riparte da default {ALL, root} (limite dichiarato).
             rights.remove(&chan);
+            // Grant orfani del morto (Fase 40): un pid riusato non deve poter
+            // riscuotere grant altrui (la doppia attestazione al claim chiude
+            // comunque la race, ma senza residui non c'e' race).
+            grants.purge_registrant(chan);
             // Se il morto era un driver, i suoi mount tornano registrabili:
             // lo stale, primo in lista, avvelenerebbe resolve_mount anche
             // dopo una re-registrazione dello stesso prefix.
@@ -284,7 +291,11 @@ fn real_main(_sp: u64) -> ! {
                 w0 as usize
             }
             R_WRITE | R_RIGHTS_DROP => w1 as usize,
-            R_READ | R_CLOSE | R_RIGHTS_GET => 0,
+            // LSEEK: payload 1 byte = whence (fd in w0, offset in w1).
+            R_LSEEK => 1,
+            // CLAIM/CANCEL: payload `[nonce:8]`; GRANT solo registri (w0 = fd).
+            R_DUP_CLAIM | R_DUP_CANCEL => 8,
+            R_READ | R_CLOSE | R_RIGHTS_GET | R_DUP_GRANT => 0,
             _ => {
                 // Tag impossibile: scarta tutto e riallinea (vedi req_resync).
                 rings::req_resync();
@@ -321,8 +332,8 @@ fn real_main(_sp: u64) -> ! {
         // avanza la tail di (20 + w1) esatti. Qui scriviamo solo il result frame.
         if op_tag == R_WRITE && ftable.get_remote(chan, w0 as u32).is_some() {
             let result = handlers::handle_write_remote(&ftable, &rings, chan, w0 as u32, w1 as usize);
-            rings::resp_ring_write(mount::to_reply(result), 0, &[]);
-            let _ = libr::reply(0, mount::to_reply(result), 0);
+            rings::resp_ring_write(mount::to_reply_res(result), 0, &[]);
+            let _ = libr::reply(0, mount::to_reply_res(result), 0);
             continue;
         }
 
@@ -377,13 +388,16 @@ fn real_main(_sp: u64) -> ! {
 
         // Dispatch in base all'op_tag del ring. Ogni handler riceve gia' il
         // payload estratto: il frame e' stato interamente consumato sopra.
-        let result = match op_tag {
+        // Errori tipizzati (Fase 40): gli handler ritornano Result<u64, u64>
+        // (Ok = valore, Err = sentinella ERR_*); `to_reply_res` la riversa
+        // nel reply IPC e nel response frame.
+        let result: Result<u64, u64> = match op_tag {
             R_OPEN => {
                 match core::str::from_utf8(&payload) {
                     // w1 del frame R_OPEN = flags (O_CREAT, w0 = len path):
                     // il server li ignorava (creava sempre) — ora POSIX.
                     Ok(path) => handlers::handle_open(&mut fs, &mut ftable, &mut fat_mounts, &mounts, chan, w1, path, &mut fat_gen),
-                    Err(_) => None,
+                    Err(_) => Err(ERR_INVALID),
                 }
             }
 
@@ -403,35 +417,35 @@ fn real_main(_sp: u64) -> ! {
                 match core::str::from_utf8(&payload) {
                     Ok("") | Ok("/") => handlers::handle_readdir(&fs, &mut fat_mounts, &mounts, &rings, chan, "/", &mut fat_gen),
                     Ok(path) => handlers::handle_readdir(&fs, &mut fat_mounts, &mounts, &rings, chan, path, &mut fat_gen),
-                    Err(_) => None,
+                    Err(_) => Err(ERR_INVALID),
                 }
             }
 
             R_MKDIR => {
                 match core::str::from_utf8(&payload) {
                     Ok(path) => handlers::handle_mkdir(&mut fs, &fat_mounts, path),
-                    Err(_) => None,
+                    Err(_) => Err(ERR_INVALID),
                 }
             }
 
             R_MOUNT => {
                 match core::str::from_utf8(&payload) {
                     Ok(spec) => handlers::handle_mount(&mut fat_mounts, spec, &mut fat_gen),
-                    Err(_) => None,
+                    Err(_) => Err(ERR_INVALID),
                 }
             }
 
             R_UMOUNT => {
                 match core::str::from_utf8(&payload) {
                     Ok(target) => handlers::handle_umount(&mut fat_mounts, &ftable, target, &mut fat_gen),
-                    Err(_) => None,
+                    Err(_) => Err(ERR_INVALID),
                 }
             }
 
             R_DELETE => {
                 match core::str::from_utf8(&payload) {
                     Ok(path) => handlers::handle_delete(&mut fs, &mut fat_mounts, &mounts, path),
-                    Err(_) => None,
+                    Err(_) => Err(ERR_INVALID),
                 }
             }
 
@@ -439,17 +453,43 @@ fn real_main(_sp: u64) -> ! {
                 match core::str::from_utf8(&payload) {
                     Ok("") | Ok("/") => handlers::handle_stat(&fs, &mut fat_mounts, &mounts, &rings, chan, "/", &mut fat_gen),
                     Ok(path) => handlers::handle_stat(&fs, &mut fat_mounts, &mounts, &rings, chan, path, &mut fat_gen),
-                    Err(_) => None,
+                    Err(_) => Err(ERR_INVALID),
                 }
             }
 
-            R_RIGHTS_DROP => rights::handle_rights_drop(&mut rights, chan, w0 as u32, &payload),
+            R_LSEEK => {
+                // w0 = fd, w1 = offset (bit reinterpretati come i64),
+                // payload[0] = whence (expect = 1 garantisce il byte).
+                let off = w1 as i64;
+                let whence = payload.first().copied().unwrap_or(0xFF) as u64;
+                handlers::handle_lseek(&fs, &mut ftable, &mut fat_mounts, chan, w0 as u32, off, whence, &mut fat_gen)
+            }
 
-            R_RIGHTS_GET => rights::handle_rights_get(&rights, &rings, chan),
+            R_DUP_GRANT => {
+                dup::handle_grant(&ftable, &mut grants, chan, w0 as u32)
+            }
+
+            R_DUP_CLAIM => {
+                match payload.first_chunk::<8>() {
+                    Some(nonce) => dup::handle_claim(&mut ftable, &mut grants, chan, u64::from_le_bytes(*nonce)),
+                    None => Err(ERR_INVALID),
+                }
+            }
+
+            R_DUP_CANCEL => {
+                match payload.first_chunk::<8>() {
+                    Some(nonce) => dup::handle_cancel(&mut grants, chan, u64::from_le_bytes(*nonce)),
+                    None => Err(ERR_INVALID),
+                }
+            }
+
+            R_RIGHTS_DROP => rights::handle_rights_drop(&mut rights, chan, w0 as u32, &payload).ok_or(ERR),
+
+            R_RIGHTS_GET => rights::handle_rights_get(&rights, &rings, chan).ok_or(ERR),
 
             _ => {
                 // Tag sconosciuto: frame gia' consumato sopra, ritorna errore.
-                None
+                Err(ERR)
             }
         };
 
@@ -466,10 +506,10 @@ fn real_main(_sp: u64) -> ! {
                 // Non fare nulla — il result e' gia' nel frame.
             }
             _ => {
-                rings::resp_ring_write(mount::to_reply(result), 0, &[]);
+                rings::resp_ring_write(mount::to_reply_res(result), 0, &[]);
             }
         }
 
-        let _ = libr::reply(0, mount::to_reply(result), 0);
+        let _ = libr::reply(0, mount::to_reply_res(result), 0);
     }
 }
