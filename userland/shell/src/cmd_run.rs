@@ -102,17 +102,12 @@ fn print_job(idx: usize, j: &Job) {
 /// la spec nell'ultimo argv (magic); lo startup del figlio fa claim +
 /// `set_stdio` (tutti i programmi via `entry!`, zero codice per-target).
 /// `2>&1` = alias (un grant solo, voce `Alias` nella spec).
-pub(crate) fn cmd_run(args: &[&str], redirs: &[redirect::Redir]) {
+pub(crate) fn cmd_run(args: &[&str], redirs: &[redirect::Redir], bg: bool) -> i64 {
     if args.len() < 2 {
         term::term_err("run: usage: run <path> [args...] [&]\n");
-        return;
+        return 1;
     }
-    let bg = args.last() == Some(&"&");
-    let end = if bg { args.len() - 1 } else { args.len() };
-    if end < 2 {
-        term::term_err("run: usage: run <path> [args...] [&]\n");
-        return;
-    }
+    let end = args.len();
     let path = cwd::resolve(args[1]);
     // Carica + serializza nel PARENT (il figlio non puo' piu' usare l'FS).
     let img = match libr::load_file(&path) {
@@ -121,7 +116,7 @@ pub(crate) fn cmd_run(args: &[&str], redirs: &[redirect::Redir]) {
             term::term_err("run: cannot load ");
             term::term_err(args[1]);
             term::term_err("\n");
-            return;
+            return 1;
         }
     };
     let argv: Vec<&str> = args[1..end].to_vec();
@@ -135,7 +130,7 @@ pub(crate) fn cmd_run(args: &[&str], redirs: &[redirect::Redir]) {
             Ok(f) => f,
             Err((t, e)) => {
                 redirect::report_open_error(&t, e);
-                return;
+                return 1;
             }
         };
         // Un grant per fd distinto, in ordine di slot; l'alias riusa l'fd
@@ -158,7 +153,7 @@ pub(crate) fn cmd_run(args: &[&str], redirs: &[redirect::Redir]) {
                     redirect::close_all(fds);
                     cancel_redir(&grants);
                     term::term_err("run: redirect grant failed\n");
-                    return;
+                    return 1;
                 }
             }
         }
@@ -169,7 +164,7 @@ pub(crate) fn cmd_run(args: &[&str], redirs: &[redirect::Redir]) {
             redirect::close_all(fds);
             cancel_redir(&grants);
             term::term_err("run: argv troppo lunghi\n");
-            return;
+            return 1;
         }
     };
     let mut cmd = String::new();
@@ -185,6 +180,7 @@ pub(crate) fn cmd_run(args: &[&str], redirs: &[redirect::Redir]) {
             redirect::close_all(fds);
             cancel_redir(&grants);
             term::term_err("run: fork failed\n");
+            1
         }
         Ok(libr::ForkResult::Child { .. }) => {
             // FS avvelenato qui: solo exec (byte COW-condivisi in lettura,
@@ -217,13 +213,14 @@ pub(crate) fn cmd_run(args: &[&str], redirs: &[redirect::Redir]) {
                 s.push(']');
                 term::term_print(&s);
                 term::term_print("\n");
-                return;
+                return 0;
             }
             let idx = jobs().len() - 1;
             match wait_job(chan) {
                 Some(0) => {
                     cancel_redir(&jobs()[idx].redir_grants);
                     jobs().remove(idx);
+                    0
                 }
                 Some(code) => {
                     cancel_redir(&jobs()[idx].redir_grants);
@@ -233,9 +230,11 @@ pub(crate) fn cmd_run(args: &[&str], redirs: &[redirect::Redir]) {
                     s.push(']');
                     term::term_print(&s);
                     term::term_print("\n");
+                    code
                 }
                 None => {
                     term::term_err("run: wait failed\n");
+                    1
                 }
             }
         }
@@ -244,33 +243,34 @@ pub(crate) fn cmd_run(args: &[&str], redirs: &[redirect::Redir]) {
 
 /// `jobs`: tabella dei job (fresca: prima drena le morti senza bloccare).
 /// I finiti restano finche' `wait` non li rimuove (stato `done` visibile).
-pub(crate) fn cmd_jobs() {
+pub(crate) fn cmd_jobs() -> i64 {
     poll_reap();
     if jobs().is_empty() {
         term::term_print("no jobs\n");
-        return;
+        return 0;
     }
     for (i, j) in jobs().iter().enumerate() {
         print_job(i, j);
     }
+    0
 }
 
 /// `wait [pid]`: attende i job (tutti, o quello col pid) e li rimuove,
 /// stampando `pid <P>: exit <C>` per ciascuno.
-pub(crate) fn cmd_wait(args: &[&str]) {
+pub(crate) fn cmd_wait(args: &[&str]) -> i64 {
     if args.len() >= 2 {
         let pid = match cmd_info::parse_i64(args[1]) {
             Some(p) => p,
             None => {
                 term::term_err("wait: bad pid\n");
-                return;
+                return 1;
             }
         };
         let idx = match jobs().iter().position(|j| j.pid == pid) {
             Some(i) => i,
             None => {
                 term::term_err("wait: no such job\n");
-                return;
+                return 1;
             }
         };
         // Se e' gia' done (visto da jobs), niente attesa: solo report+remove
@@ -283,7 +283,7 @@ pub(crate) fn cmd_wait(args: &[&str]) {
         }
         let j = jobs().remove(idx);
         report_waited(&j);
-        return;
+        return 0;
     }
     // Tutti: in ordine di tabella (i done saltano l'attesa via poll).
     poll_reap();
@@ -296,6 +296,7 @@ pub(crate) fn cmd_wait(args: &[&str]) {
         let j = jobs().remove(0);
         report_waited(&j);
     }
+    0
 }
 
 /// Stampa `pid <P>: exit <C>` (o `wait failed` se la wait non e' tornata).

@@ -1,8 +1,37 @@
 use super::*;
 
-pub(crate) fn cmd_help() {
-    term::term_print("Commands: ls [-l] [path], cat <file>, touch <file>, mkdir <dir>, mount <src> <tgt>, umount <tgt>, echo [args], clear, wc <file>, hexdump <file>, kill <pid|service>, cd [dir], pwd, cp <src> <dst>, mv <src> <dst>, rm <file>, rmdir <dir>, ps, run <path> [args...] [&], jobs, wait [pid], exit, help\n");
+pub(crate) fn cmd_help() -> i64 {
+    term::term_print("Commands: ls [-l] [path], cat <file>, touch <file>, mkdir <dir>, mount <src> <tgt>, umount <tgt>, echo [args], clear, wc <file>, hexdump <file>, kill <pid|service>, cd [dir], pwd, cp <src> <dst>, mv <src> <dst>, rm <file>, rmdir <dir>, ps, export [NAME=val], run <path> [args...] [&], jobs, wait [pid], exit [code], help\n");
     term::term_print("Redirect (Fase 40.4, bash-like): > >> < 2> 2>> 2>&1 — ultimo vince per slot; cat/wc/hexdump senza file leggono stdin\n");
+    term::term_print("Parser (Fase 41): '...' \"...\" \\ # ; && || & $VAR ${VAR} $? $$ ~ glob * ?\n");
+    0
+}
+
+/// `export [NAME=val ...]` (Fase 41): set persistente o lista delle variabili.
+pub(crate) fn cmd_export(args: &[&str]) -> i64 {
+    if args.len() < 2 {
+        for (k, v) in parser::vars_list() {
+            let mut s = String::from("export ");
+            s.push_str(&k);
+            s.push('=');
+            s.push_str(&v);
+            term::term_print(&s);
+            term::term_print("\n");
+        }
+        return 0;
+    }
+    for a in &args[1..] {
+        match a.split_once('=') {
+            Some((name, val)) if parser::valid_name(name) => parser::vars_set(name, val),
+            _ => {
+                term::term_err("export: bad name=value: ");
+                term::term_err(a);
+                term::term_err("\n");
+                return 1;
+            }
+        }
+    }
+    0
 }
 
 /// Accoda `s` paddata a `width` con spazi (colonne `ps`, niente format!).
@@ -18,7 +47,7 @@ fn push_padded(out: &mut String, s: &str, width: usize) {
 /// `ps` tabellare stile Linux (Fase 19.1): PID NAME PRIO STATE TIME PARENT.
 /// STATE = run (se stesso) / ready / recv / reply / blocked; TIME = tick
 /// consumati (10 ms); PARENT = pid del padre ("-" per init/idle).
-pub(crate) fn cmd_ps() {
+pub(crate) fn cmd_ps() -> i64 {
     let me = libr::getpid() as u32;
     let mut out = String::from("PID  NAME           PRIO STATE TIME PARENT\n");
     for pid in 0..libr::PS_SCAN_MAX {
@@ -57,11 +86,12 @@ pub(crate) fn cmd_ps() {
         out.push('\n');
     }
     term::term_print(&out);
+    0
 }
 
 // ── Utility Fase 18.1 ───────────────────────────────────────────────
 
-pub(crate) fn cmd_echo(args: &[&str]) {
+pub(crate) fn cmd_echo(args: &[&str]) -> i64 {
     // Una sola write per riga: ogni term_print e' un IPC + una riga di
     // seriale col timestamp — i pezzi non sarebbero mai contigui nel log.
     let mut s = String::new();
@@ -73,11 +103,13 @@ pub(crate) fn cmd_echo(args: &[&str]) {
     }
     term::term_print(&s);
     term::term_print("\n");
+    0
 }
 
-pub(crate) fn cmd_clear() {
+pub(crate) fn cmd_clear() -> i64 {
     // Form feed: la console pulisce tutto e torna home (Fase 18.1).
     term::term_write_bytes(b"\x0c");
+    0
 }
 /// Accoda un u64 in decimale (niente `format!`: no_std minimale).
 pub(crate) fn push_u64(s: &mut String, mut v: u64) {
@@ -97,13 +129,13 @@ pub(crate) fn push_u64(s: &mut String, mut v: u64) {
     }
 }
 
-pub(crate) fn cmd_wc(args: &[&str]) {
+pub(crate) fn cmd_wc(args: &[&str]) -> i64 {
     // Senza file: stdin redirectato (`<`, come `cat`); conta i byte stdin e
     // stampa con nome `-` (convenzione). Non redirectato = `missing file`.
     if args.len() < 2 {
         if libr::stdin_fd() < 0 {
             term::term_err("wc: missing file\n");
-            return;
+            return 1;
         }
         let data = term::term_read_stdin();
         let (mut lines, mut words, mut bytes) = (0u64, 0u64, 0u64);
@@ -129,14 +161,14 @@ pub(crate) fn cmd_wc(args: &[&str]) {
         s.push_str(" -");
         term::term_print(&s);
         term::term_print("\n");
-        return;
+        return 0;
     }
     let path = cwd::resolve(args[1]);
     let Ok(fd) = libr::open(&path, 0) else {
         term::term_err("wc: cannot open ");
         term::term_err(args[1]);
         term::term_err("\n");
-        return;
+        return 1;
     };
     let mut buf = vec![0u8; 4096];
     let (mut lines, mut words, mut bytes) = (0u64, 0u64, 0u64);
@@ -173,6 +205,7 @@ pub(crate) fn cmd_wc(args: &[&str]) {
     s.push_str(args[1]);
     term::term_print(&s);
     term::term_print("\n");
+    0
 }
 
 fn hex_of(nib: u8) -> u8 {
@@ -183,12 +216,12 @@ fn push_hex_byte(s: &mut String, b: u8) {
     s.push(hex_of(b) as char);
 }
 
-pub(crate) fn cmd_hexdump(args: &[&str]) {
+pub(crate) fn cmd_hexdump(args: &[&str]) -> i64 {
     // Senza file: stdin redirectato (`<`, come `cat`/`wc`).
     if args.len() < 2 {
         if libr::stdin_fd() < 0 {
             term::term_err("hexdump: missing file\n");
-            return;
+            return 1;
         }
         let data = term::term_read_stdin();
         let mut off = 0usize;
@@ -206,14 +239,14 @@ pub(crate) fn cmd_hexdump(args: &[&str]) {
             term::term_print("\n");
             off += chunk.len();
         }
-        return;
+        return 0;
     }
     let path = cwd::resolve(args[1]);
     let Ok(fd) = libr::open(&path, 0) else {
         term::term_err("hexdump: cannot open ");
         term::term_err(args[1]);
         term::term_err("\n");
-        return;
+        return 1;
     };
     let mut buf = vec![0u8; 16];
     let mut off = 0usize;
@@ -240,6 +273,7 @@ pub(crate) fn cmd_hexdump(args: &[&str]) {
         off += n;
     }
     let _ = libr::close(fd);
+    0
 }
 
 /// Parsa un intero decimale (usato anche da `wait` in cmd_run).
@@ -277,10 +311,10 @@ fn service_by_name(name: &str) -> Option<libr::Service> {
         _ => None,
     }
 }
-pub(crate) fn cmd_kill(args: &[&str]) {
+pub(crate) fn cmd_kill(args: &[&str]) -> i64 {
     if args.len() < 2 {
         term::term_err("kill: usage: kill <pid|service>\n");
-        return;
+        return 1;
     }
     let pid = match parse_i64(args[1]) {
         Some(p) => p,
@@ -292,16 +326,18 @@ pub(crate) fn cmd_kill(args: &[&str]) {
                 Ok(p) => p,
                 Err(_) => {
                     term::term_err("kill: service not running\n");
-                    return;
+                    return 1;
                 }
             },
             None => {
                 term::term_err("kill: unknown pid/service\n");
-                return;
+                return 1;
             }
         },
     };
     if libr::kill(pid, 1).is_err() {
         term::term_err("kill: failed (parent/init only, or init/self/unknown?)\n");
+        return 1;
     }
+    0
 }

@@ -1,149 +1,17 @@
 use super::*;
 
-// ── Mini-lexer redirect (40.4a) + apertura (40.4b/c/d) ─────────────────
-// Parsing puro + `open_all` per builtin/run: apre TUTTI i target IN ORDINE
-// (bash-like: a pari slot vince l'ULTIMO, i precedenti risultano comunque
-// creati/troncati; `2>&1` aliasa lo slot 2 sull'fd corrente dello slot 1,
-// zero open). `<` apre read-only (file deve esistere).
+// ── Redirect: applicazione (Fase 40.4) ─────────────────────────────────
+// Il parsing (quote-aware, Fase 41) vive in `parser.rs`: qui solo l'apertura
+// e la chiusura degli fd. `open_all` apre TUTTI i target IN ORDINE (bash-like:
+// a pari slot vince l'ULTIMO, i precedenti risultano comunque creati/troncati;
+// `2>&1` aliasa lo slot 2 sull'fd corrente dello slot 1, zero open). `<` apre
+// read-only (file deve esistere).
 
 pub(crate) struct Redir {
     pub(crate) slot: u8, // 0 = stdin, 1 = stdout, 2 = stderr
     pub(crate) append: bool,
     pub(crate) dup_to_1: bool, // true solo per `2>&1` (alias, nessun target)
     pub(crate) target: String,
-}
-
-pub(crate) enum ParseError {
-    MissingTarget(&'static str),
-}
-
-/// Tokenizza: whitespace separa, `>` `<` `&` sono sempre confini di token,
-/// con unita' multi-char `>>` `2>` `2>>` `2>&1`. `&` da solo (background)
-/// resta token a se' anche se attaccato (`foo&` → `foo`, `&`).
-fn tokenize(s: &str) -> Vec<String> {
-    let b = s.as_bytes();
-    let mut toks = Vec::new();
-    let mut i = 0;
-    while i < b.len() {
-        if b[i].is_ascii_whitespace() {
-            i += 1;
-            continue;
-        }
-        // `2>&1` prima di ogni altra regola (contiene `&`).
-        if b[i] == b'2' && i + 3 < b.len() + 1 && s[i..].starts_with("2>&1") {
-            toks.push(String::from("2>&1"));
-            i += 4;
-            continue;
-        }
-        // `2>` / `2>>` attaccati.
-        if b[i] == b'2' && i + 1 < b.len() && b[i + 1] == b'>' {
-            if i + 2 < b.len() && b[i + 2] == b'>' {
-                toks.push(String::from("2>>"));
-                i += 3;
-            } else {
-                toks.push(String::from("2>"));
-                i += 2;
-            }
-            continue;
-        }
-        if b[i] == b'>' {
-            if i + 1 < b.len() && b[i + 1] == b'>' {
-                toks.push(String::from(">>"));
-                i += 2;
-            } else {
-                toks.push(String::from(">"));
-                i += 1;
-            }
-            continue;
-        }
-        if b[i] == b'<' {
-            toks.push(String::from("<"));
-            i += 1;
-            continue;
-        }
-        if b[i] == b'&' {
-            toks.push(String::from("&"));
-            i += 1;
-            continue;
-        }
-        // Parola normale: fino a whitespace o `>` `<` `&` (con lookahead
-        // `2>&1` gia' gestito sopra all'inizio token; dentro parola `&`
-        // chiude comunque: `foo&` → `foo`, `&`).
-        let start = i;
-        while i < b.len()
-            && !b[i].is_ascii_whitespace()
-            && b[i] != b'>'
-            && b[i] != b'<'
-            && b[i] != b'&'
-        {
-            // `2>` attaccato a parola (`hi2>e` non supportato come operatore
-            // unico: troppo magico; solo `2>` a inizio token vale).
-            i += 1;
-        }
-        // Parola vuota impossibile qui (almeno un byte consumato).
-        if let Ok(w) = core::str::from_utf8(&b[start..i]) {
-            toks.push(String::from(w));
-        }
-    }
-    toks
-}
-
-fn is_op(t: &str) -> bool {
-    matches!(t, ">" | ">>" | "<" | "2>" | "2>>" | "2>&1")
-}
-
-/// Parsa una riga in `(argv, redirs)`. `argv` include `&` finale (background,
-/// gestito da `cmd_run` come prima). I redirect multipli sullo stesso slot
-/// sono conservati TUTTI in ordine (ultimo vince in esecuzione).
-pub(crate) fn parse(line: &str) -> Result<(Vec<String>, Vec<Redir>), ParseError> {
-    let toks = tokenize(line);
-    let mut argv = Vec::new();
-    let mut redirs = Vec::new();
-    let mut i = 0;
-    while i < toks.len() {
-        let t = toks[i].as_str();
-        if t == "2>&1" {
-            redirs.push(Redir {
-                slot: 2,
-                append: false,
-                dup_to_1: true,
-                target: String::new(),
-            });
-            i += 1;
-            continue;
-        }
-        let (slot, append) = match t {
-            ">" => (1, false),
-            ">>" => (1, true),
-            "<" => (0, false),
-            "2>" => (2, false),
-            "2>>" => (2, true),
-            _ => {
-                argv.push(String::from(t));
-                i += 1;
-                continue;
-            }
-        };
-        // Operatore: serve un target parola-non-operatore dopo.
-        if i + 1 >= toks.len() || is_op(toks[i + 1].as_str()) {
-            let op: &'static str = match t {
-                ">" => ">",
-                ">>" => ">>",
-                "<" => "<",
-                "2>" => "2>",
-                _ => "2>>",
-            };
-            return Err(ParseError::MissingTarget(op));
-        }
-        redirs.push(Redir {
-            slot,
-            append,
-            dup_to_1: false,
-            target: String::from(toks[i + 1].as_str()),
-        });
-        i += 2;
-    }
-    Ok((argv, redirs))
 }
 
 /// Chiude l'fd dello slot se non condiviso con altri slot (alias `2>&1`).

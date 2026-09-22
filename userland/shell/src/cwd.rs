@@ -56,9 +56,10 @@ pub(crate) fn resolve(path: &str) -> String {
     normalize(&s)
 }
 
-pub(crate) fn cmd_cd(args: &[&str]) {    if args.len() < 2 {
+pub(crate) fn cmd_cd(args: &[&str]) -> i64 {
+    if args.len() < 2 {
         cwd_set(String::from("/"));
-        return;
+        return 0;
     }
     let path = resolve(args[1]);
     // Sonda senza effetti collaterali: readdir fallisce su file/inesistenti
@@ -68,12 +69,14 @@ pub(crate) fn cmd_cd(args: &[&str]) {    if args.len() < 2 {
         term::term_err("cd: no such directory: ");
         term::term_err(args[1]);
         term::term_err("\n");
-        return;
+        return 1;
     }
     cwd_set(path);
+    0
 }
 
-pub(crate) fn cmd_pwd() {
+pub(crate) fn cmd_pwd() -> i64 {
     term::term_print(&cwd_get());
     term::term_print("\n");
+    0
 }
