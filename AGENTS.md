@@ -62,6 +62,12 @@ cd docs && mdbook serve
 6. **Comments** solo quando necessario (il codice deve essere auto-esplicativo)
 7. **Naming**: snake_case per funzioni/variabili, PascalCase per tipi
 8. **Error handling**: usare `Result<T, E>` dove possibile, `unwrap()` solo in init
+9. **Stratificazione `libr` (ADR-0025)**: meccanismo (`sys/ipc/heap/task/...`,
+   neutro) vs personalita' POSIX al bordo (`posix::to_errno`, `stdio`,
+   redirect) vs misti dichiarati (`fs/spawn/print/args`); `Error` vive nel
+   modulo neutro `error`. REGOLA: il meccanismo non usa mai `posix::` (vale
+   anche per il codice nuovo: non stare in due scatole — verifica con
+   `rg "posix::" libs/libr/src`).
 
 ## File Structure
 

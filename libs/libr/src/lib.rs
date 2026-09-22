@@ -96,6 +96,21 @@ pub use syscall_numbers::{
     DEV_READDIR, DEV_WRITE, DEV_ZERO,
 };
 
+// ── Stratificazione meccanismo / personalita' (ADR-0025, ADR-0015) ───
+// `libr` ospita strati che non si mescolano verso il basso:
+// - MECCANISMO (neutro, usabile da chiunque): sys, ipc, heap/scratch, task
+//   (async-first e' nativo), pio/pci, tsc, test, error (vocabolario condiviso).
+// - PERSONALITA' POSIX (traduzione al bordo, solo userspace): posix
+//   (`to_errno` + `E*`), stdio (tabelle vfd + redirect), RedirEntry/
+//   serialize_argv_redir/stdio_restore (handoff redirect).
+// - MISTI dichiarati (nomi POSIX sopra meccanismo nativo — non forzati in una
+//   scatola sola): fs, spawn (`spawn_image`/`exec` meccanismo, `fork`
+//   confinato POSIX), print, args (convenzione dati neutra al servizio della
+//   personalita').
+// REGOLA: i moduli meccanismo non usano `posix::` (verifica con
+// `rg "posix::" libs/libr/src`: solo posix.rs + usi al bordo). La traduzione
+// vive solo al bordo; una seconda personalita' riusa il meccanismo invariato.
+
 /// Allocatore globale on-demand (free-list + `sbrk`): unico per tutto il
 /// userland. Vive qui cosi' ogni binario che linka `libr` lo usa senza
 /// duplicare codice.
@@ -122,11 +137,16 @@ pub mod pci;
 /// Harness condiviso per la test suite (A4: traversal readdir).
 pub mod test;
 
+/// Vocabolario condiviso di tutti i wrapper (Fase 39, ADR-0030): vive in un
+/// modulo neutro perche' meccanismo e personalita' lo usano senza distinzione.
+/// La traduzione in errno sta SOLO in `posix::to_errno` (bordo).
+pub mod error;
+
 /// Errore nativo del sistema + traduzione errno al bordo POSIX (Fase 39,
 /// fondamenta posix, ADR-0030): i numeri POSIX non entrano mai nel kernel/wire.
 pub mod posix;
 
-pub use posix::Error;
+pub use error::Error;
 
 pub mod fs;
 pub mod ipc;
