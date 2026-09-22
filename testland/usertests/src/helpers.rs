@@ -50,6 +50,12 @@ pub const M_REG51: u64 = 24;
 // w1 seleziona il target: 0 = testspin senza argv (nucleo 37.0); 1 = testcli
 // con argv ["ARGPROBE","hello","world"] (37.1: sonda argv post-exec).
 pub const M_EXECDEMO: u64 = 25;
+// Fase 40 (t54): handoff grant/claim modello B + SEEK-deny. w1 = nonce del
+// grant da riscuotere (26/28) o ignorato (27/29).
+pub const M_DUPCLAIM: u64 = 26;
+pub const M_DUPGRANT: u64 = 27;
+pub const M_DUPSIBCLAIM: u64 = 28;
+pub const M_SEEKDENY: u64 = 29;
 // Fase 36 (t51): w0 magico per la sonda di squat di usertest-spin (binario
 // diverso da testcli → hash diverso per il negativo). Speculare a
 // SQUAT_MAGIC in usertest-spin (come i tag T_* speculari al client).

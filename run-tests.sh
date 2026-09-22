@@ -7,7 +7,7 @@
 # e rimanda a run.sh. Righe attese + zero FAIL/PANIC/FAULT:
 #   [testfs] PASS 5/5
 #   [testfat] PASS 7/7
-#   [usertests] PASS 53/53
+#   [usertests] PASS 54/54
 set -euo pipefail
 cd "$(dirname "$0")"
 # Diagnostica scheduler/IRQ attiva nei run di test (feature `sched_debug`).

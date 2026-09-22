@@ -1534,7 +1534,7 @@ velordor/
         intatto). Vittoria: gate 5/5+7/7+53/53+shell, zero FAIL/PANIC/FAULT;
         `heap_out` piatto a 28160 (+256 vs 27904 = `image_hash` Fase 36,
         pre-esistente; il diff kernel di Fase 39 non alloca nulla).
-  - [ ] Fase 40 (P1, fd virtuali + redirect; ADR-0031): `userland/posix`
+  - [x] Fase 40 (P1, fd virtuali + redirect; ADR-0031): `userland/posix`
         come skeleton supervisionato (register/ready/tabelle stub per la 42;
         handoff P1 via memoria COW, nessun protocollo IPC nuovo), userfs con
         codici errore per handler + `R_LSEEK` (0x1C, solo Local) + `O_TRUNC`/
@@ -1549,7 +1549,9 @@ velordor/
         40.4 FATTO in a/b/c/d/e (mini-lexer bash-like; hook B1 builtin;
         handoff run via grant+argv-magic e claim in `entry!`; stdin/stderr
         con `term_err` separato e `2>&1` ordinato; shell-tests+docs):
-        zero kernel/userfs/protocollo, gate invariato. Resta 40.5 (t54).
+        zero kernel/userfs/protocollo, gate invariato. 40.5 FATTO (t54 a
+        livello libr/server: trunc/append/lseek/codici/DUP/stdio/SEEK-deny;
+        suite 53/53 → 54/54, Fase 40 CHIUSA).
   - [ ] Fase 41 (P2, parser shell, parallela alla 40): quoting/escape,
         `$VAR/$?/~`, `; && ||`, commenti, glob via `readdir`. Zero cambi IPC.
         Vittoria: `test-shell.py` esteso verde.
@@ -1759,9 +1761,9 @@ rg '\[bench\]' /tmp/bench-run1.log /tmp/bench-run2.log /tmp/bench-run3.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 7/7
-#   [usertests] PASS 53/53
+#   [usertests] PASS 54/54
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 53/53' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 54/54' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 

@@ -63,6 +63,9 @@
 //!                 il processo diventa spin (stesso PID, hash rimisurato) e
 //!                 serve il T_CFG che l'orchestratore manda dopo. Successo =
 //!                 mai ritorno; fallimento = T_DONE(w0=0) + exit.
+//!   - 26 DUPCLAIM / 27 DUPGRANT / 28 DUPSIBCLAIM / 29 SEEKDENY: (Fase 40,
+//!                 t54) handoff grant/claim modello B e diniego SEEK: vedi
+//!                 costanti MODE_* sotto. Sempre T_DONE(ok, detail) + exit(0).
 //!
 //! In ogni caso termina con `send(T_DONE, ok, dettagli)` e `exit(0)`.
 //! Il processo e' sempre "garantito che risponde": l'orchestratore reply ad
@@ -124,6 +127,18 @@ const MODE_REG51: u64 = 24;
 // Fase 37 (exec in-place, t52): attende T_GO, poi exec_into testspin.bin.
 // Successo = mai ritorno (si diventa spin); fallimento = T_DONE(w0=0) + exit.
 const MODE_EXECDEMO: u64 = 25;
+// Fase 40 (fd virtuali + redirect, t54): handoff grant/claim modello B.
+// w1 (rounds) = nonce del grant da riscuotere (26/28) o ignorato (27/29).
+// - 26 DUPCLAIM: claim, verifica contenuto+offset copiato, secondo claim
+//   stesso nonce = Invalid (single-use). T_DONE(ok, detail).
+// - 27 DUPGRANT: apre /t54sib.txt, grant, riporta il nonce in T_DONE(w1).
+// - 28 DUPSIBCLAIM: claim di grant altrui (registrante = altro helper) =
+//   Invalid (attestazione parentela). T_DONE(ok, detail).
+// - 29 SEEKDENY: droppa RIGHTS_SEEK sul proprio canale, poi lseek = Failed.
+const MODE_DUPCLAIM: u64 = 26;
+const MODE_DUPGRANT: u64 = 27;
+const MODE_DUPSIBCLAIM: u64 = 28;
+const MODE_SEEKDENY: u64 = 29;
 
 // Tag DEV_* + errore IPC (A1): single source in `libr` (prima letterali qui).
 use libr::{DEV_CLOSE, DEV_OPEN, ERR};
@@ -449,6 +464,10 @@ fn real_main(sp: u64) -> ! {
                 MODE_COWDEMO => run_cowdemo(rounds as u32),
                 MODE_FORKDEMO => run_forkdemo(),
                 MODE_HARDEN => run_harden(rounds as i64),
+                MODE_DUPCLAIM => run_dupclaim(rounds as u64),
+                MODE_DUPGRANT => run_dupgrant(),
+                MODE_DUPSIBCLAIM => run_dupsibclaim(rounds as u64),
+                MODE_SEEKDENY => run_seekdeny(),
                 _ => (false, 1),
             };
             let _ = libr::send(parent, T_DONE, ok as u64, detail as u64);
@@ -594,6 +613,76 @@ fn run_harden(target: i64) -> (bool, usize) {
     let detail =
         (kill_rejected as usize) | ((reg_rejected as usize) << 1) | ((posix_rejected as usize) << 2);
     (ok, detail)
+}
+
+/// Fase 40 (t54): riscuote il grant del parent (`nonce` in w1) e verifica
+/// contenuto + offset copiato (il parent scrive "ABCDEF" e fa lseek(3) prima
+/// del grant: qui si devono leggere "DEF"). Poi un secondo claim dello stesso
+/// nonce deve dare Invalid (single-use). Ritorna (ok, detail).
+fn run_dupclaim(nonce: u64) -> (bool, usize) {
+    let fd = match libr::dup_claim(nonce) {
+        Ok(f) => f,
+        Err(_) => return (false, 10),
+    };
+    let mut b = [0u8; 3];
+    let n = match libr::read_fs(fd, &mut b, 3) {
+        Ok(n) => n,
+        Err(_) => return (false, 11),
+    };
+    let _ = libr::close(fd);
+    if n != 3 || &b != b"DEF" {
+        return (false, 12);
+    }
+    match libr::dup_claim(nonce) {
+        Err(libr::Error::Invalid) => (true, 0),
+        _ => (false, 13),
+    }
+}
+
+/// Fase 40 (t54): apre /t54sib.txt e ne fa grant; il nonce viaggia in
+/// T_DONE(w1) all'orchestratore (che lo gira al sibling). Ritorna (ok, nonce
+/// come detail: il T_DONE generico lo mette in w1).
+fn run_dupgrant() -> (bool, usize) {
+    let fd = match libr::open("/t54sib.txt", 0) {
+        Ok(f) => f,
+        Err(_) => return (false, 0),
+    };
+    let nonce = match libr::dup_grant(fd) {
+        Ok(n) => n,
+        Err(_) => return (false, 0),
+    };
+    // Il grant e' uno snapshot server-side: l'fd si puo' chiudere subito.
+    let _ = libr::close(fd);
+    (true, nonce as usize)
+}
+
+/// Fase 40 (t54): claim del grant di un ALTRO helper (registrante != nostro
+/// parent) — l'attestazione parentela deve rifiutare con Invalid.
+/// Ritorna (ok, detail).
+fn run_dupsibclaim(nonce: u64) -> (bool, usize) {
+    match libr::dup_claim(nonce) {
+        Err(libr::Error::Invalid) => (true, 0),
+        _ => (false, 20),
+    }
+}
+
+/// Fase 40 (t54): droppa RIGHTS_SEEK sul proprio canale (solo shrink, resto
+/// intatto) e verifica che lseek venga rifiutato con Failed (il choke
+/// centrale risponde ERR generico). Ritorna (ok, detail).
+fn run_seekdeny() -> (bool, usize) {
+    let fd = match libr::open("/t54seek.txt", libr::O_CREAT) {
+        Ok(f) => f,
+        Err(_) => return (false, 0),
+    };
+    if libr::rights_drop(libr::RIGHTS_ALL & !libr::RIGHTS_SEEK, None).is_err() {
+        return (false, 1);
+    }
+    let r = libr::lseek(fd, 0, libr::SEEK_SET);
+    let _ = libr::close(fd);
+    match r {
+        Err(libr::Error::Failed) => (true, 0),
+        _ => (false, 2),
+    }
 }
 
 /// Fase 29: provoca un fault di memoria non recuperabile (write su RO,
