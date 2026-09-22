@@ -14,8 +14,7 @@ pub(crate) fn cmd_ls(args: &[&str]) {
     };
     let path = cwd::resolve(raw);
     let mut buf = vec![0u8; 4096];
-    let n = libr::readdir(&path, &mut buf, 4096);
-    if n < 0 {
+    if libr::readdir(&path, &mut buf, 4096).is_err() {
         term::term_print("ls: error\n");
         return;
     }
@@ -36,7 +35,7 @@ pub(crate) fn cmd_ls(args: &[&str]) {
                 full.push_str(name);
                 let mut line = String::new();
                 let mut st = libr::Stat { size: 0, kind: 0, readonly: false };
-                if libr::stat(&full, &mut st) == 0 {
+                if libr::stat(&full, &mut st).is_ok() {
                     line.push(if st.is_dir() {
                         'd'
                     } else if st.is_device() {
@@ -77,22 +76,25 @@ pub(crate) fn cmd_cat(args: &[&str]) {
         return;
     }
     let path = cwd::resolve(args[1]);
-    let fd = libr::open(&path, 0);
-    if fd < 0 {
+    let Ok(fd) = libr::open(&path, 0) else {
         term::term_print("cat: cannot open ");
         term::term_print(args[1]);
         term::term_print("\n");
         return;
-    }
+    };
     let mut buf = vec![0u8; 4096];
     loop {
-        let n =  libr::read_fs(fd, &mut buf, 4096);
-        if n <= 0 { break; }
-        if let Ok(s) = core::str::from_utf8(&buf[..n as usize]) {
-            term::term_print(s);
+        match libr::read_fs(fd, &mut buf, 4096) {
+            Ok(0) => break, // EOF
+            Ok(n) => {
+                if let Ok(s) = core::str::from_utf8(&buf[..n]) {
+                    term::term_print(s);
+                }
+            }
+            Err(_) => break,
         }
     }
-    libr::close(fd);
+    let _ = libr::close(fd);
     term::term_print("\n");
 }
 
@@ -102,12 +104,11 @@ pub(crate) fn cmd_touch(args: &[&str]) {
         return;
     }
     let path = cwd::resolve(args[1]);
-    let fd = libr::open(&path, libr::O_CREAT);
-    if fd < 0 {
+    let Ok(fd) = libr::open(&path, libr::O_CREAT) else {
         term::term_print("touch: failed\n");
         return;
-    }
-    libr::close(fd);
+    };
+    let _ = libr::close(fd);
 }
 
 pub(crate) fn cmd_mkdir(args: &[&str]) {
@@ -116,8 +117,7 @@ pub(crate) fn cmd_mkdir(args: &[&str]) {
         return;
     }
     let path = cwd::resolve(args[1]);
-    let r = libr::mkdir(&path);
-    if r < 0 {
+    if libr::mkdir(&path).is_err() {
         term::term_print("mkdir: failed\n");
     }
 }
@@ -129,7 +129,7 @@ pub(crate) fn cmd_mount(args: &[&str]) {
     }
     // La sorgente NON si risolve: puo' essere `UUID=`/`LABEL=` o un device.
     let target = cwd::resolve(args[2]);
-    if libr::mount(args[1], &target) < 0 {
+    if libr::mount(args[1], &target).is_err() {
         term::term_print("mount: failed\n");
     }
 }
@@ -140,7 +140,7 @@ pub(crate) fn cmd_umount(args: &[&str]) {
         return;
     }
     let target = cwd::resolve(args[1]);
-    if libr::umount(&target) < 0 {
+    if libr::umount(&target).is_err() {
         term::term_print("umount: failed (busy or not mounted?)\n");
     }
 }
@@ -152,39 +152,37 @@ pub(crate) fn cmd_umount(args: &[&str]) {
 fn copy_file(src: &str, dst: &str) -> bool {
     let from = cwd::resolve(src);
     let to = cwd::resolve(dst);
-    let fd_in = libr::open(&from, 0);
-    if fd_in < 0 {
+    let Ok(fd_in) = libr::open(&from, 0) else {
         term::term_print("cp: cannot open ");
         term::term_print(src);
         term::term_print("\n");
         return false;
-    }
-    let fd_out = libr::open(&to, 0x200 /* O_CREAT */);
-    if fd_out < 0 {
+    };
+    let Ok(fd_out) = libr::open(&to, 0x200 /* O_CREAT */) else {
         term::term_print("cp: cannot create ");
         term::term_print(dst);
         term::term_print("\n");
-        libr::close(fd_in);
+        let _ = libr::close(fd_in);
         return false;
-    }
+    };
     let mut buf = vec![0u8; 4096];
     let mut ok = true;
     loop {
-        // Come `cat`: n<=0 chiude il loop. Nota: a EOF il server NON scrive
-        // response frame (solo i driver lo fanno sempre) e la read torna -1:
-        // trattarlo da fatale dopo una copia completa e' sbagliato.
-        let n = libr::read_fs(fd_in, &mut buf, 4096);
-        if n <= 0 {
+        // Come `cat`: EOF (Ok(0)) o errore chiudono il loop.
+        let n = match libr::read_fs(fd_in, &mut buf, 4096) {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        if n == 0 {
             break;
         }
-        let n = n as usize;
-        if libr::write_fs(fd_out, &buf[..n], n) != n as i64 {
+        if libr::write_fs(fd_out, &buf[..n], n) != Ok(n) {
             ok = false;
             break;
         }
     }
-    libr::close(fd_in);
-    libr::close(fd_out);
+    let _ = libr::close(fd_in);
+    let _ = libr::close(fd_out);
     if !ok {
         term::term_print("cp: I/O error\n");
     }
@@ -209,7 +207,7 @@ pub(crate) fn cmd_mv(args: &[&str]) {
         return;
     }
     let src = cwd::resolve(args[1]);
-    if libr::remove(&src) < 0 {
+    if libr::remove(&src).is_err() {
         term::term_print("mv: copied but cannot remove source\n");
     }
 }
@@ -220,7 +218,7 @@ pub(crate) fn cmd_rm(args: &[&str]) {
         return;
     }
     let path = cwd::resolve(args[1]);
-    if libr::remove(&path) < 0 {
+    if libr::remove(&path).is_err() {
         term::term_print("rm: cannot remove ");
         term::term_print(args[1]);
         term::term_print("\n");
@@ -234,7 +232,7 @@ pub(crate) fn cmd_rmdir(args: &[&str]) {
     }
     // Stessa op del server (dir vuote): il server rifiuta le non vuote.
     let path = cwd::resolve(args[1]);
-    if libr::remove(&path) < 0 {
+    if libr::remove(&path).is_err() {
         term::term_print("rmdir: failed (not empty or missing?)\n");
     }
 }

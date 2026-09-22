@@ -67,48 +67,51 @@ pub fn t_spawn_identity() -> bool {
 }
 
 pub fn t_hello() -> bool {
-    let fd = libr::open("hello.txt", 0);
-    if fd < 0 {
+    let Ok(fd) = libr::open("hello.txt", 0) else {
         return false;
-    }
+    };
     let mut buf = [0u8; 64];
-    let n = libr::read_fs(fd, &mut buf, 64);
-    if !(n as usize >= helpers::HELLO.len() && buf[..helpers::HELLO.len()] == *helpers::HELLO) {
+    let n = match libr::read_fs(fd, &mut buf, 64) {
+        Ok(n) => n,
+        Err(_) => {
+            let _ = libr::close(fd);
+            return false;
+        }
+    };
+    if !(n >= helpers::HELLO.len() && buf[..helpers::HELLO.len()] == *helpers::HELLO) {
         let _ = libr::close(fd);
         return false;
     }
-    // Contratto EOF (Fase 18.2-bis): leggere oltre la fine torna 0, non -1
+    // Contratto EOF (Fase 18.2-bis): leggere oltre la fine torna Ok(0)
     // (il server scrive sempre il response frame, anche vuoto).
     let mut one = [0u8; 1];
     let eof = libr::read_fs(fd, &mut one, 1);
     let _ = libr::close(fd);
-    if eof != 0 {
-        println!("[usertests] t6: read oltre EOF = {} (atteso 0)", eof);
+    if eof != Ok(0) {
+        println!("[usertests] t6: read oltre EOF = {:?} (atteso Ok(0))", eof);
         return false;
     }
     true
 }
 
 pub fn t_ramfs_write_chunk() -> bool {
-    let fd = libr::open("utdata.bin", libr::O_CREAT);
-    if fd < 0 {
+    let Ok(fd) = libr::open("utdata.bin", libr::O_CREAT) else {
         return false;
-    }
+    };
     // 3 chunk da 3000 (9 KiB totali > 1 pagina ring da 4088 B): multi-call
     // write con chunking client (Fase 10.2).
     for c in 0..3u32 {
         let chunk: Vec<u8> = (0..3000).map(|i| (((c as usize) * 7 + i) % 251) as u8).collect();
-        if libr::write_fs(fd, &chunk, 3000) != 3000 {
+        if libr::write_fs(fd, &chunk, 3000) != Ok(3000) {
             let _ = libr::close(fd);
             return false;
         }
     }
     let _ = libr::close(fd);
 
-    let fd2 = libr::open("utdata.bin", 0);
-    if fd2 < 0 {
+    let Ok(fd2) = libr::open("utdata.bin", 0) else {
         return false;
-    }
+    };
     let mut all = Vec::new();
     let ok = helpers::read_all(fd2, &mut all, 9000);
     let _ = libr::close(fd2);
@@ -126,47 +129,45 @@ pub fn t_ramfs_write_chunk() -> bool {
 }
 
 pub fn t_ramfs_mkdir() -> bool {
-    if libr::mkdir("utdir") < 0 {
+    if libr::mkdir("utdir").is_err() {
         return false;
     }
     helpers::dir_contains("/", "utdir")
 }
 
 pub fn t_fs_errors() -> bool {
-    // open di path vuoto → -1 (path_len 0).
-    let a = libr::open("", 0) < 0;
-    // read/write/close su fd inesistente → -1 (fd non nella tabella del server).
-    let b = libr::read_fs(-1, &mut [0u8; 8], 8) < 0;
-    let c = libr::write_fs(-1, &[0u8; 8], 8) < 0;
-    let d = libr::close(-1) < 0;
+    // open di path vuoto → Err (path_len 0).
+    let a = libr::open("", 0).is_err();
+    // read/write/close su fd inesistente → Err (fd non nella tabella server).
+    let b = libr::read_fs(-1, &mut [0u8; 8], 8).is_err();
+    let c = libr::write_fs(-1, &[0u8; 8], 8).is_err();
+    let d = libr::close(-1).is_err();
     a && b && c && d
 }
 
 pub fn t_dev_null() -> bool {
     // Throttled (Livello 1): un device non ancora registrato non giustifica
     // mai una tempesta di open verso userfs.
-    let fd = libr::open_wait("/dev/null", 0, 1000, libr::POLL_PERIOD_TICKS);
-    if fd < 0 {
+    let Ok(fd) = libr::open_wait("/dev/null", 0, 1000, libr::POLL_PERIOD_TICKS) else {
         return false;
-    }
+    };
     let data = [0x5Au8; 512];
     let w = libr::write_fs(fd, &data, 512);
     let mut b = [0u8; 16];
     let r = libr::read_fs(fd, &mut b, 16);
     let _ = libr::close(fd);
-    w == 512 && r == 0
+    w == Ok(512) && r == Ok(0)
 }
 
 pub fn t_dev_zero() -> bool {
-    let fd = libr::open_wait("/dev/zero", 0, 1000, libr::POLL_PERIOD_TICKS);
-    if fd < 0 {
+    let Ok(fd) = libr::open_wait("/dev/zero", 0, 1000, libr::POLL_PERIOD_TICKS) else {
         return false;
-    }
+    };
     let mut ok = true;
     let mut buf = vec![0xFFu8; 4096];
     for _ in 0..2 {
         let n = libr::read_fs(fd, &mut buf, 4096);
-        if n != 4096 || buf.iter().any(|&b| b != 0) {
+        if n != Ok(4096) || buf.iter().any(|&b| b != 0) {
             ok = false;
         }
     }

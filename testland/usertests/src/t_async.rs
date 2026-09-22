@@ -5,38 +5,45 @@ use super::*;
 /// che i dati letti in modo async combacino con il contenuto atteso.
 pub fn t_fs_async() -> bool {
     helpers::drain_stray();
-    let fd = libr::open("hello.txt", 0);
-    if fd < 0 {
+    let Ok(fd) = libr::open("hello.txt", 0) else {
         println!("[usertests] t_fs_async: open hello.txt FAILED");
         return false;
-    }
+    };
     // La read deve stare in un solo frame (<= RING_MAX_PAYLOAD ~4000).
-    let req = libr::read_async(fd, 64);
-    if req < 0 {
-        println!("[usertests] t_fs_async: read_async FAILED (req={})", req);
-        let _ = libr::close(fd);
-        return false;
-    }
+    let req = match libr::read_async(fd, 64) {
+        Ok(req) => req,
+        Err(_) => {
+            println!("[usertests] t_fs_async: read_async FAILED");
+            let _ = libr::close(fd);
+            return false;
+        }
+    };
     // Lavoro utile mentre userfs risponde: batch di spin puro (IF=1, nessuna
     // syscall nel mezzo) per non affamare il timer.
     for _ in 0..200_000 {
         core::hint::spin_loop();
     }
     let mut buf = [0u8; 128];
-    let n = libr::fs_collect(req, &mut buf, 128);
+    let n = match libr::fs_collect(req, &mut buf, 128) {
+        Ok(n) => n,
+        Err(e) => {
+            println!("[usertests] t_fs_async: collect FAILED ({:?})", e);
+            let _ = libr::close(fd);
+            return false;
+        }
+    };
     let _ = libr::close(fd);
-    if !(n as usize >= helpers::HELLO.len() && buf[..helpers::HELLO.len()] == *helpers::HELLO) {
+    if !(n >= helpers::HELLO.len() && buf[..helpers::HELLO.len()] == *helpers::HELLO) {
         println!("[usertests] t_fs_async: collect n={} (atteso >= {})", n, helpers::HELLO.len());
         return false;
     }
     // ADR-0019 26.3: stessa lettura via wrapper async `FsRead` (stesso
     // file, fd riaperto perche' la prima lettura ha avanzato la posizione).
     // Deve coincidere byte per byte con la collect manuale sopra.
-    let fd2 = libr::open("hello.txt", 0);
-    if fd2 < 0 {
+    let Ok(fd2) = libr::open("hello.txt", 0) else {
         println!("[usertests] t_fs_async: reopen hello.txt FAILED");
         return false;
-    }
+    };
     let mut buf2 = [0u8; 128];
     let f = match libr::task::FsRead::new(fd2, &mut buf2, 128) {
         Ok(f) => f,
@@ -48,7 +55,7 @@ pub fn t_fs_async() -> bool {
     };
     let n2 = libr::task::block_on(f);
     let _ = libr::close(fd2);
-    if n2 == n && buf2[..helpers::HELLO.len()] == buf[..helpers::HELLO.len()] {
+    if n2 as usize == n && buf2[..helpers::HELLO.len()] == buf[..helpers::HELLO.len()] {
         true
     } else {
         println!("[usertests] t_fs_async: wrapper n2={} n={} (atteso uguali)", n2, n);

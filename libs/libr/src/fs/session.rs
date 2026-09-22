@@ -69,9 +69,28 @@ pub(crate) fn fs_async_pending() -> bool {
     FS_PENDING.load(Ordering::Relaxed) != -1
 }
 
-/// Converte il result di una reply FS in i64: `!0` (ERR) → -1.
-pub(crate) fn fs_reply_val(w0: u64) -> i64 {
-    if w0 == ring::ERR { -1 } else { w0 as i64 }
+/// Cancello comune dei wrapper FS (Fase 39, fondamenta posix): distingue i tre
+/// rifiuti che prima collassavano in un unico -1. Il figlio fork fallisce qui
+/// con `Denied` invece di faultare sul ring assente (kill rumoroso → errore
+/// pulito; il figlio che deve fare FS deve prima `exec`-care).
+pub(crate) fn fs_gate() -> Result<(), Error> {
+    if fs_forked() {
+        return Err(Error::Denied);
+    }
+    if !fs_init() {
+        return Err(Error::NotReady);
+    }
+    if fs_async_pending() {
+        return Err(Error::Pending);
+    }
+    Ok(())
+}
+
+/// Converte il result di una reply FS (Fase 39): `!0` (ERR) → `Failed` (in
+/// Fase 39 userfs non distingue i rifiuti; la Fase 40 produrra' le varianti
+/// di dominio qui).
+pub(crate) fn fs_reply_check(w0: u64) -> Result<u64, Error> {
+    if w0 == ring::ERR { Err(Error::Failed) } else { Ok(w0) }
 }
 
 /// Bound per il re-lookup runtime (Fase 14, init-restart): ~200 tick di spin
@@ -117,15 +136,12 @@ pub fn poll_value<T>(bound_ticks: i64, period_ticks: i64, mut f: impl FnMut() ->
 }
 
 /// Apre `path` riprovando throttled fino a `bound_ticks` (vedi `poll_wait`).
-/// Ritorna l'fd o -1 a timeout. Sostituisce i busy-loop di open nei test e
-/// negli helper: un device non ancora registrato non giustifica mai una
-/// tempesta di open verso userfs.
-pub fn open_wait(path: &str, flags: u32, bound_ticks: i64, period_ticks: i64) -> i64 {
-    poll_value(bound_ticks, period_ticks, || {
-        let fd = sync::open(path, flags);
-        if fd >= 0 { Some(fd) } else { None }
-    })
-    .unwrap_or(-1)
+/// Ritorna l'fd o `Err(NotReady)` a timeout. Sostituisce i busy-loop di open
+/// nei test e negli helper: un device non ancora registrato non giustifica
+/// mai una tempesta di open verso userfs.
+pub fn open_wait(path: &str, flags: u32, bound_ticks: i64, period_ticks: i64) -> Result<i64, Error> {
+    poll_value(bound_ticks, period_ticks, || sync::open(path, flags).ok())
+        .ok_or(Error::NotReady)
 }
 
 /// Risolve il canale verso il fs server con attesa BOUNDED (init-restart):
@@ -154,9 +170,9 @@ pub(crate) fn fs_chan_rt() -> i64 {
 /// Caveat write (at-least-once): se il server applica e poi muore prima della
 /// reply, il retry duplica. Per ramfs/devfs-console l'effetto e' benigno
 /// (overwrite degli stessi byte / device idempotenti); policy fine futura.
-pub(crate) fn fs_send(tag: u64, w0: u64, w1: u64) -> Result<IpcReply, ()> {
+pub(crate) fn fs_send(tag: u64, w0: u64, w1: u64) -> Result<IpcReply, Error> {
     if fs_forked() {
-        return Err(()); // figlio fork: niente FS (34, mai aliasare i ring)
+        return Err(Error::Denied); // figlio fork: niente FS (34, mai aliasare i ring)
     }
     let c = fs_chan();
     if c >= 0 {
@@ -168,9 +184,10 @@ pub(crate) fn fs_send(tag: u64, w0: u64, w1: u64) -> Result<IpcReply, ()> {
     }
     let c2 = fs_chan_rt();
     if c2 < 0 {
-        return Err(());
+        return Err(Error::NotReady);
     }
-    ipc::send(c2 as u64, tag, w0, w1)
+    // `ipc::send` fallisce solo a canale morto qui: il server e' irraggiungibile.
+    ipc::send(c2 as u64, tag, w0, w1).map_err(|_| Error::NotReady)
 }
 
 /// Inizializza (una sola volta) i ring buffer del processo: li alloca col
@@ -197,7 +214,7 @@ pub(crate) fn fs_init() -> bool {
             FS_INITED.store(true, Ordering::Relaxed);
             true
         }
-        Err(()) => false,
+        Err(_) => false,
     }
 }
 
@@ -223,7 +240,7 @@ pub(crate) fn fs_rehandshake() -> bool {
             }
             true
         }
-        Err(()) => false,
+        Err(_) => false,
     }
 }
 
@@ -256,7 +273,7 @@ pub fn fs_remap_self() -> bool {
 /// gli altri client); se fallisce (race: userfs rimorto nel mentre) ricomincia
 /// dal lookup. Unbounded come `fs_chan`: senza Fs il driver e' comunque
 /// inutile. Idempotente grazie al replace-on-register in userfs.
-pub fn ensure_fs_mount(register: fn() -> i64) {
+pub fn ensure_fs_mount(register: fn() -> Result<(), Error>) {
     // Prima i PROPRI ring: le injection map_in di userfs li hanno sovrascritti
     // (stessa VA condivisa, mai ripristinata) — senza remap scriveremmo nelle
     // pagine di un altro client (t28). No-op se mai allocati.
@@ -267,7 +284,7 @@ pub fn ensure_fs_mount(register: fn() -> i64) {
                 core::hint::spin_loop();
             }
         }
-        if register() == 0 {
+        if register().is_ok() {
             return;
         }
     }
@@ -330,7 +347,7 @@ pub(crate) fn fs_notify_result(tag: u64, rewrite: impl Fn() -> bool) -> Option<(
                 }
                 return ring::resp_ring_read();
             }
-            Err(()) => return None,
+            Err(_) => return None,
         }
     }
 }

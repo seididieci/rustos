@@ -167,7 +167,7 @@ pub fn t_cbs_admission() -> bool {
     // 5% → dentro il cap → deve riuscire.
     let s1 = match libr::cbs_create(1, 20) {
         Ok(id) => id,
-        Err(()) => {
+        Err(_) => {
             println!("[usertests] t_cbs_admission: cbs_create(1,20) FAILED");
             return false;
         }

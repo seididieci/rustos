@@ -91,12 +91,11 @@ pub fn spawn_cfg(path: &str, name: &str, prio: u8, mode: u64, param: u64) -> Opt
 /// Legge `want` entry di una dir e dice se contiene `needle`.
 pub fn dir_contains(path: &str, needle: &str) -> bool {
     let mut e = [0u8; 2048];
-    let n = libr::readdir(path, &mut e, 2048);
-    if n < 0 {
+    let Ok(n) = libr::readdir(path, &mut e, 2048) else {
         return false;
-    }
+    };
     let mut found = false;
-    libr::test::each_name(&e, n as usize, |name| {
+    libr::test::each_name(&e, n, |name| {
         if name == needle {
             found = true;
         }
@@ -108,12 +107,15 @@ pub fn read_all(fd: i64, out: &mut Vec<u8>, total: usize) -> bool {
     let mut got = 0usize;
     while got < total {
         let mut chunk = [0u8; 2000];
-        let n = libr::read_fs(fd, &mut chunk, 2000);
-        if n <= 0 {
+        let n = match libr::read_fs(fd, &mut chunk, 2000) {
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        if n == 0 {
             return false;
         }
-        out.extend_from_slice(&chunk[..n as usize]);
-        got += n as usize;
+        out.extend_from_slice(&chunk[..n]);
+        got += n;
     }
     got == total
 }
@@ -201,12 +203,11 @@ pub const FAT_HELLO: &[u8] = b"Hello from Velordor FAT32!\n";
 /// firma boot 0x55AA a offset 510 (stesso settore del mount /fat: prova il
 /// data-plane DISK di userdisk e il relay DEV di userfs in un colpo solo).
 pub fn disk_sector0_ok() -> bool {
-    let fd = libr::open_wait("/dev/sda", 0, 1000, libr::POLL_PERIOD_TICKS);
-    if fd < 0 {
+    let Ok(fd) = libr::open_wait("/dev/sda", 0, 1000, libr::POLL_PERIOD_TICKS) else {
         return false;
-    }
+    };
     let mut buf = [0u8; 512];
-    let n = libr::read_fs(fd, &mut buf, 512);
+    let n = libr::read_fs(fd, &mut buf, 512).unwrap_or(0);
     let _ = libr::close(fd);
     n == 512 && buf[510] == 0x55 && buf[511] == 0xAA
 }
@@ -216,11 +217,14 @@ pub fn t33_read_all(fd: i64, dst: &mut [u8]) -> usize {
     let mut got = 0usize;
     while got < dst.len() {
         let rest = dst.len() - got;
-        let n = libr::read_fs(fd, &mut dst[got..], rest);
-        if n <= 0 {
+        let n = match libr::read_fs(fd, &mut dst[got..], rest) {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        if n == 0 {
             break;
         }
-        got += n as usize;
+        got += n;
     }
     got
 }

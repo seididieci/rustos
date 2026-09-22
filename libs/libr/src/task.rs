@@ -172,13 +172,10 @@ pub struct FsRead<'a> {
 
 impl<'a> FsRead<'a> {
     /// Come `read_async(fd, cap)` ma ritorna il future invece del req_id.
-    /// `Err(())` nei casi di `read_async` (-1: op in volo, ring pieno, send
-    /// fallita). Il buffer `dst` e' riempito al completamento.
-    pub fn new(fd: i64, dst: &'a mut [u8], cap: usize) -> Result<Self, ()> {
-        let req = crate::read_async(fd, cap);
-        if req < 0 {
-            return Err(());
-        }
+    /// `Err` nei casi di `read_async` (Fase 39: errore nativo). Il buffer `dst`
+    /// e' riempito al completamento.
+    pub fn new(fd: i64, dst: &'a mut [u8], cap: usize) -> Result<Self, crate::Error> {
+        let req = crate::read_async(fd, cap)?;
         // Invariante di `fs_collect`: la read_async riuscita ha risolto e
         // cachato FS_CHAN prima di registrare FS_PENDING.
         let fchan =
@@ -207,7 +204,7 @@ impl Future for FsRead<'_> {
         // `WaitReply: Unpin` (solo scalari/Option): pin diretto, niente unsafe.
         match Pin::new(&mut this.inner).poll(cx) {
             Poll::Ready(Ok(m)) => {
-                Poll::Ready(crate::fs_collect_msg(&m, &mut *this.dst, this.cap, true))
+                Poll::Ready(crate::fs_collect_msg(&m, &mut *this.dst, this.cap, true).unwrap_or(-1))
             }
             Poll::Ready(Err(e)) => {
                 // Come `fs_collect` sul path errore: frame orfano, reset ring

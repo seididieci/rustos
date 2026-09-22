@@ -249,8 +249,20 @@ embedded. `meta` e' uno `SpawnMeta` da 40 B (`repr(C)`, identico in `libr`):
 nome NUL-padded 16 B (non vuoto, stampabile), priorita' 1..31 (mai 0/idle),
 fino a 4 range di porte I/O. Le porte sono privilegio root: solo pid 1 (init)
 puo' chiederle, gli altri devono avere `io_count == 0`. Bound 256 KiB per
-singolo spawn. Ritorna il canale di nascita o -1. Il kernel embedda ormai solo
+singolo spawn (`SPAWN_IMAGE_MAX`, single source in `syscall-numbers` dalla
+Fase 39: anche `libr` lo usa per pre-validare). Ritorna il canale di nascita
+o -1. Il kernel embedda ormai solo
 lo storage-TCB (init/disk/fs); tutto il resto parte da disco via init.
+
+### Fase 39 — errore nativo in `libr` (nessuna syscall nuova)
+
+La Fase 39 non aggiunge numeri di syscall: l'ABI kernel resta a `-1` nei
+registri (tabelle sopra invariate). Cambiano i **wrapper `libr`**, che ora
+ritornano `Result<T, libr::posix::Error>`: enum nativo del dominio OS
+(trasporto + dominio FS) con UNICA traduzione `to_errno` al bordo POSIX
+(i numeri errno non entrano mai nel kernel/wire, ADR-0015/0025). Il registry
+servizi passa a 16 slot (`Service::Posix = 8`, discriminant 0-7 stabili).
+Vedi [ADR-0030](./adr/0030-posix-fondamenta.md).
 
 ### I/O
 

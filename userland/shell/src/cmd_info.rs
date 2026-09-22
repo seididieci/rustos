@@ -102,22 +102,24 @@ pub(crate) fn cmd_wc(args: &[&str]) {
         return;
     }
     let path = cwd::resolve(args[1]);
-    let fd = libr::open(&path, 0);
-    if fd < 0 {
+    let Ok(fd) = libr::open(&path, 0) else {
         term::term_print("wc: cannot open ");
         term::term_print(args[1]);
         term::term_print("\n");
         return;
-    }
+    };
     let mut buf = vec![0u8; 4096];
     let (mut lines, mut words, mut bytes) = (0u64, 0u64, 0u64);
     let mut in_word = false;
     loop {
-        let n = libr::read_fs(fd, &mut buf, 4096);
-        if n <= 0 {
+        let n = match libr::read_fs(fd, &mut buf, 4096) {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        if n == 0 {
             break;
         }
-        for &b in &buf[..n as usize] {
+        for &b in &buf[..n] {
             bytes += 1;
             if b == b'\n' {
                 lines += 1;
@@ -130,7 +132,7 @@ pub(crate) fn cmd_wc(args: &[&str]) {
             }
         }
     }
-    libr::close(fd);
+    let _ = libr::close(fd);
     let mut s = String::new();
     push_u64(&mut s, lines);
     s.push(' ');
@@ -157,18 +159,20 @@ pub(crate) fn cmd_hexdump(args: &[&str]) {
         return;
     }
     let path = cwd::resolve(args[1]);
-    let fd = libr::open(&path, 0);
-    if fd < 0 {
+    let Ok(fd) = libr::open(&path, 0) else {
         term::term_print("hexdump: cannot open ");
         term::term_print(args[1]);
         term::term_print("\n");
         return;
-    }
+    };
     let mut buf = vec![0u8; 16];
     let mut off = 0usize;
     loop {
-        let n = libr::read_fs(fd, &mut buf, 16);
-        if n <= 0 {
+        let n = match libr::read_fs(fd, &mut buf, 16) {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        if n == 0 {
             break;
         }
         // Una sola write per riga (vedi cmd_echo: timestamp per write).
@@ -177,15 +181,15 @@ pub(crate) fn cmd_hexdump(args: &[&str]) {
             s.push(hex_of((off >> (shift * 4)) as u8) as char);
         }
         s.push_str(": ");
-        for i in 0..n as usize {
+        for i in 0..n {
             push_hex_byte(&mut s, buf[i]);
             s.push(' ');
         }
         term::term_print(&s);
         term::term_print("\n");
-        off += n as usize;
+        off += n;
     }
-    libr::close(fd);
+    let _ = libr::close(fd);
 }
 
 /// Parsa un intero decimale (usato anche da `wait` in cmd_run).

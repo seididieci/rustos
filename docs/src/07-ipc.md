@@ -145,8 +145,10 @@ Fase 12 il kernel espone un **registry di servizi** e indirizza i messaggi per
 **channel**:
 
 - **`enum Service`** nel crate `syscall-numbers` (`Console=0`, `Fs=1`,
-  `Devfs=2`, `Init=3`, `Test=4`, `Kbd=5`, `Tty=6`, `Disk=7`): ogni servizio di
-  sistema occupa uno slot (tabella nel kernel, `channels.rs`).
+  `Devfs=2`, `Init=3`, `Test=4`, `Kbd=5`, `Tty=6`, `Disk=7`, `Posix=8` dalla
+  Fase 39): ogni servizio di sistema occupa uno slot (tabella nel kernel,
+  `channels.rs`, 16 slot dalla Fase 39 — discriminant 0-7 storici stabili,
+  slot 9-15 liberi).
   `service_register(service)` (31) lo occupa;
   `service_lookup(service)` (32) risolve il nome in un canale verso l'owner.
 - **`Channel`**: coppia bidirezionale tra due processi. `spawn` crea il

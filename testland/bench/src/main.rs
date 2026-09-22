@@ -67,27 +67,31 @@ fn real_main(_sp: u64) -> ! {
     // b1: solo IPC — 1 B da /dev/zero (/dev/null da' EOF=0 per semantica
     // Unix: per misurare il round-trip IPC serve un device che risponde).
     if ok {
-        let fd = libr::open("/dev/zero", 0);
-        if fd < 0 {
-            println!("[bench] zero_1B: FAIL (open fd={})", fd);
-            ok = false;
-        } else {
-            let mut one = [0u8; 1];
-            ok &= run("zero_1B", 2000, 1, hz, || libr::read_fs(fd, &mut one, 1) == 1);
-            let _ = libr::close(fd);
+        match libr::open("/dev/zero", 0) {
+            Err(e) => {
+                println!("[bench] zero_1B: FAIL (open {:?})", e);
+                ok = false;
+            }
+            Ok(fd) => {
+                let mut one = [0u8; 1];
+                ok &= run("zero_1B", 2000, 1, hz, || libr::read_fs(fd, &mut one, 1) == Ok(1));
+                let _ = libr::close(fd);
+            }
         }
     }
 
     // b2: catena completa — 200 settori sequenziali raw da /dev/sda.
     if ok {
-        let fd = libr::open("/dev/sda", 0);
-        if fd < 0 {
-            println!("[bench] sda_512B_seq: FAIL (open fd={})", fd);
-            ok = false;
-        } else {
-            let mut sec = [0u8; 512];
-            ok &= run("sda_512B_seq", 200, 512, hz, || libr::read_fs(fd, &mut sec, 512) == 512);
-            let _ = libr::close(fd);
+        match libr::open("/dev/sda", 0) {
+            Err(e) => {
+                println!("[bench] sda_512B_seq: FAIL (open {:?})", e);
+                ok = false;
+            }
+            Ok(fd) => {
+                let mut sec = [0u8; 512];
+                ok &= run("sda_512B_seq", 200, 512, hz, || libr::read_fs(fd, &mut sec, 512) == Ok(512));
+                let _ = libr::close(fd);
+            }
         }
     }
 
@@ -95,40 +99,43 @@ fn real_main(_sp: u64) -> ! {
     if ok {
         let mut hello = [0u8; 32];
         ok &= run("fat_small_orc", 500, 25, hz, || {
-            let fd = libr::open("/fat/HELLO.TXT", 0);
-            if fd < 0 {
+            let Ok(fd) = libr::open("/fat/HELLO.TXT", 0) else {
                 return false;
-            }
+            };
             let n = libr::read_fs(fd, &mut hello, 25);
             let _ = libr::close(fd);
-            n == 25
+            n == Ok(25)
         });
     }
 
     // b4: ramfs 4 KiB — stack FS+IPC senza disco (write poi read).
     if ok {
-        let fd = libr::open("/BENCH.TMP", O_CREAT);
-        if fd < 0 {
-            println!("[bench] ramfs_4K: FAIL (create fd={})", fd);
-            ok = false;
-        } else {
-            let wbuf = [0xA5u8; 4096];
-            ok &= run("ramfs_4K_write", 100, 4096, hz, || libr::write_fs(fd, &wbuf, 4096) == 4096);
-            let _ = libr::close(fd);
+        match libr::open("/BENCH.TMP", O_CREAT) {
+            Err(e) => {
+                println!("[bench] ramfs_4K: FAIL (create {:?})", e);
+                ok = false;
+            }
+            Ok(fd) => {
+                let wbuf = [0xA5u8; 4096];
+                ok &= run("ramfs_4K_write", 100, 4096, hz, || libr::write_fs(fd, &wbuf, 4096) == Ok(4096));
+                let _ = libr::close(fd);
+            }
         }
     }
     if ok {
-        let fd = libr::open("/BENCH.TMP", 0);
-        if fd < 0 {
-            println!("[bench] ramfs_4K_read: FAIL (open fd={})", fd);
-            ok = false;
-        } else {
-            let mut rbuf = [0u8; 4096];
-            ok &= run("ramfs_4K_read", 100, 4096, hz, || libr::read_fs(fd, &mut rbuf, 4096) == 4096);
-            let _ = libr::close(fd);
-            if libr::remove("/BENCH.TMP") != 0 {
-                println!("[bench] ramfs cleanup: FAIL (remove)");
+        match libr::open("/BENCH.TMP", 0) {
+            Err(e) => {
+                println!("[bench] ramfs_4K_read: FAIL (open {:?})", e);
                 ok = false;
+            }
+            Ok(fd) => {
+                let mut rbuf = [0u8; 4096];
+                ok &= run("ramfs_4K_read", 100, 4096, hz, || libr::read_fs(fd, &mut rbuf, 4096) == Ok(4096));
+                let _ = libr::close(fd);
+                if libr::remove("/BENCH.TMP").is_err() {
+                    println!("[bench] ramfs cleanup: FAIL (remove)");
+                    ok = false;
+                }
             }
         }
     }
@@ -136,22 +143,23 @@ fn real_main(_sp: u64) -> ! {
     // b5: overwrite 4 KiB su FAT — open+write+close (PIO + FLUSH per settore).
     // Il file resta nell'immagine (rigenerata a ogni run.sh): mai fixture altrui.
     if ok {
-        let fd = libr::open("/fat/BENCH.TMP", O_CREAT);
-        if fd < 0 {
-            println!("[bench] fat_4K_oow: FAIL (create fd={})", fd);
-            ok = false;
-        } else {
-            let _ = libr::close(fd);
-            let wbuf = [0x5Au8; 4096];
-            ok &= run("fat_4K_oow", 50, 4096, hz, || {
-                let fd = libr::open("/fat/BENCH.TMP", 0);
-                if fd < 0 {
-                    return false;
-                }
-                let n = libr::write_fs(fd, &wbuf, 4096);
+        match libr::open("/fat/BENCH.TMP", O_CREAT) {
+            Err(e) => {
+                println!("[bench] fat_4K_oow: FAIL (create {:?})", e);
+                ok = false;
+            }
+            Ok(fd) => {
                 let _ = libr::close(fd);
-                n == 4096
-            });
+                let wbuf = [0x5Au8; 4096];
+                ok &= run("fat_4K_oow", 50, 4096, hz, || {
+                    let Ok(fd) = libr::open("/fat/BENCH.TMP", 0) else {
+                        return false;
+                    };
+                    let n = libr::write_fs(fd, &wbuf, 4096);
+                    let _ = libr::close(fd);
+                    n == Ok(4096)
+                });
+            }
         }
     }
 

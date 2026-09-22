@@ -56,3 +56,4 @@
 - [ADR-0027: Identità misurata (Strato 2)](./adr/0027-measured-identity.md)
 - [ADR-0028: `exec` in-place + shell che lancia programmi](./adr/0028-exec-in-place.md)
 - [ADR-0029: ATA DMA + IRQ](./adr/0029-ata-dma-irq.md)
+- [ADR-0030: Fondamenta posix (Fase 39)](./adr/0030-posix-fondamenta.md)

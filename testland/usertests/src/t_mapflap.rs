@@ -94,11 +94,10 @@ pub fn t_mapflap() -> bool {
 /// backpressure). Il flooder viene sempre fermato (T_STOP) e reaped.
 pub fn t_neighbor() -> bool {
     helpers::drain_stray();
-    let fb = libr::open_wait("/dev/null", 0, 1000, libr::POLL_PERIOD_TICKS);
-    if fb < 0 {
+    let Ok(fb) = libr::open_wait("/dev/null", 0, 1000, libr::POLL_PERIOD_TICKS) else {
         println!("[usertests] t30: baseline open /dev/null FAILED");
         return false;
-    }
+    };
     let _ = libr::close(fb);
     // Helper "cattivo vicino" (nessun T_DONE atteso prima di T_STOP).
     let (fchan, _) = match helpers::spawn_cfg("/fat/test/testcli.bin", "utcli", 16, helpers::M_FLOOD, 0) {
@@ -173,29 +172,28 @@ pub fn t_neighbor() -> bool {
     let fd = libr::open_wait("/dev/null", 0, 1000, libr::POLL_PERIOD_TICKS);
     let elapsed = libr::get_ticks() - t_start;
     helpers::stop_flooder(fchan);
-    if fd < 0 {
+    let Ok(fd) = fd else {
         println!("[usertests] t30: /dev/null mai tornato (timeout)");
         return false;
-    }
+    };
     let data = [0x5Au8; 16];
-    let ok = libr::write_fs(fd, &data, 16) == 16;
+    let ok = libr::write_fs(fd, &data, 16) == Ok(16);
     let mut b = [0u8; 16];
-    let okr = libr::read_fs(fd, &mut b, 16) == 0;
+    let okr = libr::read_fs(fd, &mut b, 16) == Ok(0);
     let _ = libr::close(fd);
     if !ok || !okr {
         println!("[usertests] t30: write/read post-flood FAILED");
         return false;
     }
     // Smoke ramfs: il flood e' read-only, hello.txt intatto.
-    let fdh = libr::open("hello.txt", 0);
-    if fdh < 0 {
+    let Ok(fdh) = libr::open("hello.txt", 0) else {
         println!("[usertests] t30: smoke hello.txt FAILED");
         return false;
-    }
+    };
     let mut hb = [0u8; 64];
-    let n = libr::read_fs(fdh, &mut hb, 64);
+    let n = libr::read_fs(fdh, &mut hb, 64).unwrap_or(0);
     let _ = libr::close(fdh);
-    if n as usize >= helpers::HELLO.len() && hb[..helpers::HELLO.len()] != *helpers::HELLO {
+    if n >= helpers::HELLO.len() && hb[..helpers::HELLO.len()] != *helpers::HELLO {
         println!("[usertests] t30: hello.txt corrotto dal flood?!");
         return false;
     }
@@ -209,7 +207,7 @@ pub fn t_neighbor() -> bool {
         );
         return false;
     }
-    n as usize >= helpers::HELLO.len() && hb[..helpers::HELLO.len()] == *helpers::HELLO
+    n >= helpers::HELLO.len() && hb[..helpers::HELLO.len()] == *helpers::HELLO
 }
 
 /// t31 — presenza keyboard stack in userspace (Fase 15, gate leggero).
@@ -226,17 +224,15 @@ pub fn t_kbd_presence() -> bool {
         println!("[usertests] t31: service Tty non registrato");
         return false;
     }
-    let fk = libr::open_wait("/dev/kbd/kbd", 0, 1000, libr::POLL_PERIOD_TICKS);
-    if fk < 0 {
+    let Ok(fk) = libr::open_wait("/dev/kbd/kbd", 0, 1000, libr::POLL_PERIOD_TICKS) else {
         println!("[usertests] t31: open /dev/kbd/kbd FAILED");
         return false;
-    }
+    };
     let _ = libr::close(fk);
-    let ft = libr::open_wait("/dev/input/keyboard", 0, 1000, libr::POLL_PERIOD_TICKS);
-    if ft < 0 {
+    let Ok(ft) = libr::open_wait("/dev/input/keyboard", 0, 1000, libr::POLL_PERIOD_TICKS) else {
         println!("[usertests] t31: open /dev/input/keyboard FAILED");
         return false;
-    }
+    };
     let _ = libr::close(ft);
     true
 }

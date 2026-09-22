@@ -27,13 +27,13 @@ pub struct IpcReply {
 
 /// `send(channel, tag, w0, w1)`: invia il messaggio sul canale (0 = canale di
 /// nascita verso il parent) e resta bloccato finche' il peer non risponde con
-/// `reply`. Restituisce la risposta e lo stato (`Ok` se riuscito).
+/// `reply`. Fallisce solo a canale morto/peer morto (`ServerDied`, Fase 39).
 #[inline]
-pub fn send(channel: u64, tag: u64, w0: u64, w1: u64) -> Result<IpcReply, ()> {
+pub fn send(channel: u64, tag: u64, w0: u64, w1: u64) -> Result<IpcReply, Error> {
     let (rax, _rdi, rsi, rdx, r10) =
         unsafe { syscall4_out(SYS_SEND, channel, tag, w0, w1) };
     if rax < 0 {
-        return Err(());
+        return Err(Error::ServerDied);
     }
     Ok(IpcReply { tag: rsi, w0: rdx, w1: r10 })
 }
@@ -46,11 +46,12 @@ pub fn send(channel: u64, tag: u64, w0: u64, w1: u64) -> Result<IpcReply, ()> {
 ///
 /// Vincolo del primo passo: non mescolare `send` sincrone e richieste async
 /// in volo per lo stesso processo; raccogliere le risposte in ordine (FIFO).
+/// Fallimento = `RingFull` (Fase 39: coda piena e canale morto indistinguibili).
 #[inline]
-pub fn send_async(channel: u64, tag: u64, w0: u64, w1: u64) -> Result<i64, ()> {
+pub fn send_async(channel: u64, tag: u64, w0: u64, w1: u64) -> Result<i64, Error> {
     let rax = unsafe { syscall4(SYS_SEND_ASYNC, channel, tag, w0, w1) };
     if rax < 0 {
-        return Err(());
+        return Err(Error::RingFull);
     }
     Ok(rax)
 }
@@ -134,11 +135,12 @@ pub fn wait_reply_chan(req_id: i64, chan: u64) -> Result<IpcMsg, WaitReplyError>
 /// `recv()`: resta bloccato finche' non arriva un messaggio, poi lo restituisce.
 /// Per una richiesta porta `channel` (canale sorgente); per una risposta async
 /// (Fase 13) `req_id` = id della richiesta a cui risponde (e `channel` = 0).
+/// Fallimento = `ServerDied` (Fase 39; in pratica non fallisce mai).
 #[inline]
-pub fn recv() -> Result<IpcMsg, ()> {
+pub fn recv() -> Result<IpcMsg, Error> {
     let (rax, rdi, rsi, rdx, r10) = unsafe { syscall4_out(SYS_RECV, 0, 0, 0, 0) };
     if rax < 0 {
-        return Err(());
+        return Err(Error::ServerDied);
     }
     Ok(decode_ipc_msg(rdi, rsi, rdx, r10))
 }
@@ -171,12 +173,13 @@ fn decode_ipc_msg(rdi: u64, rsi: u64, rdx: u64, r10: u64) -> IpcMsg {
 }
 
 /// `reply(tag, w0, w1)`: risponde al mittente del messaggio che stiamo
-/// elaborando (ADR-0008).
+/// elaborando (ADR-0008). Fallimento = `ServerDied` (Fase 39: il peer e' morto
+/// mentre lo servivamo; mai reply senza `recv` prima).
 #[inline]
-pub fn reply(tag: u64, w0: u64, w1: u64) -> Result<(), ()> {
+pub fn reply(tag: u64, w0: u64, w1: u64) -> Result<(), Error> {
     let rax = unsafe { syscall4(SYS_REPLY, tag, w0, w1, 0) };
     if rax < 0 {
-        return Err(());
+        return Err(Error::ServerDied);
     }
     Ok(())
 }

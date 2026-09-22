@@ -21,105 +21,145 @@ fn real_main(_sp: u64) -> ! {
     // Test 1: Open and read "hello.txt" (pre-populated by userfs)
     println!("[testfs] Test 1: read hello.txt");
     let fd = libr::open("hello.txt", 0);
-    println!("[testfs] open fd={}", fd);
-
-    if fd >= 0 {
-        let mut buf = [0u8; 256];
-        let n = libr::read_fs(fd, &mut buf, 256);
-        print_str!("[testfs] read {} bytes: ", n);
-        if n > 0 {
-            libr::write_raw(buf.as_ptr(), n as usize);
+    match fd {
+        Ok(fd) => {
+            println!("[testfs] open fd={}", fd);
+            let mut buf = [0u8; 256];
+            match libr::read_fs(fd, &mut buf, 256) {
+                Ok(n) => {
+                    print_str!("[testfs] read {} bytes: ", n);
+                    if n > 0 {
+                        libr::write_raw(buf.as_ptr(), n);
+                    }
+                    println!();
+                }
+                Err(e) => {
+                    println!("[testfs] read failed: {:?}", e);
+                }
+            }
+            let _ = libr::close(fd);
         }
-        println!();
-        let _ = libr::close(fd);
+        Err(e) => {
+            println!("[testfs] open failed: {:?}", e);
+        }
     }
 
     // Test 2: Readdir "/"
     println!("[testfs] Test 2: readdir /");
     let mut entries = [0u8; 1024];
     let count = libr::readdir("/", &mut entries, 1024);
-    println!("[testfs] readdir count={}", count);
-    // Print entries (null-terminated strings, traversal in `libr`, A4).
-    if count > 0 {
-        libr::test::each_name(&entries, count as usize, |name| {
-            print_str!("[testfs]   ");
-            libr::write_raw(name.as_ptr(), name.len());
-            println!();
-        });
+    match count {
+        Ok(count) => {
+            println!("[testfs] readdir count={}", count);
+            // Print entries (null-terminated strings, traversal in `libr`, A4).
+            if count > 0 {
+                libr::test::each_name(&entries, count, |name| {
+                    print_str!("[testfs]   ");
+                    libr::write_raw(name.as_ptr(), name.len());
+                    println!();
+                });
+            }
+        }
+        Err(e) => {
+            println!("[testfs] readdir failed: {:?}", e);
+        }
     }
 
     // Test 3: Write a file and read it back
     println!("[testfs] Test 3: write + read verification");
     let fd2 = libr::open("test_write.txt", libr::O_CREAT);
-    println!("[testfs] open fd={}", fd2);
-
-    if fd2 >= 0 {
-        let msg = b"Hello from testfs!\n";
-        let n = libr::write_fs(fd2, msg, msg.len());
-        println!("[testfs] wrote {} bytes", n);
-        let _ = libr::close(fd2);
-
-        // Read it back
-        let fd3 = libr::open("test_write.txt", 0);
-        if fd3 >= 0 {
-            let mut buf2 = [0u8; 256];
-            let n2 = libr::read_fs(fd3, &mut buf2, 256);
-            print_str!("[testfs] read back {} bytes: ", n2);
-            if n2 > 0 {
-                libr::write_raw(buf2.as_ptr(), n2 as usize);
+    match fd2 {
+        Ok(fd2) => {
+            println!("[testfs] open fd={}", fd2);
+            let msg = b"Hello from testfs!\n";
+            match libr::write_fs(fd2, msg, msg.len()) {
+                Ok(n) => println!("[testfs] wrote {} bytes", n),
+                Err(e) => println!("[testfs] write failed: {:?}", e),
             }
-            println!();
+            let _ = libr::close(fd2);
 
-            // Verify
-            let ok = n2 as usize == msg.len() && &buf2[..n2 as usize] == msg;
-            all_ok &= ok;
-            if ok {
-                println!("[testfs] verification: PASS");
-            } else {
-                println!("[testfs] verification: FAIL");
+            // Read it back
+            match libr::open("test_write.txt", 0) {
+                Ok(fd3) => {
+                    let mut buf2 = [0u8; 256];
+                    match libr::read_fs(fd3, &mut buf2, 256) {
+                        Ok(n2) => {
+                            print_str!("[testfs] read back {} bytes: ", n2);
+                            if n2 > 0 {
+                                libr::write_raw(buf2.as_ptr(), n2);
+                            }
+                            println!();
+
+                            // Verify
+                            let ok = n2 == msg.len() && &buf2[..n2] == msg;
+                            all_ok &= ok;
+                            if ok {
+                                println!("[testfs] verification: PASS");
+                            } else {
+                                println!("[testfs] verification: FAIL");
+                            }
+                        }
+                        Err(e) => {
+                            all_ok = false;
+                            println!("[testfs] verification: FAIL (read {:?})", e);
+                        }
+                    }
+                    let _ = libr::close(fd3);
+                }
+                Err(_) => {
+                    all_ok = false;
+                    println!("[testfs] verification: FAIL (open for read)");
+                }
             }
-            let _ = libr::close(fd3);
-        } else {
-            all_ok = false;
-            println!("[testfs] verification: FAIL (open for read)");
         }
-    } else {
-        all_ok = false;
-        println!("[testfs] verification: FAIL (open for write)");
+        Err(_) => {
+            all_ok = false;
+            println!("[testfs] verification: FAIL (open for write)");
+        }
     }
 
     // Test 4: mkdir + readdir verification (Fase 9.4.3)
     println!("[testfs] Test 4: mkdir prova");
     let r = libr::mkdir("prova");
-    println!("[testfs] mkdir ret={}", r);
-    if r == 0 {
-        let mut entries2 = [0u8; 1024];
-        let c2 = libr::readdir("/", &mut entries2, 1024);
-        println!("[testfs] readdir count={}", c2);
-        let mut found = false;
-        let mut i = 0;
-        while i < entries2.len() && entries2[i] != 0 {
-            let start = i;
-            while i < entries2.len() && entries2[i] != 0 {
-                i += 1;
-            }
-            if &entries2[start..i] == b"prova" {
-                found = true;
-            }
-            if i < entries2.len() && entries2[i] == 0 {
-                i += 1;
+    match r {
+        Ok(()) => {
+            println!("[testfs] mkdir ret=0");
+            let mut entries2 = [0u8; 1024];
+            match libr::readdir("/", &mut entries2, 1024) {
+                Ok(c2) => {
+                    println!("[testfs] readdir count={}", c2);
+                    let mut found = false;
+                    let mut i = 0;
+                    while i < entries2.len() && entries2[i] != 0 {
+                        let start = i;
+                        while i < entries2.len() && entries2[i] != 0 {
+                            i += 1;
+                        }
+                        if &entries2[start..i] == b"prova" {
+                            found = true;
+                        }
+                        if i < entries2.len() && entries2[i] == 0 {
+                            i += 1;
+                        }
+                    }
+                    if found {
+                        all_ok &= true;
+                        println!("[testfs] mkdir prova: PASS");
+                    } else {
+                        all_ok = false;
+                        println!("[testfs] mkdir prova: FAIL");
+                    }
+                }
+                Err(e) => {
+                    all_ok = false;
+                    println!("[testfs] mkdir prova: FAIL (readdir {:?})", e);
+                }
             }
         }
-        if found {
-            all_ok &= true;
-            println!("[testfs] mkdir prova: PASS");
-        } else {
+        Err(_) => {
             all_ok = false;
             println!("[testfs] mkdir prova: FAIL");
         }
-    } else {
-        all_ok = false;
-        println!("[testfs] mkdir prova: FAIL");
     }
 
     // Test 5: heap lazy on-demand (sbrk riserva VA, page fault demand-zero

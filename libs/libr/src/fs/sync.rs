@@ -4,50 +4,48 @@ use crate::*;
 // ── FS wrappers ───────────────────────────────────────────────────
 
 /// `open(path, flags)`: apre un file tramite il fs server.
-/// Ritorna il fd (>=0) o -1 su errore.
+/// Ritorna il fd (>=0) o l'errore nativo (Fase 39).
 #[inline]
-pub fn open(path: &str, flags: u32) -> i64 {
-    if !session::fs_init() || session::fs_async_pending() {
-        return -1;
-    }
+pub fn open(path: &str, flags: u32) -> Result<i64, Error> {
+    session::fs_gate()?;
     if !ring::req_ring_write(R_OPEN, path.len() as u64, flags as u64, path.as_bytes()) {
-        return -1;
+        return Err(Error::RingFull);
     }
     match session::fs_notify_result(FS_NOTIFY, || {
         ring::req_ring_write(R_OPEN, path.len() as u64, flags as u64, path.as_bytes())
     }) {
         Some((result, _, _)) => {
             ring::resp_ring_consume(16);
-            session::fs_reply_val(result)
+            session::fs_reply_check(result).map(|v| v as i64)
         }
-        None => -1,
+        None => Err(Error::NotReady),
     }
 }
 
 /// `read_fs(fd, dst, max_count)`: legge fino a `max_count` byte dal file.
 /// I dati viaggiano nel response ring; se `max_count` supera la capacita' di
 /// un singolo frame, la lettura viene spezzata in piu' round trip (Fase 10.2).
-/// Ritorna i byte letti (0 = EOF) o -1 su errore.
-pub fn read_fs(fd: i64, dst: &mut [u8], max_count: usize) -> i64 {
-    if !session::fs_init() || session::fs_async_pending() {
-        return -1;
-    }
+/// Ritorna i byte letti (0 = EOF); un errore dopo progressi parziali ritorna
+/// `Ok(got)` (semantica POSIX: conta cio' che c'e'), solo a zero progressi e'
+/// `Err` (Fase 39).
+pub fn read_fs(fd: i64, dst: &mut [u8], max_count: usize) -> Result<usize, Error> {
+    session::fs_gate()?;
     let mut got = 0usize;
     while got < max_count {
         let want = (max_count - got).min(ring::RING_MAX_PAYLOAD);
         if !ring::req_ring_write(R_READ, fd as u64, want as u64, &[]) {
-            return if got > 0 { got as i64 } else { -1 };
+            return if got > 0 { Ok(got) } else { Err(Error::RingFull) };
         }
         let n = match session::fs_notify_result(FS_NOTIFY, || {
             ring::req_ring_write(R_READ, fd as u64, want as u64, &[])
         }) {
             Some((result, _, payload_len)) => {
-                if result == ring::ERR {
+                if session::fs_reply_check(result).is_err() {
                     ring::resp_ring_consume(16);
                     if got > 0 {
-                        return got as i64;
+                        return Ok(got);
                     }
-                    return -1;
+                    return Err(Error::Failed);
                 }
                 let avail = (result as usize).min(payload_len).min(max_count - got);
                 if avail > 0 {
@@ -60,9 +58,9 @@ pub fn read_fs(fd: i64, dst: &mut [u8], max_count: usize) -> i64 {
             }
             None => {
                 if got > 0 {
-                    return got as i64;
+                    return Ok(got);
                 }
-                return -1;
+                return Err(Error::NotReady);
             }
         };
         if n == 0 {
@@ -73,42 +71,43 @@ pub fn read_fs(fd: i64, dst: &mut [u8], max_count: usize) -> i64 {
             break; // read corto (EOF o file piu' corto)
         }
     }
-    got as i64
+    Ok(got)
 }
 
 /// `write_fs(fd, src, count)`: scrive `count` byte sul file (dal request ring).
 /// I dati viaggiano nel request ring; se `count` supera la capacita' di un
 /// singolo frame, la scrittura viene spezzata in piu' round trip (Fase 10.2).
-/// Ritorna i byte scritti o -1.
-pub fn write_fs(fd: i64, src: &[u8], count: usize) -> i64 {
-    if !session::fs_init() || session::fs_async_pending() {
-        return -1;
-    }
+/// Ritorna i byte scritti; errore dopo progressi parziali = `Ok(done)` (come
+/// `read_fs`, Fase 39).
+pub fn write_fs(fd: i64, src: &[u8], count: usize) -> Result<usize, Error> {
+    session::fs_gate()?;
     let mut done = 0usize;
     while done < count {
         let want = (count - done).min(ring::RING_MAX_PAYLOAD);
         if !ring::req_ring_write(R_WRITE, fd as u64, want as u64, &src[done..done + want]) {
-            return if done > 0 { done as i64 } else { -1 };
+            return if done > 0 { Ok(done) } else { Err(Error::RingFull) };
         }
         let n = match session::fs_notify_result(FS_NOTIFY, || {
             ring::req_ring_write(R_WRITE, fd as u64, want as u64, &src[done..done + want])
         }) {
             Some((result, _, _)) => {
                 ring::resp_ring_consume(16);
-                let r = session::fs_reply_val(result);
-                if r < 0 {
-                    if done > 0 {
-                        return done as i64;
+                let r = match session::fs_reply_check(result) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        if done > 0 {
+                            return Ok(done);
+                        }
+                        return Err(e);
                     }
-                    return -1;
-                }
+                };
                 (r as usize).min(want)
             }
             None => {
                 if done > 0 {
-                    return done as i64;
+                    return Ok(done);
                 }
-                return -1;
+                return Err(Error::NotReady);
             }
         };
         if n == 0 {
@@ -119,94 +118,87 @@ pub fn write_fs(fd: i64, src: &[u8], count: usize) -> i64 {
             break;
         }
     }
-    done as i64
+    Ok(done)
 }
 
 /// `close(fd)`: chiude un file descriptor.
 #[inline]
-pub fn close(fd: i64) -> i64 {
-    if !session::fs_init() || session::fs_async_pending() {
-        return -1;
-    }
+pub fn close(fd: i64) -> Result<(), Error> {
+    session::fs_gate()?;
     if !ring::req_ring_write(R_CLOSE, fd as u64, 0, &[]) {
-        return -1;
+        return Err(Error::RingFull);
     }
     match session::fs_notify_result(FS_NOTIFY, || ring::req_ring_write(R_CLOSE, fd as u64, 0, &[])) {
         Some((result, _, _)) => {
             ring::resp_ring_consume(16);
-            session::fs_reply_val(result)
+            session::fs_reply_check(result).map(|_| ())
         }
-        None => -1,
+        None => Err(Error::NotReady),
     }
 }
 
 /// `readdir(path, entries_buf, buf_len)`: legge le entry di una directory.
 /// Le entry vengono scritte dal server nel response ring nel formato
 /// "name\0name\0...\0\0"; le copiamo in `entries_buf`. Ritorna il numero di
-/// entry o -1.
+/// entry (Fase 39).
 #[inline]
-pub fn readdir(path: &str, entries_buf: &mut [u8], buf_len: usize) -> i64 {
-    if !session::fs_init() || session::fs_async_pending() {
-        return -1;
-    }
+pub fn readdir(path: &str, entries_buf: &mut [u8], buf_len: usize) -> Result<usize, Error> {
+    session::fs_gate()?;
     if !ring::req_ring_write(R_READDIR, path.len() as u64, 0, path.as_bytes()) {
-        return -1;
+        return Err(Error::RingFull);
     }
     match session::fs_notify_result(FS_NOTIFY, || {
         ring::req_ring_write(R_READDIR, path.len() as u64, 0, path.as_bytes())
     }) {
         Some((result, _, payload_len)) => {
-            let count = session::fs_reply_val(result);
-            if count >= 0 && payload_len > 0 {
+            // Disciplina ring (Fase 17): il response frame si consuma SEMPRE
+            // (anche a diniego), POI si interpreta — mai early-return prima.
+            let count = session::fs_reply_check(result);
+            if count.is_ok() && payload_len > 0 {
                 ring::resp_ring_read_payload(entries_buf, payload_len.min(buf_len));
             } else {
                 ring::resp_ring_consume(16);
             }
-            count
+            count.map(|c| c as usize)
         }
-        None => -1,
+        None => Err(Error::NotReady),
     }
 }
 
-/// `mkdir(path)`: crea una directory tramite il fs server.
-/// Ritorna 0 su successo o -1 su errore.
+/// `mkdir(path)`: crea una directory tramite il fs server (Fase 39).
 #[inline]
-pub fn mkdir(path: &str) -> i64 {
-    if !session::fs_init() || session::fs_async_pending() {
-        return -1;
-    }
+pub fn mkdir(path: &str) -> Result<(), Error> {
+    session::fs_gate()?;
     if !ring::req_ring_write(R_MKDIR, path.len() as u64, 0, path.as_bytes()) {
-        return -1;
+        return Err(Error::RingFull);
     }
     match session::fs_notify_result(FS_NOTIFY, || {
         ring::req_ring_write(R_MKDIR, path.len() as u64, 0, path.as_bytes())
     }) {
         Some((result, _, _)) => {
             ring::resp_ring_consume(16);
-            session::fs_reply_val(result)
+            session::fs_reply_check(result).map(|_| ())
         }
-        None => -1,
+        None => Err(Error::NotReady),
     }
 }
 
 /// `remove(path)`: cancella un file o una directory VUOTA (Fase 18.2).
-/// Solo ramfs: FAT read-only e device remoti rifiutano. Ritorna 0 o -1.
+/// Solo ramfs: FAT read-only e device remoti rifiutano (Fase 39).
 #[inline]
-pub fn remove(path: &str) -> i64 {
-    if !session::fs_init() || session::fs_async_pending() {
-        return -1;
-    }
+pub fn remove(path: &str) -> Result<(), Error> {
+    session::fs_gate()?;
     if !ring::req_ring_write(R_DELETE, path.len() as u64, 0, path.as_bytes()) {
-        return -1;
+        return Err(Error::RingFull);
     }
     match session::fs_notify_result(FS_NOTIFY, || {
         ring::req_ring_write(R_DELETE, path.len() as u64, 0, path.as_bytes())
     }) {
         Some((result, _, _)) => {
             ring::resp_ring_consume(16);
-            session::fs_reply_val(result)
+            session::fs_reply_check(result).map(|_| ())
         }
-        None => -1,
+        None => Err(Error::NotReady),
     }
 }
 
@@ -233,14 +225,13 @@ impl Stat {
     }
 }
 
-/// `stat(path, out)`: metadati senza aprire. Ritorna 0 o -1 (inesistente).
+/// `stat(path, out)`: metadati senza aprire (Fase 39; `NotFound` tipizzato in
+/// Fase 40, oggi `Failed`).
 #[inline]
-pub fn stat(path: &str, out: &mut Stat) -> i64 {
-    if !session::fs_init() || session::fs_async_pending() {
-        return -1;
-    }
+pub fn stat(path: &str, out: &mut Stat) -> Result<(), Error> {
+    session::fs_gate()?;
     if !ring::req_ring_write(R_STAT, path.len() as u64, 0, path.as_bytes()) {
-        return -1;
+        return Err(Error::RingFull);
     }
     match session::fs_notify_result(FS_NOTIFY, || {
         ring::req_ring_write(R_STAT, path.len() as u64, 0, path.as_bytes())
@@ -248,15 +239,13 @@ pub fn stat(path: &str, out: &mut Stat) -> i64 {
         // Risposta self-written `[size:8][kind:8]`: result=size, w1=kind.
         Some((result, w1, _)) => {
             ring::resp_ring_consume(16);
-            if result == ring::ERR {
-                return -1;
-            }
-            out.size = result;
+            let size = session::fs_reply_check(result)?;
+            out.size = size;
             out.kind = w1 & 0x3;
             out.readonly = w1 & STAT_READONLY != 0;
-            0
+            Ok(())
         }
-        None => -1,
+        None => Err(Error::NotReady),
     }
 }
 
@@ -276,62 +265,56 @@ fn mount_frame(source: &str, target: &str) -> bool {
 }
 
 /// `mount(source, target)`: monta una sorgente a blocchi (es. "/dev/sda")
-/// su un target (es. "/mnt", Fase 16b). Ritorna 0 su successo o -1 su errore
-/// (sorgente non disco, target invalido, mount fallito).
+/// su un target (es. "/mnt", Fase 16b). Errori nativi in Fase 39 (dettaglio
+/// in Fase 40).
 #[inline]
-pub fn mount(source: &str, target: &str) -> i64 {
-    if !session::fs_init() || session::fs_async_pending() {
-        return -1;
-    }
+pub fn mount(source: &str, target: &str) -> Result<(), Error> {
+    session::fs_gate()?;
     if !mount_frame(source, target) {
-        return -1;
+        return Err(Error::Invalid);
     }
     match session::fs_notify_result(FS_NOTIFY, || mount_frame(source, target)) {
         Some((result, _, _)) => {
             ring::resp_ring_consume(16);
-            session::fs_reply_val(result)
+            session::fs_reply_check(result).map(|_| ())
         }
-        None => -1,
+        None => Err(Error::NotReady),
     }
 }
 
 /// `umount(target)`: smonta un target (Fase 16b). Rifiutato se ci sono fd
-/// aperti sotto il target. Ritorna 0 su successo o -1 su errore.
+/// aperti sotto il target (Fase 39; `Busy` tipizzato in Fase 40).
 #[inline]
-pub fn umount(target: &str) -> i64 {
-    if !session::fs_init() || session::fs_async_pending() {
-        return -1;
-    }
+pub fn umount(target: &str) -> Result<(), Error> {
+    session::fs_gate()?;
     if !ring::req_ring_write(R_UMOUNT, target.len() as u64, 0, target.as_bytes()) {
-        return -1;
+        return Err(Error::RingFull);
     }
     match session::fs_notify_result(FS_NOTIFY, || {
         ring::req_ring_write(R_UMOUNT, target.len() as u64, 0, target.as_bytes())
     }) {
         Some((result, _, _)) => {
             ring::resp_ring_consume(16);
-            session::fs_reply_val(result)
+            session::fs_reply_check(result).map(|_| ())
         }
-        None => -1,
+        None => Err(Error::NotReady),
     }
 }
 
 /// `rights_drop(keep_mask, subtree)`: riduce i propri diritti sul canale
 /// verso userfs (Fase 17, self-restriction only). Solo shrink: il server fa
 /// AND con la mask corrente; il subtree puo' solo restringersi (widen =
-/// -1, nessun cambio). `subtree=None` = solo-ops. Ritorna 0 o -1.
+/// `Err`, nessun cambio). `subtree=None` = solo-ops (Fase 39).
 /// Irrevocabile per disegno (nessun GRANT: i canali non sono trasferibili).
 #[inline]
-pub fn rights_drop(keep_mask: u32, subtree: Option<&str>) -> i64 {
-    if !session::fs_init() || session::fs_async_pending() {
-        return -1;
-    }
+pub fn rights_drop(keep_mask: u32, subtree: Option<&str>) -> Result<(), Error> {
+    session::fs_gate()?;
     let sub_bytes: &[u8] = match subtree {
         Some(s) => s.as_bytes(),
         None => &[],
     };
     if sub_bytes.len() > 256 {
-        return -1;
+        return Err(Error::Invalid);
     }
     if !ring::req_ring_write(
         R_RIGHTS_DROP,
@@ -339,7 +322,7 @@ pub fn rights_drop(keep_mask: u32, subtree: Option<&str>) -> i64 {
         sub_bytes.len() as u64,
         sub_bytes,
     ) {
-        return -1;
+        return Err(Error::RingFull);
     }
     match session::fs_notify_result(FS_NOTIFY, || {
         ring::req_ring_write(
@@ -351,29 +334,28 @@ pub fn rights_drop(keep_mask: u32, subtree: Option<&str>) -> i64 {
     }) {
         Some((result, _, _)) => {
             ring::resp_ring_consume(16);
-            session::fs_reply_val(result)
+            session::fs_reply_check(result).map(|_| ())
         }
-        None => -1,
+        None => Err(Error::NotReady),
     }
 }
 
 /// `rights_get(buf)`: legge i propri diritti (Fase 17). Scrive il subtree
 /// normalizzato + NUL in `buf` (root = solo NUL) e ritorna la mask ops
-/// (0..=RIGHTS_ALL) o -1 su errore. Dimensionare `buf` ≥ 257.
+/// (0..=RIGHTS_ALL). Dimensionare `buf` ≥ 257 (Fase 39).
 #[inline]
-pub fn rights_get(buf: &mut [u8]) -> i64 {
+pub fn rights_get(buf: &mut [u8]) -> Result<u32, Error> {
     if buf.is_empty() {
-        return -1;
+        return Err(Error::Invalid);
     }
-    if !session::fs_init() || session::fs_async_pending() {
-        return -1;
-    }
+    session::fs_gate()?;
     if !ring::req_ring_write(R_RIGHTS_GET, 0, 0, &[]) {
-        return -1;
+        return Err(Error::RingFull);
     }
     match session::fs_notify_result(FS_NOTIFY, || ring::req_ring_write(R_RIGHTS_GET, 0, 0, &[])) {
         Some((result, w1, payload_len)) => {
-            let ops = session::fs_reply_val(result);
+            // Stessa disciplina di `readdir`: consuma sempre, poi interpreta.
+            let ops = session::fs_reply_check(result);
             // Leggi tutto il payload in uno stack buffer (subtree ≤ 256 dal
             // server): un solo consumo 16+len, mai disallineamenti.
             let mut tmp = [0u8; 256];
@@ -383,15 +365,13 @@ pub fn rights_get(buf: &mut [u8]) -> i64 {
             } else {
                 ring::resp_ring_consume(16);
             }
-            if ops < 0 {
-                return -1;
-            }
+            let ops = ops?;
             let n = (w1 as usize).min(take).min(buf.len() - 1);
             buf[..n].copy_from_slice(&tmp[..n]);
             buf[n] = 0;
-            ops
+            Ok(ops as u32)
         }
-        None => -1,
+        None => Err(Error::NotReady),
     }
 }
 
@@ -431,10 +411,10 @@ pub fn fat_bpb_identity(boot: &[u8; 512]) -> Option<(Option<u32>, [u8; 11])> {
 }
 
 /// `fs_register(prefix)`: un driver (devfs/console) registra il proprio prefix
-/// di mount presso userfs. Ritorna 0 su successo o -1 su errore (anche se
-/// userfs non e' ancora pronto: il chiamante puo' ritentare).
+/// di mount presso userfs (Fase 39: errore nativo; il chiamante puo' ritentare
+/// se userfs non e' ancora pronto).
 #[inline]
-pub fn fs_register(prefix: &[u8]) -> i64 {
+pub fn fs_register(prefix: &[u8]) -> Result<(), Error> {
     fs_register_multi(&[prefix])
 }
 
@@ -444,42 +424,39 @@ pub fn fs_register(prefix: &[u8]) -> i64 {
 /// forwardable dopo il primo, e se userfs in quel momento sta inoltrando una
 /// richiesta al driver (single-threaded, `send` bloccante) si crea un
 /// deadlock incrociato (driver→userfs register, userfs→driver forward).
-/// Payload = prefix separati da NUL. Ritorna 0 se TUTTI registrati, -1 se
-/// almeno uno fallisce o i buffer non bastano.
-pub fn fs_register_multi(prefixes: &[&[u8]]) -> i64 {
-    if !session::fs_init() || session::fs_async_pending() {
-        return -1;
-    }
+/// Payload = prefix separati da NUL. `Ok` se TUTTI registrati (Fase 39).
+pub fn fs_register_multi(prefixes: &[&[u8]]) -> Result<(), Error> {
+    session::fs_gate()?;
     let mut buf = [0u8; 520];
     let mut n = 0usize;
     for (i, p) in prefixes.iter().enumerate() {
         if i > 0 {
             if n + 1 > buf.len() {
-                return -1;
+                return Err(Error::Invalid);
             }
             buf[n] = 0;
             n += 1;
         }
         if n + p.len() > buf.len() {
-            return -1;
+            return Err(Error::Invalid);
         }
         buf[n..n + p.len()].copy_from_slice(p);
         n += p.len();
     }
     if n == 0 {
-        return -1;
+        return Err(Error::Invalid);
     }
     if !ring::req_ring_write(R_REGISTER, n as u64, 0, &buf[..n]) {
-        return -1;
+        return Err(Error::RingFull);
     }
     match session::fs_notify_result(FS_REGISTER, || {
         ring::req_ring_write(R_REGISTER, n as u64, 0, &buf[..n])
     }) {
         Some((result, _, _)) => {
             ring::resp_ring_consume(16);
-            session::fs_reply_val(result)
+            session::fs_reply_check(result).map(|_| ())
         }
-        None => -1,
+        None => Err(Error::NotReady),
     }
 }
 
@@ -491,10 +468,7 @@ pub fn fs_register_multi(prefixes: &[&[u8]]) -> i64 {
 /// `load_file`/`load_bin`; la variante init accettava anche il file vuoto,
 /// qui rifiutato — un .bin vuoto non e' mai valido e falliva loud comunque).
 pub fn load_file(path: &str) -> Option<alloc::vec::Vec<u8>> {
-    let fd = open(path, 0);
-    if fd < 0 {
-        return None;
-    }
+    let fd = open(path, 0).ok()?;
     let mut data = alloc::vec::Vec::new();
     let mut chunk = [0u8; ring::RING_MAX_PAYLOAD];
     loop {
@@ -502,11 +476,14 @@ pub fn load_file(path: &str) -> Option<alloc::vec::Vec<u8>> {
             let _ = close(fd);
             return None; // troppo grosso: mai un binario valido
         }
-        let n = read_fs(fd, &mut chunk, ring::RING_MAX_PAYLOAD);
-        if n <= 0 {
+        let n = match read_fs(fd, &mut chunk, ring::RING_MAX_PAYLOAD) {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        if n == 0 {
             break;
         }
-        data.extend_from_slice(&chunk[..n as usize]);
+        data.extend_from_slice(&chunk[..n]);
     }
     let _ = close(fd);
     if data.is_empty() {

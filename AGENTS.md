@@ -1507,9 +1507,48 @@ velordor/
     + bench 3+3 run; `ev_wait`≈ok, `fb=0`, `abort=0`, zero FAIL/PANIC/FAULT.
   - Rischi: IRQ level-triggered (clear BM status+EOI), coerenza x86 snooped,
     PRD a cavallo 64K (split).
+- [ ] Fasi 39-45: posix-server + shell avanzata (personalita' POSIX in userspace,
+      kernel neutro per ADR-0025; control plane nel server, data plane diretto
+      client→userfs; ADR-0030 di disegno in Fase 39). Dipendenze:
+      39 → (40 ∥ 41) → 42 → 43 → 44 → 45.
+  - [x] Fase 39 (P0, fondamenta posix; ADR-0030): registry 8→16 +
+        `Service::Posix = 8` (discriminant 0-7 stabili; unica modifica kernel:
+        braccio nome in `syscall/service.rs` + `service_from_disc` a match
+        esplicito — il transmute su `disc < SERVICE_COUNT` con slot liberi
+        sarebbe UB), `libr::posix` (enum errore NATIVO `Error` con varianti di
+        dominio/trasporto + UNICA `to_errno` al bordo POSIX, table-tested in
+        t53 — i numeri POSIX non entrano mai nel kernel/wire; in 39 solo le
+        varianti di trasporto osservabili, `NotFound`/`ReadOnly`/… in Fase 40),
+        migrazione TOTALE dei wrapper a `Result<T, Error>` in un colpo solo
+        (vecchi nomi; read/write con parziale-come-`Ok`; ~30 file userland/
+        testland guidati dal compilatore; fuori per disegno: write seriale,
+        `ps_info`/`text_stats`, `poll_wait`), `SPAWN_IMAGE_MAX` single source
+        in `syscall-numbers`, harness t53 (lookup/pid Posix = `NotFound`,
+        tabella errno, gate registro sul nuovo slot via HARDEN esteso, t50
+        intatto). Vittoria: gate 5/5+7/7+53/53+shell, zero FAIL/PANIC/FAULT;
+        `heap_out` piatto a 28160 (+256 vs 27904 = `image_hash` Fase 36,
+        pre-esistente; il diff kernel di Fase 39 non alloca nulla).
+  - [ ] Fase 40 (P1, fd virtuali + redirect): `userland/posix` (tabella
+        `(chan,pid)→vfd`; open autorizzato + data plane diretto; `R_LSEEK`;
+        codici errore da userfs), shell `> >> < 2>`. Vittoria:
+        `echo hi > /f`, `run ./x > /o`, `ENOENT` distinto da `EROFS`.
+  - [ ] Fase 41 (P2, parser shell, parallela alla 40): quoting/escape,
+        `$VAR/$?/~`, `; && ||`, commenti, glob via `readdir`. Zero cambi IPC.
+        Vittoria: `test-shell.py` esteso verde.
+  - [ ] Fase 42 (P3, pipe + waitpid): pipe-buffer nel server, `pipe/dup2`,
+        heredoc, `waitpid` con status, pipeline `fork+exec` a catena. Vittoria:
+        `cat /f | wc`, `a | b > /o`.
+  - [ ] Fase 43 (P4, env/PATH/script): `envp` reale, cwd per-pid, `PATH`,
+        `exec` diretto, shebang, history/editing base. Vittoria: `export`,
+        binari senza path, `.sh` eseguibili.
+  - [ ] Fase 44 (P5, job control + segnali): `SIGINT/SIGTSTP` catturabili,
+        `fg/bg`, Ctrl-C/Z solo foreground, causa morte. Vittoria: `&`, `fg`,
+        Ctrl-C selettivo.
+  - [ ] Fase 45 (P6, indurimento + chiusura): diritti Fase 17 sui vfd, policy
+        same-identity, sandbox build, docs finali. Vittoria: suite + restart
+        verdi con policy attive.
 - [ ] Parcheggiate (trigger, non date): audio AC97+CBS (primo client servizio
-  PCI, chiude ADR-0007 davvero); posix-server nucleo (solo per un programma
-  reale concreto; handler catturabili dopo); server-run async userdisk (quando
+  PCI, chiude ADR-0007 davvero); server-run async userdisk (quando
   l'overlap DMA lo richiede); Strato 3 credenziali; ext2/ATAPI/write-back/
   read-ahead/`DISK_STATS`/generazioni PID/thread (solo su pressione reale);
   OOM-kill a load (negativa ADR-0028).
@@ -1702,9 +1741,9 @@ rg '\[bench\]' /tmp/bench-run1.log /tmp/bench-run2.log /tmp/bench-run3.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 7/7
-#   [usertests] PASS 52/52
+#   [usertests] PASS 53/53
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 52/52' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 53/53' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 

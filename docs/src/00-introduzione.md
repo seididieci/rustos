@@ -132,6 +132,14 @@ velordor/
 | 35 | Hardening (threat model + cancelli kernel, ADR-0025/0026) | ✅ Completata |
 | 36 | Identità misurata (hash nel PCB + manifest + policy su identità, ADR-0027) | ✅ Completata |
 | 37 | `exec` in-place + shell che lancia programmi (run/jobs/wait, ADR-0028) | ✅ Completata |
+| 38 | ATA DMA + IRQ (ADR-0029) | ✅ Completata |
+| 39 | Fondamenta posix: registry 8→16 + `Service::Posix`, `libr::posix`, harness t53 (ADR-0030) | ✅ Completata |
+| 40 | fd virtuali + redirect file (`> >> < 2>`, `R_LSEEK`, errori tipati) | 🟡 Pianificata |
+| 41 | Parser shell (quoting, `$VAR`, `; && \|\|`, glob) | 🟡 Pianificata |
+| 42 | Pipe + waitpid | 🟡 Pianificata |
+| 43 | Env/PATH/script (shebang, history) | 🟡 Pianificata |
+| 44 | Job control + segnali | 🟡 Pianificata |
+| 45 | Indurimento + chiusura posix | 🟡 Pianificata |
 
 ## Risorse
 

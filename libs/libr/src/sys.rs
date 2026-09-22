@@ -37,10 +37,10 @@ pub fn spin_ticks(n: i64) {
 /// al primo accesso). Ritorna il vecchio `heap_brk` (inizio della nuova
 /// regione), oppure `Err` se l'estensione non e' possibile.
 #[inline]
-pub fn sbrk(inc: usize) -> Result<usize, ()> {
+pub fn sbrk(inc: usize) -> Result<usize, Error> {
     let r = unsafe { syscall4(SYS_SBRK, inc as u64, 0, 0, 0) };
     if r < 0 {
-        Err(())
+        Err(Error::NoMemory)
     } else {
         Ok(r as usize)
     }
@@ -51,10 +51,10 @@ pub fn sbrk(inc: usize) -> Result<usize, ()> {
 /// basso); altrimenti e' un consiglio onorato solo se libero. Ritorna la base
 /// (sempre < 2^63) o `Err`. Solo RW in 28 (il kernel rifiuta altri `prot`).
 #[inline]
-pub fn mmap(hint: usize, len: usize) -> Result<usize, ()> {
+pub fn mmap(hint: usize, len: usize) -> Result<usize, Error> {
     let r = unsafe { syscall4(SYS_MMAP, hint as u64, len as u64, PROT_READ | PROT_WRITE, 0) };
     if r < 0 {
-        Err(())
+        Err(Error::NoMemory)
     } else {
         Ok(r as usize)
     }
@@ -64,10 +64,10 @@ pub fn mmap(hint: usize, len: usize) -> Result<usize, ()> {
 /// `addr` (`MMAP_FIXED`) o fallisce, mai fallback. Utile per riuso
 /// deterministico dopo `munmap`.
 #[inline]
-pub fn mmap_fixed(addr: usize, len: usize) -> Result<usize, ()> {
+pub fn mmap_fixed(addr: usize, len: usize) -> Result<usize, Error> {
     let r = unsafe { syscall4(SYS_MMAP, addr as u64, len as u64, PROT_READ | PROT_WRITE, MMAP_FIXED) };
     if r < 0 {
-        Err(())
+        Err(Error::NoMemory)
     } else {
         Ok(r as usize)
     }
@@ -76,10 +76,10 @@ pub fn mmap_fixed(addr: usize, len: usize) -> Result<usize, ()> {
 /// Fase 28 — `munmap(addr, len)`: smappa VMA intere (parziali = `Err` senza
 /// cambiare stato, niente split in 28).
 #[inline]
-pub fn munmap(addr: usize, len: usize) -> Result<(), ()> {
+pub fn munmap(addr: usize, len: usize) -> Result<(), Error> {
     let r = unsafe { syscall4(SYS_MUNMAP, addr as u64, len as u64, 0, 0) };
     if r < 0 {
-        Err(())
+        Err(Error::Invalid)
     } else {
         Ok(())
     }
@@ -90,10 +90,10 @@ pub fn munmap(addr: usize, len: usize) -> Result<(), ()> {
 /// vengono materializzate al primo accesso con i flag del prot (RO = scrittura
 /// → fault → kill del processo).
 #[inline]
-pub fn mmap_prot(hint: usize, len: usize, prot: u64) -> Result<usize, ()> {
+pub fn mmap_prot(hint: usize, len: usize, prot: u64) -> Result<usize, Error> {
     let r = unsafe { syscall4(SYS_MMAP, hint as u64, len as u64, prot, 0) };
     if r < 0 {
-        Err(())
+        Err(Error::NoMemory)
     } else {
         Ok(r as usize)
     }
@@ -104,10 +104,10 @@ pub fn mmap_prot(hint: usize, len: usize, prot: u64) -> Result<usize, ()> {
 /// A `PROT_NONE` le pagine cadono (il riuso rimaterializza zero); RO↔RW flippa
 /// il bit W. Il codice e' l'unico mapping eseguibile: niente PROT_EXEC.
 #[inline]
-pub fn mprotect(addr: usize, len: usize, prot: u64) -> Result<(), ()> {
+pub fn mprotect(addr: usize, len: usize, prot: u64) -> Result<(), Error> {
     let r = unsafe { syscall4(SYS_MPROTECT, addr as u64, len as u64, prot, 0) };
     if r < 0 {
-        Err(())
+        Err(Error::Invalid)
     } else {
         Ok(())
     }
@@ -117,10 +117,10 @@ pub fn mprotect(addr: usize, len: usize, prot: u64) -> Result<(), ()> {
 /// `len` byte (frame contigui azzerati, max 256 KiB) e ritorna l'id (>= 1).
 /// L'id si passa a un altro processo via IPC, che la mappa con `shm_map`.
 #[inline]
-pub fn shm_create(len: usize) -> Result<u32, ()> {
+pub fn shm_create(len: usize) -> Result<u32, Error> {
     let r = unsafe { syscall4(SYS_SHM_CREATE, len as u64, 0, 0, 0) };
     if r <= 0 {
-        Err(())
+        Err(Error::NoMemory)
     } else {
         Ok(r as u32)
     }
@@ -131,10 +131,10 @@ pub fn shm_create(len: usize) -> Result<u32, ()> {
 /// sono le STESSE per tutti i mappatori (scritture visibili). `hint == 0` =
 /// scelta kernel. Ritorna la base o `Err`.
 #[inline]
-pub fn shm_map(id: u32, hint: usize, prot: u64) -> Result<usize, ()> {
+pub fn shm_map(id: u32, hint: usize, prot: u64) -> Result<usize, Error> {
     let r = unsafe { syscall4(SYS_SHM_MAP, id as u64, hint as u64, prot, 0) };
     if r < 0 {
-        Err(())
+        Err(Error::NoMemory)
     } else {
         Ok(r as usize)
     }
@@ -146,10 +146,10 @@ pub fn shm_map(id: u32, hint: usize, prot: u64) -> Result<usize, ()> {
 /// copia privata (il resto resta condiviso). `hint == 0` = scelta kernel.
 /// Ritorna la base o `Err` (id inesistente, saturazione ref — mai in pratica).
 #[inline]
-pub fn shm_map_cow(id: u32, hint: usize) -> Result<usize, ()> {
+pub fn shm_map_cow(id: u32, hint: usize) -> Result<usize, Error> {
     let r = unsafe { syscall4(SYS_SHM_MAP, id as u64, hint as u64, PROT_READ, MAP_COW) };
     if r < 0 {
-        Err(())
+        Err(Error::NoMemory)
     } else {
         Ok(r as usize)
     }
@@ -161,10 +161,13 @@ pub fn shm_map_cow(id: u32, hint: usize) -> Result<usize, ()> {
 /// fisico base (serve il phys per programmare PRD/BMIBA del device).
 /// Single-slot: seconda alloc = `Err`. I frame cadono a teardown/exec.
 #[inline]
-pub fn dma_alloc(pages: usize) -> Result<u64, ()> {
+pub fn dma_alloc(pages: usize) -> Result<u64, Error> {
+    if pages == 0 || pages > DMA_PAGES_MAX {
+        return Err(Error::Invalid);
+    }
     let r = unsafe { syscall4(SYS_DMA_ALLOC, pages as u64, 0, 0, 0) };
     if r < 0 {
-        Err(())
+        Err(Error::NoMemory)
     } else {
         Ok(r as u64)
     }
@@ -189,10 +192,10 @@ pub fn exit(code: i64) -> ! {
 /// e' stato terminato, `Err` se il pid non esiste / non e' killabile (init,
 /// processi kernel, se stesso, non-figlio).
 #[inline]
-pub fn kill(pid: i64, code: i64) -> Result<(), ()> {
+pub fn kill(pid: i64, code: i64) -> Result<(), Error> {
     let r = unsafe { syscall4(SYS_KILL, pid as u64, code as u64, 0, 0) };
     if r < 0 {
-        Err(())
+        Err(Error::Denied)
     } else {
         Ok(())
     }
@@ -273,10 +276,10 @@ pub fn print_string(s: &[u8]) -> i64 {
 /// `chan` (ADR-0008). Usato da userfs per iniettare la response ring del client
 /// in un driver remoto (devfs/console).
 #[inline]
-pub fn map_in(chan: u64, phys: u64, virt: u64, count: usize) -> Result<(), ()> {
+pub fn map_in(chan: u64, phys: u64, virt: u64, count: usize) -> Result<(), Error> {
     let r = unsafe { syscall4(SYS_MAP_IN, chan, phys, virt, count as u64) };
     if r < 0 {
-        Err(())
+        Err(Error::Denied)
     } else {
         Ok(())
     }
@@ -295,16 +298,16 @@ pub struct CbsInfo {
 /// Admission control: ritorna l'id del server o `Err(())` se la bandwidth
 /// totale supererebbe il cap (~70%).
 #[inline]
-pub fn cbs_create(budget_ticks: u32, period_ticks: u32) -> Result<i64, ()> {
+pub fn cbs_create(budget_ticks: u32, period_ticks: u32) -> Result<i64, Error> {
     let r = unsafe { syscall4(SYS_CBS_CREATE, budget_ticks as u64, period_ticks as u64, 0, 0) };
-    if r < 0 { Err(()) } else { Ok(r) }
+    if r < 0 { Err(Error::Busy) } else { Ok(r) }
 }
 
 /// Lega il server CBS `server_id` al processo corrente.
 #[inline]
-pub fn cbs_attach(server_id: i64) -> Result<(), ()> {
+pub fn cbs_attach(server_id: i64) -> Result<(), Error> {
     let r = unsafe { syscall4(SYS_CBS_ATTACH, server_id as u64, 0, 0, 0) };
-    if r < 0 { Err(()) } else { Ok(()) }
+    if r < 0 { Err(Error::NotFound) } else { Ok(()) }
 }
 
 /// Ritorna le informazioni di un server CBS (budget/period/remaining).

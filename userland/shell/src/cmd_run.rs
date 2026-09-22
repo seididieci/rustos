@@ -130,7 +130,7 @@ pub(crate) fn cmd_run(args: &[&str]) {
             // Fallimento = seriale diretta (niente FS/terminale) + exit(1).
             match libr::exec_image_args(&img, &buf) {
                 Ok(()) => libr::exit(1), // irraggiungibile
-                Err(()) => {
+                Err(_) => {
                     let _ = libr::print_string(b"[shell] run: exec failed\n");
                     libr::exit(1);
                 }

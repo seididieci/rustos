@@ -13,36 +13,34 @@ use crate::*;
 
 /// `read_async(fd, count)`: come `read_fs` (un solo chunk) ma non blocca: scrive
 /// il frame `R_READ` nel request ring, notifica userfs con `send_async` e
-/// ritorna il `req_id` (>= 1) da passare a `fs_collect`/`fs_collect_msg`.
-/// Ritorna -1 se c'e' gia' un'op async in volo, se il request ring e' pieno, o
-/// se `send_async` fallisce (backpressure: il frame viene ritirato, nessun
-/// frame orfano).
-pub fn read_async(fd: i64, count: usize) -> i64 {
+/// ritorna il `req_id` (>= 1) da passare a `fs_collect`/`fs_collect_msg`
+/// (Fase 39: errore nativo invece di -1).
+pub fn read_async(fd: i64, count: usize) -> Result<i64, Error> {
     let want = count.min(ring::RING_MAX_PAYLOAD);
     fs_op_async(FS_NOTIFY, R_READ, fd as u64, want as u64, &[])
 }
 
 /// `write_async(fd, data)`: come `write_fs` (un solo chunk <= RING_MAX_PAYLOAD)
-/// ma non blocca: scrive il frame `R_WRITE` e notifica con `send_async`.
-/// Ritorna il `req_id` (>= 1) o -1 (stessi casi di `read_async`). Il payload
+/// ma non blocca: scrive il frame `R_WRITE` e notifica con `send_async`
+/// (Fase 39: `Result` invece di req_id/-1). Il payload
 /// resta nel request ring per i device remoti (consumato dal driver, come nel
 /// percorso sincrono) — la collect legge il result frame come `write_fs`.
-pub fn write_async(fd: i64, data: &[u8]) -> i64 {
+pub fn write_async(fd: i64, data: &[u8]) -> Result<i64, Error> {
     fs_op_async(FS_NOTIFY, R_WRITE, fd as u64, data.len() as u64, data)
 }
 
-/// `open_async(path, flags)`: come `open` ma non blocca. Ritorna il `req_id`
-/// o -1. Da raccogliere con `fs_collect_msg(..., is_read=false)`: fd o -1.
-pub fn open_async(path: &str, flags: u32) -> i64 {
+/// `open_async(path, flags)`: come `open` ma non blocca (Fase 39: `Result`).
+/// Da raccogliere con `fs_collect_msg(..., is_read=false)`: fd o errore.
+pub fn open_async(path: &str, flags: u32) -> Result<i64, Error> {
     fs_op_async(FS_NOTIFY, R_OPEN, path.len() as u64, flags as u64, path.as_bytes())
 }
 
 /// `fs_register_async(prefix)`: come `fs_register` ma non blocca: scrive il
-/// frame `R_REGISTER` e notifica con `send_async`. Ritorna il `req_id` o -1.
-/// Da raccogliere con `fs_collect_msg(..., is_read=false)`: 0 = registrato.
+/// frame `R_REGISTER` e notifica con `send_async` (Fase 39: `Result`).
+/// Da raccogliere con `fs_collect_msg(..., is_read=false)`: `Ok` = registrato.
 /// NOTA: a differenza delle altre op FS, la registrazione viaggia sul tag IPC
 /// `FS_REGISTER` (non `FS_NOTIFY`): userfs la serve in un handler dedicato.
-pub fn fs_register_async(prefix: &[u8]) -> i64 {
+pub fn fs_register_async(prefix: &[u8]) -> Result<i64, Error> {
     fs_op_async(FS_REGISTER, R_REGISTER, prefix.len() as u64, 0, prefix)
 }
 
@@ -55,27 +53,26 @@ pub fn fs_register_async(prefix: &[u8]) -> i64 {
 /// Collect: messaggio con req_id matchato e w0==0 (nessun frame nel ring:
 /// NON usare `fs_collect_msg`). Chiama `fs_init()` prima (alloca i ring alla
 /// prima volta; le chiamate dopo sono no-op che riusano le pagine).
-pub fn fs_buf_reg_async() -> i64 {
-    if !session::fs_init() || session::fs_async_pending() {
-        return -1;
-    }
+/// Fase 39: `Result` invece di req_id/-1.
+pub fn fs_buf_reg_async() -> Result<i64, Error> {
+    session::fs_gate()?;
     let req_phys = session::REQ_PHYS.load(Ordering::Relaxed);
     let resp_phys = session::RESP_PHYS.load(Ordering::Relaxed);
     if req_phys == 0 || resp_phys == 0 {
-        return -1;
+        return Err(Error::NotReady);
     }
     let c = session::fs_chan();
     if c < 0 {
-        return -1;
+        return Err(Error::NotReady);
     }
     match ipc::send_async(c as u64, FS_BUF_REG, req_phys, resp_phys) {
         Ok(req) => {
             session::FS_PENDING.store(req, Ordering::Relaxed);
-            req
+            Ok(req)
         }
         Err(_) => {
             session::FS_CHAN.store(-1, Ordering::Relaxed);
-            -1
+            Err(Error::RingFull)
         }
     }
 }
@@ -84,32 +81,28 @@ pub fn fs_buf_reg_async() -> i64 {
 /// (frame_tag,w0,w1,payload) nel request ring e notifica userfs con
 /// `send_async` sul tag IPC `ipc_tag` (`FS_NOTIFY` per le op, `FS_REGISTER`
 /// per la registrazione driver).
-/// Ritorna il `req_id` (>= 1) o -1 (op gia' in volo / payload troppo grande /
-/// ring pieno / send fallita con rollback del frame). Mai bloccante.
+/// Ritorna il `req_id` (>= 1); errori nativi invece di -1 (Fase 39: `Pending`
+/// se un'op e' in volo, `Invalid` se il payload eccede, `RingFull` se il ring
+/// e' pieno o la send fallisce con rollback del frame). Mai bloccante.
 /// `read_async`/`write_async` sono wrapper tipizzati; i driver usano questa
 /// direttamente per tag senza wrapper (es. `R_REGISTER`).
-pub fn fs_op_async(ipc_tag: u64, frame_tag: u32, w0: u64, w1: u64, payload: &[u8]) -> i64 {
-    if session::fs_forked() {
-        return -1; // figlio fork: niente FS (34, mai aliasare i ring)
-    }
-    if !session::fs_init() || session::fs_async_pending() {
-        return -1;
-    }
+pub fn fs_op_async(ipc_tag: u64, frame_tag: u32, w0: u64, w1: u64, payload: &[u8]) -> Result<i64, Error> {
+    session::fs_gate()?;
     if payload.len() > ring::RING_MAX_PAYLOAD {
-        return -1;
+        return Err(Error::Invalid);
     }
     if !ring::req_ring_write(frame_tag, w0, w1, payload) {
-        return -1;
+        return Err(Error::RingFull);
     }
     let c = session::fs_chan();
     if c < 0 {
         ring::req_ring_rollback(20 + payload.len());
-        return -1;
+        return Err(Error::NotReady);
     }
     match ipc::send_async(c as u64, ipc_tag, 0, 0) {
         Ok(req) => {
             session::FS_PENDING.store(req, Ordering::Relaxed);
-            req
+            Ok(req)
         }
         Err(_) => {
             // Notifica non consegnata (coda piena = backpressure, o canale
@@ -119,20 +112,22 @@ pub fn fs_op_async(ipc_tag: u64, frame_tag: u32, w0: u64, w1: u64, payload: &[u8
             session::FS_CHAN.store(-1, Ordering::Relaxed);
             // Togli il frame dal request ring.
             ring::req_ring_rollback(20 + payload.len());
-            -1
+            Err(Error::RingFull)
         }
     }
 }
 
 /// `fs_collect(req, dst, cap)`: raccoglie la risposta alla `read_async` che ha
 /// ritornato `req`. Attende (bloccante, FIFO) la reply async con quel req_id,
-/// poi legge il response frame (payload) in `dst`. Ritorna i byte letti, o -1.
+/// poi legge il response frame (payload) in `dst`. Ritorna i byte letti;
+/// errori nativi invece di -1 (Fase 39).
 /// Resetta il guard 1-in-volo (anche su errore).
 /// NOTA (Fase 14): l'attesa filtra per canale (`wait_reply_chan` sul canale FS
 /// cachato, stabile per vita del processo): le EXIT_NOTIFY *stale* di altri
-/// peer morti vengono saltate, solo la morte del server FS da' -1. Niente retry
-/// automatico qui (il retry-once vive in `fs_send`, Fase 14.12; il restart in init).
-pub fn fs_collect(req: i64, dst: &mut [u8], cap: usize) -> i64 {
+/// peer morti vengono saltate, solo la morte del server FS da' errore. Niente
+/// retry automatico qui (il retry-once vive in `fs_send`, Fase 14.12; il
+/// restart in init).
+pub fn fs_collect(req: i64, dst: &mut [u8], cap: usize) -> Result<usize, Error> {
     // Invariante: collect segue una read_async riuscita, che ha risolto e
     // cachato FS_CHAN (>= 0) prima di registrare FS_PENDING.
     let fchan = session::FS_CHAN.load(Ordering::Relaxed).max(0) as u64;
@@ -140,7 +135,8 @@ pub fn fs_collect(req: i64, dst: &mut [u8], cap: usize) -> i64 {
         Ok(m) => m,
         Err(ipc::WaitReplyError::ServerDied { pid, code }) => {
             // Server morto mentre attendevamo: niente retry automatico qui
-            // (scelta voluta: il retry-once vive in `fs_send`); il chiamante vede -1. Azzera i
+            // (scelta voluta: il retry-once vive in `fs_send`); il chiamante
+            // vede l'errore. Azzera i
             // ring: il frame async e' orfano (mai consumato o senza reply) e
             // disallineerebbe le op successive; la prossima op riscrive.
             println!("[libr] fs_collect: server pid {} morto (code {}), req {} perso", pid, code, req);
@@ -149,15 +145,15 @@ pub fn fs_collect(req: i64, dst: &mut [u8], cap: usize) -> i64 {
                 session::ring_reset(ring::RESP_RING_VA);
             }
             session::FS_PENDING.store(-1, Ordering::Relaxed);
-            return -1;
+            return Err(Error::ServerDied);
         }
-        Err(_) => {
+        Err(e) => {
             session::FS_PENDING.store(-1, Ordering::Relaxed);
-            return -1;
+            return Err(Error::from(e));
         }
     };
     session::FS_PENDING.store(-1, Ordering::Relaxed);
-    fs_collect_msg(&msg, dst, cap, true)
+    fs_collect_msg(&msg, dst, cap, true).map(|n| n as usize)
 }
 
 /// `fs_collect_msg(m, dst, cap, is_read)`: raccoglie SENZA BLOCCARE la risposta
@@ -165,41 +161,42 @@ pub fn fs_collect(req: i64, dst: &mut [u8], cap: usize) -> i64 {
 /// stato ricevuto con `recv_poll` (il chiamante verifica `m.req_id == req` e
 /// `m.req_id > 0`). Legge il response frame come `fs_collect` (read, con
 /// payload in `dst`) o come `write_fs` (write/result-only: consume + result),
-/// resetta il guard 1-in-volo e ritorna byte/result o -1 su errore.
+/// resetta il guard 1-in-volo e ritorna byte/result; errori nativi (Fase 39).
 /// Per un driver-server (tty) che non puo' mai bloccarsi: serve le relay DEV
 /// nel mentre invece di attendere in `wait_reply` (ciclo userfs<->driver).
-pub fn fs_collect_msg(m: &IpcMsg, dst: &mut [u8], cap: usize, is_read: bool) -> i64 {
+pub fn fs_collect_msg(m: &IpcMsg, dst: &mut [u8], cap: usize, is_read: bool) -> Result<i64, Error> {
     session::FS_PENDING.store(-1, Ordering::Relaxed);
     if is_read {
         if m.w0 == ring::ERR {
             if ring::resp_ring_read().is_some() {
                 ring::resp_ring_consume(16);
             }
-            return -1;
+            return Err(Error::Failed);
         }
         match ring::resp_ring_read() {
             Some((result, _w1, payload_len)) => {
-                if result == ring::ERR {
-                    ring::resp_ring_consume(16);
-                    return -1;
-                }
-                let avail = (result as usize).min(payload_len).min(cap);
+                // Stessa disciplina dei wrapper sync: consuma sempre il frame
+                // (anche a diniego), poi interpreta — mai disallineamenti.
+                let checked = session::fs_reply_check(result);
+                let avail = checked
+                    .map(|v| (v as usize).min(payload_len).min(cap))
+                    .unwrap_or(0);
                 if avail > 0 {
                     ring::resp_ring_read_payload(&mut dst[..avail], avail);
                 } else {
                     ring::resp_ring_consume(16);
                 }
-                avail as i64
+                checked.map(|_| avail as i64)
             }
-            None => session::fs_reply_val(m.w0),
+            None => session::fs_reply_check(m.w0).map(|v| v as i64),
         }
     } else {
         match ring::resp_ring_read() {
             Some((result, _, _)) => {
                 ring::resp_ring_consume(16);
-                session::fs_reply_val(result)
+                session::fs_reply_check(result).map(|v| v as i64)
             }
-        None => -1,
+        None => Err(Error::NotReady),
         }
     }
 }

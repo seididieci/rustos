@@ -187,8 +187,7 @@ impl Tty {
             // re-lookup dopo stale) serve un nuovo BUF_REG o ogni op prende
             // NOHANDSHAKE per sempre (osservato Fase 15). Idempotente.
             Phase::BufReg => {
-                let req = libr::fs_buf_reg_async();
-                if req >= 0 {
+                if let Ok(req) = libr::fs_buf_reg_async() {
                     self.pending = Some(Pending { req, kind: OpKind::BufReg });
                 } else {
                     for _ in 0..100_000 {
@@ -200,8 +199,7 @@ impl Tty {
             Phase::OpenKbd => {
                 // NOTA: il FILE device ("/dev/kbd/kbd"), mai la radice del
                 // mount ("/dev/kbd" ha rel="" → dev_type fallisce, EISDIR).
-                let req = libr::open_async("/dev/kbd/kbd", 0);
-                if req >= 0 {
+                if let Ok(req) = libr::open_async("/dev/kbd/kbd", 0) {
                     self.pending = Some(Pending { req, kind: OpKind::OpenKbd });
                 } else {
                     // Fallimento (backpressure o peer in restart): backoff,
@@ -213,8 +211,7 @@ impl Tty {
                 return;
             }
             Phase::OpenCon => {
-                let req = libr::open_async("/dev/console/console", 0);
-                if req >= 0 {
+                if let Ok(req) = libr::open_async("/dev/console/console", 0) {
                     self.pending = Some(Pending { req, kind: OpKind::OpenCon });
                 } else {
                     for _ in 0..100_000 {
@@ -224,8 +221,7 @@ impl Tty {
                 return;
             }
             Phase::Register => {
-                let req = libr::fs_register_async(b"/dev/input");
-                if req >= 0 {
+                if let Ok(req) = libr::fs_register_async(b"/dev/input") {
                     self.pending = Some(Pending { req, kind: OpKind::Register });
                 } else {
                     for _ in 0..100_000 {
@@ -272,46 +268,53 @@ impl Tty {
                 }
             }
             OpKind::OpenKbd => {
-                let fd = libr::fs_collect_msg(m, &mut tmp, 64, false);
-                if fd >= 0 {
-                    self.kbd_fd = fd;
-                    self.err_streak = 0;
-                    self.phase = Phase::OpenCon;
-                } else {
-                    self.note_error();
-                    self.reset_to_lookup();
-                    return true;
+                match libr::fs_collect_msg(m, &mut tmp, 64, false) {
+                    Ok(fd) => {
+                        self.kbd_fd = fd;
+                        self.err_streak = 0;
+                        self.phase = Phase::OpenCon;
+                    }
+                    Err(_) => {
+                        self.note_error();
+                        self.reset_to_lookup();
+                        return true;
+                    }
                 }
             }
             OpKind::OpenCon => {
-                let fd = libr::fs_collect_msg(m, &mut tmp, 64, false);
-                if fd >= 0 {
-                    self.con_fd = fd;
-                    self.err_streak = 0;
-                    self.phase = Phase::Register;
-                } else {
-                    self.note_error();
-                    self.reset_to_lookup();
-                    return true;
+                match libr::fs_collect_msg(m, &mut tmp, 64, false) {
+                    Ok(fd) => {
+                        self.con_fd = fd;
+                        self.err_streak = 0;
+                        self.phase = Phase::Register;
+                    }
+                    Err(_) => {
+                        self.note_error();
+                        self.reset_to_lookup();
+                        return true;
+                    }
                 }
             }
             OpKind::Register => {
-                let r = libr::fs_collect_msg(m, &mut tmp, 64, false);
-                if r == 0 {
-                    self.err_streak = 0;
-                    self.phase = Phase::Steady;
-                    println!("[usertty] registered /dev/input with userfs");
-                } else {
-                    self.note_error();
-                    self.reset_to_lookup();
+                match libr::fs_collect_msg(m, &mut tmp, 64, false) {
+                    Ok(0) => {
+                        self.err_streak = 0;
+                        self.phase = Phase::Steady;
+                        println!("[usertty] registered /dev/input with userfs");
+                    }
+                    _ => {
+                        self.note_error();
+                        self.reset_to_lookup();
+                    }
                 }
             }
             OpKind::PumpRead => {
-                let n = libr::fs_collect_msg(m, &mut tmp, 64, true);
-                if n > 0 {
-                    self.err_streak = 0;
-                    self.decode_bytes(&tmp[..n as usize]);
-                } else if n < 0 {
+                match libr::fs_collect_msg(m, &mut tmp, 64, true) {
+                    Ok(n) if n > 0 => {
+                        self.err_streak = 0;
+                        self.decode_bytes(&tmp[..n as usize]);
+                    }
+                    Err(_) => {
                     // Errore (es. resync userfs che ha scartato il frame):
                     // riprova al prossimo giro invece di aspettare una nuova
                     // notify (che potrebbe non arrivare mai: la notify e' andata
@@ -324,17 +327,21 @@ impl Tty {
                     self.note_error();
                     self.pump_now = true;
                     self.pump_wait_until = libr::get_ticks().wrapping_add(2);
+                    }
+                    // Ok(0) = vuoto legittimo: niente da fare, nessun errore.
+                    Ok(_) => {}
                 }
-                // n == 0 (vuoto): niente da fare, nessun errore.
             }
             OpKind::ConWrite => {
-                let r = libr::fs_collect_msg(m, &mut tmp, 64, false);
-                if r >= 0 {
-                    self.err_streak = 0;
-                    let adv = (r as usize).min(self.out.len());
-                    self.out.drain(..adv);
-                } else {
-                    self.note_error();
+                match libr::fs_collect_msg(m, &mut tmp, 64, false) {
+                    Ok(r) => {
+                        self.err_streak = 0;
+                        let adv = (r as usize).min(self.out.len());
+                        self.out.drain(..adv);
+                    }
+                    Err(_) => {
+                        self.note_error();
+                    }
                 }
             }
         }
@@ -410,8 +417,7 @@ impl Tty {
             return;
         }
         self.pump_now = false;
-        let req = libr::read_async(self.kbd_fd, 64);
-        if req >= 0 {
+        if let Ok(req) = libr::read_async(self.kbd_fd, 64) {
             self.pending = Some(Pending { req, kind: OpKind::PumpRead });
         } else {
             // Invio fallito (backpressure): riprova con backoff, come flush.
@@ -436,8 +442,7 @@ impl Tty {
             return;
         }
         let n = self.out.len().min(4000);
-        let req = libr::write_async(self.con_fd, &self.out[..n]);
-        if req >= 0 {
+        if let Ok(req) = libr::write_async(self.con_fd, &self.out[..n]) {
             self.pending = Some(Pending { req, kind: OpKind::ConWrite });
         } else {
             self.flush_wait_until = now.wrapping_add(2);

@@ -218,11 +218,10 @@ pub fn t_driver_death_mount() -> bool {
         let _ = helpers::wait_exit(d1_chan);
         return false;
     }
-    let fd1 = libr::open("/dev/tdie/null", 0);
-    if fd1 < 0 {
+    let Ok(fd1) = libr::open("/dev/tdie/null", 0) else {
         println!("[usertests] t25: open /dev/tdie/null via D1 FAILED");
         return false;
-    }
+    };
     if libr::kill(d1_pid as i64, -11).is_err() {
         println!("[usertests] t25: kill D1 FAILED");
         return false;
@@ -247,11 +246,10 @@ pub fn t_driver_death_mount() -> bool {
         let _ = helpers::wait_exit(d2_chan);
         return false;
     }
-    let fd2 = libr::open("/dev/tdie/null", 0);
-    if fd2 < 0 {
+    let Ok(fd2) = libr::open("/dev/tdie/null", 0) else {
         println!("[usertests] t25: open /dev/tdie/null via D2 FAILED (mount stale?)");
         return false;
-    }
+    };
     // Igiene: chiudi e uccidi D2 (nessun mount orfano per i test/shell dopo).
     let _ = libr::close(fd1);
     let _ = libr::close(fd2);
@@ -267,15 +265,14 @@ pub fn t_driver_death_mount() -> bool {
         }
     }
     // Smoke ramfs: la purge non ha corrotto lo stato vivo.
-    let fd = libr::open("hello.txt", 0);
-    if fd < 0 {
+    let Ok(fd) = libr::open("hello.txt", 0) else {
         println!("[usertests] t25: smoke hello.txt FAILED");
         return false;
-    }
+    };
     let mut buf = [0u8; 64];
-    let n = libr::read_fs(fd, &mut buf, 64);
+    let n = libr::read_fs(fd, &mut buf, 64).unwrap_or(0);
     let _ = libr::close(fd);
-    n as usize >= helpers::HELLO.len() && buf[..helpers::HELLO.len()] == *helpers::HELLO
+    n >= helpers::HELLO.len() && buf[..helpers::HELLO.len()] == *helpers::HELLO
 }
 
 /// t26 — purge rings/ftable alla morte di client (Fase 14). N helper OPENDIE
@@ -302,73 +299,68 @@ pub fn t_client_death_purge() -> bool {
         }
     }
     // Smoke completo: il server e' sano dopo N purge.
-    let fd = libr::open("/dev/null", 0);
-    if fd < 0 {
+    let Ok(fd) = libr::open("/dev/null", 0) else {
         println!("[usertests] t26: smoke open /dev/null FAILED");
         return false;
-    }
+    };
     let data = [0x5Au8; 16];
-    if libr::write_fs(fd, &data, 16) != 16 {
+    if libr::write_fs(fd, &data, 16) != Ok(16) {
         println!("[usertests] t26: smoke write /dev/null FAILED");
         return false;
     }
     let mut b = [0u8; 16];
-    if libr::read_fs(fd, &mut b, 16) != 0 {
+    if libr::read_fs(fd, &mut b, 16) != Ok(0) {
         println!("[usertests] t26: smoke read /dev/null FAILED");
         return false;
     }
     let _ = libr::close(fd);
-    let fdz = libr::open("/dev/zero", 0);
-    if fdz < 0 {
+    let Ok(fdz) = libr::open("/dev/zero", 0) else {
         println!("[usertests] t26: smoke open /dev/zero FAILED");
         return false;
-    }
+    };
     let mut z = [0xFFu8; 16];
-    if libr::read_fs(fdz, &mut z, 16) != 16 || z.iter().any(|&x| x != 0) {
+    if libr::read_fs(fdz, &mut z, 16) != Ok(16) || z.iter().any(|&x| x != 0) {
         println!("[usertests] t26: smoke read /dev/zero FAILED");
         return false;
     }
     let _ = libr::close(fdz);
-    let fdh = libr::open("hello.txt", 0);
-    if fdh < 0 {
+    let Ok(fdh) = libr::open("hello.txt", 0) else {
         println!("[usertests] t26: smoke open hello.txt FAILED");
         return false;
-    }
+    };
     let mut hb = [0u8; 64];
-    let n = libr::read_fs(fdh, &mut hb, 64);
+    let n = libr::read_fs(fdh, &mut hb, 64).unwrap_or(0);
     let _ = libr::close(fdh);
-    if n as usize >= helpers::HELLO.len() && hb[..helpers::HELLO.len()] != *helpers::HELLO {
+    if n >= helpers::HELLO.len() && hb[..helpers::HELLO.len()] != *helpers::HELLO {
         println!("[usertests] t26: smoke content hello.txt FAILED");
         return false;
     }
-    if (n as usize) < helpers::HELLO.len() {
+    if n < helpers::HELLO.len() {
         println!("[usertests] t26: smoke short read hello.txt");
         return false;
     }
-    let fw = libr::open("ut26.bin", libr::O_CREAT);
-    if fw < 0 {
+    let Ok(fw) = libr::open("ut26.bin", libr::O_CREAT) else {
         println!("[usertests] t26: smoke open ut26.bin FAILED");
         return false;
-    }
+    };
     let wb = [0xA5u8; 64];
-    if libr::write_fs(fw, &wb, 64) != 64 {
+    if libr::write_fs(fw, &wb, 64) != Ok(64) {
         println!("[usertests] t26: smoke write ut26.bin FAILED");
         return false;
     }
     let _ = libr::close(fw);
-    let fr = libr::open("ut26.bin", 0);
-    if fr < 0 {
+    let Ok(fr) = libr::open("ut26.bin", 0) else {
         println!("[usertests] t26: smoke reopen ut26.bin FAILED");
         return false;
-    }
+    };
     let mut rb = [0u8; 64];
     let nr = libr::read_fs(fr, &mut rb, 64);
     let _ = libr::close(fr);
-    if nr != 64 || rb.iter().any(|&x| x != 0xA5) {
+    if nr != Ok(64) || rb.iter().any(|&x| x != 0xA5) {
         println!("[usertests] t26: smoke verify ut26.bin FAILED");
         return false;
     }
-    if libr::mkdir("utdir26") < 0 {
+    if libr::mkdir("utdir26").is_err() {
         println!("[usertests] t26: smoke mkdir FAILED");
         return false;
     }
@@ -391,11 +383,10 @@ pub fn t_client_death_purge() -> bool {
 /// numero); osserva sparizione → ricomparsa.
 pub fn t_devfs_restart() -> bool {
     helpers::drain_stray();
-    let fd = libr::open("/dev/null", 0);
-    if fd < 0 {
+    let Ok(fd) = libr::open("/dev/null", 0) else {
         println!("[usertests] t27: baseline open /dev/null FAILED");
         return false;
-    }
+    };
     let _ = libr::close(fd);
     // Fase 35 (hardening): i servizi supervisionati si uccidono tramite init
     // (bounce: init e' parent e riavvia per la via normale). Il kill diretto
@@ -432,30 +423,28 @@ pub fn t_devfs_restart() -> bool {
     // Throttled via `libr::open_wait` (igiene Livello 1, buon vicinato).
     // NOTA (esperimento B): t27 PASSA anche in busy-loop non throttled —
     // lo storm del test NON e' causale del vecchio FAIL (N=1, confound).
-    let fd2 = libr::open_wait("/dev/null", 0, 2000, libr::POLL_PERIOD_TICKS);
-    if fd2 < 0 {
+    let Ok(fd2) = libr::open_wait("/dev/null", 0, 2000, libr::POLL_PERIOD_TICKS) else {
         println!("[usertests] t27: /dev/null mai tornato (timeout)");
         return false;
-    }
+    };
     let data = [0x5Au8; 16];
-    let ok = libr::write_fs(fd2, &data, 16) == 16;
+    let ok = libr::write_fs(fd2, &data, 16) == Ok(16);
     let mut b = [0u8; 16];
-    let okr = libr::read_fs(fd2, &mut b, 16) == 0;
+    let okr = libr::read_fs(fd2, &mut b, 16) == Ok(0);
     let _ = libr::close(fd2);
     if !ok || !okr {
         println!("[usertests] t27: write/read post-restart FAILED");
         return false;
     }
     // Smoke ramfs: userfs mai toccato dal restart.
-    let fdh = libr::open("hello.txt", 0);
-    if fdh < 0 {
+    let Ok(fdh) = libr::open("hello.txt", 0) else {
         println!("[usertests] t27: smoke hello.txt FAILED");
         return false;
-    }
+    };
     let mut hb = [0u8; 64];
-    let n = libr::read_fs(fdh, &mut hb, 64);
+    let n = libr::read_fs(fdh, &mut hb, 64).unwrap_or(0);
     let _ = libr::close(fdh);
-    n as usize >= helpers::HELLO.len() && hb[..helpers::HELLO.len()] == *helpers::HELLO
+    n >= helpers::HELLO.len() && hb[..helpers::HELLO.len()] == *helpers::HELLO
 }
 
 /// t28 — restart di userfs end-to-end (Fase 14). Uccide userfs (pid via
@@ -467,26 +456,23 @@ pub fn t_devfs_restart() -> bool {
 pub fn t_userfs_restart() -> bool {
     helpers::drain_stray();
     // Baseline: hello + /dev/null.
-    let fdh = libr::open("hello.txt", 0);
-    if fdh < 0 {
+    let Ok(fdh) = libr::open("hello.txt", 0) else {
         println!("[usertests] t28: baseline hello.txt FAILED");
         return false;
-    }
+    };
     let _ = libr::close(fdh);
-    let fdn = libr::open("/dev/null", 0);
-    if fdn < 0 {
+    let Ok(fdn) = libr::open("/dev/null", 0) else {
         println!("[usertests] t28: baseline /dev/null FAILED");
         return false;
-    }
+    };
     let _ = libr::close(fdn);
     // Probe ramfs (wipe check dopo il restart).
-    let fp = libr::open("td28probe", 0x200);
-    if fp < 0 {
+    let Ok(fp) = libr::open("td28probe", 0x200) else {
         println!("[usertests] t28: create probe FAILED");
         return false;
-    }
+    };
     let pwb = [0xBEu8; 32];
-    if libr::write_fs(fp, &pwb, 32) != 32 {
+    if libr::write_fs(fp, &pwb, 32) != Ok(32) {
         println!("[usertests] t28: write probe FAILED");
         return false;
     }
@@ -522,33 +508,31 @@ pub fn t_userfs_restart() -> bool {
     // re-registrazione dei driver (devfs/console ricreano il mount proprio
     // su questo userfs).
     if !libr::poll_wait(1000, libr::POLL_PERIOD_TICKS, || {
-        libr::mkdir("/td28") == 0
+        libr::mkdir("/td28").is_ok()
     }) {
         println!("[usertests] t28: mkdir post-restart mai riuscito (timeout)");
         return false;
     }
-    let fw = libr::open("/td28/f", 0x200);
-    if fw < 0 {
+    let Ok(fw) = libr::open("/td28/f", 0x200) else {
         println!("[usertests] t28: create /td28/f FAILED");
         return false;
-    }
+    };
     let wb = [0xD8u8; 32];
-    if libr::write_fs(fw, &wb, 32) != 32 {
+    if libr::write_fs(fw, &wb, 32) != Ok(32) {
         println!("[usertests] t28: write /td28/f FAILED");
         return false;
     }
     let _ = libr::close(fw);
-    let fr = libr::open("/td28/f", 0);
-    if fr < 0 {
+    let Ok(fr) = libr::open("/td28/f", 0) else {
         println!("[usertests] t28: reopen /td28/f FAILED");
         return false;
-    }
+    };
     let mut rb = [0u8; 32];
     let nr = libr::read_fs(fr, &mut rb, 32);
     let _ = libr::close(fr);
     // Dettaglio diagnostico (solo su FAIL): nr e primo byte diverso.
-    if nr != 32 {
-        println!("[usertests] t28: verify nr={} (atteso 32)", nr);
+    if nr != Ok(32) {
+        println!("[usertests] t28: verify nr={:?} (atteso Ok(32))", nr);
         return false;
     }
     if let Some((i, &x)) = rb.iter().enumerate().find(|&(_, &x)| x != 0xD8) {
@@ -556,15 +540,14 @@ pub fn t_userfs_restart() -> bool {
         return false;
     }
     // hello.txt ricreato dal fresh userfs.
-    let fh = libr::open("hello.txt", 0);
-    if fh < 0 {
+    let Ok(fh) = libr::open("hello.txt", 0) else {
         println!("[usertests] t28: hello.txt ricreato mancante");
         return false;
-    }
+    };
     let mut hb = [0u8; 64];
-    let n = libr::read_fs(fh, &mut hb, 64);
+    let n = libr::read_fs(fh, &mut hb, 64).unwrap_or(0);
     let _ = libr::close(fh);
-    if (n as usize) < helpers::HELLO.len() || hb[..helpers::HELLO.len()] != *helpers::HELLO {
+    if n < helpers::HELLO.len() || hb[..helpers::HELLO.len()] != *helpers::HELLO {
         println!("[usertests] t28: hello.txt ricreato corrotto");
         return false;
     }
@@ -575,30 +558,28 @@ pub fn t_userfs_restart() -> bool {
         return false;
     }
     // Persistente: /fat leggibile (rimontato dal disco).
-    let ff = libr::open("/fat/HELLO.TXT", 0);
-    if ff < 0 {
+    let Ok(ff) = libr::open("/fat/HELLO.TXT", 0) else {
         println!("[usertests] t28: /fat/HELLO.TXT illeggibile");
         return false;
-    }
+    };
     let mut fb = [0u8; 32];
-    let nf = libr::read_fs(ff, &mut fb, 32);
+    let nf = libr::read_fs(ff, &mut fb, 32).unwrap_or(0);
     let _ = libr::close(ff);
-    if nf <= 0 {
+    if nf == 0 {
         println!("[usertests] t28: /fat/HELLO.TXT vuoto");
         return false;
     }
     // Driver re-registrati: /dev/null operativo. Retry con bound (throttled):
     // devfs ricrea il mount in modo asincrono su EXIT_NOTIFY e puo' laggare
     // dietro il fresh userfs; un singolo tentativo darebbe falsi FAIL.
-    let fd2 = libr::open_wait("/dev/null", 0, 1000, libr::POLL_PERIOD_TICKS);
-    if fd2 < 0 {
+    let Ok(fd2) = libr::open_wait("/dev/null", 0, 1000, libr::POLL_PERIOD_TICKS) else {
         println!("[usertests] t28: /dev/null post-restart FAILED");
         return false;
-    }
+    };
     let data = [0x5Au8; 16];
-    let ok = libr::write_fs(fd2, &data, 16) == 16;
+    let ok = libr::write_fs(fd2, &data, 16) == Ok(16);
     let mut b = [0u8; 16];
-    let okr = libr::read_fs(fd2, &mut b, 16) == 0;
+    let okr = libr::read_fs(fd2, &mut b, 16) == Ok(0);
     let _ = libr::close(fd2);
     if !ok || !okr {
         println!("[usertests] t28: write/read /dev/null FAILED");

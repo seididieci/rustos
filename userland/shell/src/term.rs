@@ -19,11 +19,11 @@ pub(crate) fn term_init() -> bool {
     // Il mount /dev/input viene registrato da usertty al suo avvio:
     // ritenta se l'open iniziale fallisce (race di boot).
     for _ in 0..100 {
-        unsafe {
-            TERM_FD = libr::open(KEYBOARD_PATH, 0);
-            if TERM_FD >= 0 {
-                return true;
+        if let Ok(fd) = libr::open(KEYBOARD_PATH, 0) {
+            unsafe {
+                TERM_FD = fd;
             }
+            return true;
         }
         spin_brief();
     }
@@ -48,7 +48,7 @@ pub(crate) fn term_print(s: &str) {
 fn kbd_read_byte() -> Option<u8> {
     let mut buf = [0u8; 1];
     loop {
-        let n = unsafe { libr::read_fs(TERM_FD, &mut buf, 1) };
+        let n = unsafe { libr::read_fs(TERM_FD, &mut buf, 1).unwrap_or(0) };
         if n > 0 {
             return Some(buf[0]);
         }

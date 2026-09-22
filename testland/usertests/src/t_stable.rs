@@ -63,21 +63,20 @@ pub fn t_detach() -> bool {
 /// cambiare, le chiavi stabili no.
 pub fn t_stable_id() -> bool {
     helpers::drain_stray();
-    if libr::mkdir("/u2") < 0 {
+    if libr::mkdir("/u2").is_err() {
         println!("[usertests] t36: mkdir /u2 FAILED");
         return false;
     }
     // 1. Mount per UUID.
-    if libr::mount("UUID=C0FFEE01", "/u2") < 0 {
+    if libr::mount("UUID=C0FFEE01", "/u2").is_err() {
         println!("[usertests] t36: mount UUID=C0FFEE01 FAILED");
         return false;
     }
-    let fd = libr::open("/u2/MARKER.TXT", 0);
-    if fd < 0 {
+    let Ok(fd) = libr::open("/u2/MARKER.TXT", 0) else {
         println!("[usertests] t36: open MARKER via UUID FAILED");
         let _ = libr::umount("/u2");
         return false;
-    }
+    };
     let mut mb = [0u8; 32];
     let n = helpers::t33_read_all(fd, &mut mb);
     let _ = libr::close(fd);
@@ -86,21 +85,20 @@ pub fn t_stable_id() -> bool {
         let _ = libr::umount("/u2");
         return false;
     }
-    if libr::umount("/u2") < 0 {
+    if libr::umount("/u2").is_err() {
         println!("[usertests] t36: umount /u2 FAILED");
         return false;
     }
     // 2. Mount per LABEL.
-    if libr::mount("LABEL=SECOND", "/u2") < 0 {
+    if libr::mount("LABEL=SECOND", "/u2").is_err() {
         println!("[usertests] t36: mount LABEL=SECOND FAILED");
         return false;
     }
-    let fd = libr::open("/u2/MARKER.TXT", 0);
-    if fd < 0 {
+    let Ok(fd) = libr::open("/u2/MARKER.TXT", 0) else {
         println!("[usertests] t36: open MARKER via LABEL FAILED");
         let _ = libr::umount("/u2");
         return false;
-    }
+    };
     let mut mb = [0u8; 32];
     let n = helpers::t33_read_all(fd, &mut mb);
     let _ = libr::close(fd);
@@ -111,15 +109,14 @@ pub fn t_stable_id() -> bool {
     }
     // 3. Open raw dei by-path: settore 0 con firma + seriale atteso.
     for path in ["/dev/disk/by-uuid/C0FFEE01", "/dev/disk/by-label/SECOND"] {
-        let fd = libr::open(path, 0);
-        if fd < 0 {
+        let Ok(fd) = libr::open(path, 0) else {
             println!("[usertests] t36: open raw {} FAILED", path);
             return false;
-        }
+        };
         let mut sec = [0u8; 512];
         let r = libr::read_fs(fd, &mut sec, 512);
         let _ = libr::close(fd);
-        if r != 512 || sec[510] != 0x55 || sec[511] != 0xAA {
+        if r != Ok(512) || sec[510] != 0x55 || sec[511] != 0xAA {
             println!("[usertests] t36: settore 0 raw {} invalido", path);
             return false;
         }
@@ -131,7 +128,7 @@ pub fn t_stable_id() -> bool {
     }
     // 4. Listing sintetizzato.
     let mut eb = [0u8; 512];
-    if libr::readdir("/dev", &mut eb, 512) < 0
+    if libr::readdir("/dev", &mut eb, 512).is_err()
         || !helpers::readdir_contains(&eb, b"disk")
         || !helpers::readdir_contains(&eb, b"sda")
     {
@@ -139,14 +136,14 @@ pub fn t_stable_id() -> bool {
         return false;
     }
     let mut eb = [0u8; 256];
-    if libr::readdir("/dev/disk/by-uuid", &mut eb, 256) < 0
+    if libr::readdir("/dev/disk/by-uuid", &mut eb, 256).is_err()
         || !helpers::readdir_contains(&eb, helpers::DISK2_UUID.as_bytes())
     {
         println!("[usertests] t36: readdir by-uuid senza C0FFEE01");
         return false;
     }
     let mut eb = [0u8; 256];
-    if libr::readdir("/dev/disk/by-label", &mut eb, 256) < 0
+    if libr::readdir("/dev/disk/by-label", &mut eb, 256).is_err()
         || !helpers::readdir_contains(&eb, helpers::DISK2_LABEL.as_bytes())
     {
         println!("[usertests] t36: readdir by-label senza SECOND");
@@ -200,15 +197,14 @@ pub fn t_disk() -> bool {
         return false;
     }
     // Smoke /fat via riconnessione (il driver e' nuovo, il mount e' quello di boot).
-    let fdf = libr::open_wait("/fat/HELLO.TXT", 0, 1000, libr::POLL_PERIOD_TICKS);
-    if fdf < 0 {
+    let Ok(fdf) = libr::open_wait("/fat/HELLO.TXT", 0, 1000, libr::POLL_PERIOD_TICKS) else {
         println!("[usertests] t32: open /fat/HELLO.TXT post-restart FAILED");
         return false;
-    }
+    };
     let mut fb = [0u8; 32];
-    let n = libr::read_fs(fdf, &mut fb, 32);
+    let n = libr::read_fs(fdf, &mut fb, 32).unwrap_or(0);
     let _ = libr::close(fdf);
-    if n as usize != helpers::FAT_HELLO.len() || fb[..helpers::FAT_HELLO.len()] != *helpers::FAT_HELLO {
+    if n != helpers::FAT_HELLO.len() || fb[..helpers::FAT_HELLO.len()] != *helpers::FAT_HELLO {
         println!("[usertests] t32: /fat/HELLO.TXT post-restart corrotto");
         return false;
     }
@@ -388,25 +384,23 @@ pub fn t_identity() -> bool {
     }
     let x1_pid = libr::peer_pid(x1_chan).unwrap_or(-1);
     let x2_pid = libr::peer_pid(x2_chan).unwrap_or(-1);
-    let fd = libr::open("/dev/t51/null", 0);
-    if fd < 0 {
+    let Ok(fd) = libr::open("/dev/t51/null", 0) else {
         println!("[usertests] t51: open pre-kill FAILED");
         let _ = libr::kill(x1_pid, 0);
         let _ = helpers::wait_exit(x1_chan);
         let _ = libr::kill(x2_pid, 0);
         let _ = helpers::wait_exit(x2_chan);
         return false;
-    }
+    };
     let _ = libr::close(fd);
     let _ = libr::kill(x1_pid, 0);
     let _ = helpers::wait_exit(x1_chan);
-    let fd = libr::open("/dev/t51/null", 0);
-    if fd < 0 {
+    let Ok(fd) = libr::open("/dev/t51/null", 0) else {
         println!("[usertests] t51: open post-kill X1 FAILED (replace same-image non passato?)");
         let _ = libr::kill(x2_pid, 0);
         let _ = helpers::wait_exit(x2_chan);
         return false;
-    }
+    };
     let _ = libr::close(fd);
     // (D) squat: X2 resta vivo e proprietario; Y (binario diverso) tenta il
     // replace → rifiutato. Kill X2 → mount purgato → open deve FALLIRE (se il
@@ -441,7 +435,7 @@ pub fn t_identity() -> bool {
     let fd = libr::open("/dev/t51/null", 0);
     let _ = libr::kill(y_pid, 0);
     let _ = helpers::wait_exit(y_chan);
-    if fd >= 0 {
+    if let Ok(fd) = fd {
         println!("[usertests] t51: open dopo purge RIUSCITO (squat passato?)");
         let _ = libr::close(fd);
         return false;

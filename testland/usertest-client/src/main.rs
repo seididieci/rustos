@@ -318,7 +318,7 @@ fn real_main(sp: u64) -> ! {
                 }
                 match libr::exec_image_args(&img, &buf) {
                     Ok(()) => libr::exit(1), // irraggiungibile
-                    Err(()) => {
+                    Err(_) => {
                         let _ = libr::send(parent, T_DONE, 0, 31);
                         libr::exit(0);
                     }
@@ -333,7 +333,7 @@ fn real_main(sp: u64) -> ! {
             };
             match libr::exec_image(&img) {
                 Ok(()) => libr::exit(1), // irraggiungibile: success non ritorna
-                Err(()) => {
+                Err(_) => {
                     let _ = libr::send(parent, T_DONE, 0, 21);
                     libr::exit(0);
                 }
@@ -343,7 +343,7 @@ fn real_main(sp: u64) -> ! {
             // Driver sacrificale (t25): registra "/dev/tdie", handshake T_READY e
             // serve il minimo. Se la registrazione fallisce: T_READY(w0=0) +
             // exit(1) — il test fallisce rumoroso, mai hang.
-            if libr::fs_register(b"/dev/tdie") < 0 {
+            if libr::fs_register(b"/dev/tdie").is_err() {
                 println!("[utcli] pid={} mntdie: fs_register FAILED", my_pid);
                 let _ = libr::send(parent, T_READY, 0, 0);
                 libr::exit(1);
@@ -372,7 +372,7 @@ fn real_main(sp: u64) -> ! {
         MODE_REG51 => {
             // Driver sacrificale (t51, Fase 36): identico a MNTDIE ma sul
             // prefix dedicato "/dev/t51" (nessuna interferenza con t25).
-            if libr::fs_register(b"/dev/t51") < 0 {
+            if libr::fs_register(b"/dev/t51").is_err() {
                 println!("[utcli] pid={} reg51: fs_register FAILED", my_pid);
                 let _ = libr::send(parent, T_READY, 0, 0);
                 libr::exit(1);
@@ -400,11 +400,11 @@ fn real_main(sp: u64) -> ! {
         }
         MODE_OPENDIE => {
             // Client sacrificale (t26): apre e muore senza close.
-            let f1 = libr::open("/dev/null", 0);
-            let f2 = libr::open("/dev/zero", 0);
-            let f3 = libr::open("hello.txt", 0);
-            if f1 < 0 || f2 < 0 || f3 < 0 {
-                println!("[utcli] opendie: open failed ({},{},{})", f1, f2, f3);
+            if libr::open("/dev/null", 0).is_err()
+                || libr::open("/dev/zero", 0).is_err()
+                || libr::open("hello.txt", 0).is_err()
+            {
+                println!("[utcli] opendie: open failed");
                 libr::exit(2);
             }
             libr::exit(0);
@@ -587,8 +587,12 @@ fn run_forkdemo() -> (bool, usize) {
 fn run_harden(target: i64) -> (bool, usize) {
     let kill_rejected = libr::kill(target, 0).is_err();
     let reg_rejected = libr::service_register(libr::Service::Init).is_err();
-    let ok = kill_rejected && reg_rejected;
-    let detail = (kill_rejected as usize) | ((reg_rejected as usize) << 1);
+    // Fase 39: anche il nuovo slot Posix e' gatato (non-figlio-di-init).
+    // Esercita service_from_disc(8) + braccio nome "posix" nel kernel.
+    let posix_rejected = libr::service_register(libr::Service::Posix).is_err();
+    let ok = kill_rejected && reg_rejected && posix_rejected;
+    let detail =
+        (kill_rejected as usize) | ((reg_rejected as usize) << 1) | ((posix_rejected as usize) << 2);
     (ok, detail)
 }
 
@@ -717,8 +721,7 @@ fn run_flood(parent: u64) -> (bool, usize) {
     let mut warmed = false;
     let data = [0x5Au8; 16];
     loop {
-        let fd = libr::open("/dev/null", 0);
-        if fd >= 0 {
+        if let Ok(fd) = libr::open("/dev/null", 0) {
             let _ = libr::write_fs(fd, &data, 16);
             let _ = libr::close(fd);
         }
@@ -802,24 +805,24 @@ fn run_zeroread(parent: u64, rounds: usize) -> (bool, usize) {
     // leggere /dev/zero senza corrompersi a vicenda. L'handshake T_OPENED resta
     // come barriera di coordinamento: l'orchestratore attende che tutti abbiano
     // aperto prima di rilasciare le read con T_GO.
-    let open_ok = fd >= 0;
+    let open_ok = fd.is_ok();
     let _ = libr::send(parent, T_OPENED, open_ok as u64, 0);    match libr::recv() {
         Ok(m) if m.tag == T_GO => {
             let _ = libr::reply(T_ACK, 0, 0);
         }
         _ => return (false, 1),
     }
-    if fd < 0 {
+    let Ok(fd) = fd else {
         println!("[utcli] zeroread: open /dev/zero failed");
         return (false, 1);
-    }
+    };
     let mut bad = 0usize;
     let mut buf = vec![0u8; 4096];
     for i in 0..rounds {
         let n = libr::read_fs(fd, &mut buf, 4096);
-        if n != 4096 {
+        if n != Ok(4096) {
             bad += 1;
-            println!("[utcli] zeroread read#{} n={}", i, n);
+            println!("[utcli] zeroread read#{} n={:?}", i, n);
             continue;
         }
         if buf.iter().any(|&b| b != 0) {
@@ -836,17 +839,16 @@ fn run_zeroread(parent: u64, rounds: usize) -> (bool, usize) {
 }
 
 fn run_nullw() -> (bool, usize) {
-    let fd = libr::open_wait("/dev/null", 0, 1000, libr::POLL_PERIOD_TICKS);
-    if fd < 0 {
+    let Ok(fd) = libr::open_wait("/dev/null", 0, 1000, libr::POLL_PERIOD_TICKS) else {
         println!("[utcli] nullw: open /dev/null failed");
         return (false, 1);
-    }
+    };
     let data = [0x5Au8; 512];
     let n = libr::write_fs(fd, &data, 512);
     let mut buf = [0u8; 64];
     let r = libr::read_fs(fd, &mut buf, 64);
     let _ = libr::close(fd);
-    (n == 512 && r == 0, 1)
+    (n == Ok(512) && r == Ok(0), 1)
 }
 
 #[panic_handler]

@@ -116,6 +116,12 @@ pub mod pci;
 /// Harness condiviso per la test suite (A4: traversal readdir).
 pub mod test;
 
+/// Errore nativo del sistema + traduzione errno al bordo POSIX (Fase 39,
+/// fondamenta posix, ADR-0030): i numeri POSIX non entrano mai nel kernel/wire.
+pub mod posix;
+
+pub use posix::Error;
+
 pub mod fs;
 pub mod ipc;
 pub mod print;

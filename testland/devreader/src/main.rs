@@ -13,18 +13,19 @@ fn real_main(_sp: u64) -> ! {
     let _ = libr::print_string(b"[devreader] starting\n");
 
     // Retry finche' devfs non ha registrato /dev (race di boot).
-    let mut fd = libr::open("/dev/zero", 0);
-    while fd < 0 {
+    let fd = loop {
+        if let Ok(fd) = libr::open("/dev/zero", 0) {
+            break fd;
+        }
         for _ in 0..1_000_000 {
             core::hint::spin_loop();
         }
-        fd = libr::open("/dev/zero", 0);
-    }
+    };
 
     let mut buf = [0xFFu8; 4096];
     let mut round: u32 = 0;
     loop {
-        let n = libr::read_fs(fd, &mut buf, 4096);
+        let n = libr::read_fs(fd, &mut buf, 4096).unwrap_or(0);
         if n != 4096 {
             let _ = libr::print_string(b"[devreader] short read / FAIL\n");
             libr::exit(1);

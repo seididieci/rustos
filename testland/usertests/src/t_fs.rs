@@ -8,25 +8,24 @@ use super::*;
 /// operativo), umount di non-montato e di `/`. Ultimo test: dopo solo shell.
 pub fn t_mount() -> bool {
     helpers::drain_stray();
-    if libr::mkdir("/mnt") < 0 {
+    if libr::mkdir("/mnt").is_err() {
         println!("[usertests] t33: mkdir /mnt FAILED");
         return false;
     }
-    if libr::mount("/dev/sda", "/mnt") < 0 {
+    if libr::mount("/dev/sda", "/mnt").is_err() {
         println!("[usertests] t33: mount /dev/sda /mnt FAILED");
         return false;
     }
     // Re-mount identico: idempotente (replace), resta operativo.
-    if libr::mount("/dev/sda", "/mnt") < 0 {
+    if libr::mount("/dev/sda", "/mnt").is_err() {
         println!("[usertests] t33: re-mount FAILED");
         return false;
     }
     // Contenuto via mount dinamico (stesso della statica /fat).
-    let fd = libr::open("/mnt/HELLO.TXT", 0);
-    if fd < 0 {
+    let Ok(fd) = libr::open("/mnt/HELLO.TXT", 0) else {
         println!("[usertests] t33: open /mnt/HELLO.TXT FAILED");
         return false;
-    }
+    };
     let mut hb = [0u8; 32];
     let n = helpers::t33_read_all(fd, &mut hb);
     if n != helpers::FAT_HELLO.len() || hb[..helpers::FAT_HELLO.len()] != *helpers::FAT_HELLO {
@@ -35,20 +34,19 @@ pub fn t_mount() -> bool {
         return false;
     }
     // Umount busy: fd aperto sul mount → rifiutato.
-    if libr::umount("/mnt") == 0 {
+    if libr::umount("/mnt").is_ok() {
         println!("[usertests] t33: umount busy accettato?!");
         let _ = libr::close(fd);
         return false;
     }
     let _ = libr::close(fd);
-    if libr::umount("/mnt") < 0 {
+    if libr::umount("/mnt").is_err() {
         println!("[usertests] t33: umount /mnt FAILED");
         return false;
     }
     // Dopo umount /mnt e' di nuovo ramfs: niente entry FAT.
     let mut eb = [0u8; 256];
-    let c = libr::readdir("/mnt", &mut eb, 256);
-    if c < 0 {
+    if libr::readdir("/mnt", &mut eb, 256).is_err() {
         println!("[usertests] t33: readdir /mnt post-umount FAILED");
         return false;
     }
@@ -69,23 +67,23 @@ pub fn t_mount() -> bool {
         return false;
     }
     // Error paths.
-    if libr::mount("/dev/xxx", "/mnt") == 0 {
+    if libr::mount("/dev/xxx", "/mnt").is_ok() {
         println!("[usertests] t33: mount sorgente invalida accettato?!");
         return false;
     }
-    if libr::mount("/dev/sdz", "/mnt") == 0 {
+    if libr::mount("/dev/sdz", "/mnt").is_ok() {
         println!("[usertests] t33: mount disco assente accettato?!");
         return false;
     }
-    if libr::mount("/dev/sda", "/a/../b") == 0 {
+    if libr::mount("/dev/sda", "/a/../b").is_ok() {
         println!("[usertests] t33: mount target invalido accettato?!");
         return false;
     }
-    if libr::umount("/mnt") == 0 {
+    if libr::umount("/mnt").is_ok() {
         println!("[usertests] t33: doppio umount accettato?!");
         return false;
     }
-    if libr::umount("/") == 0 {
+    if libr::umount("/").is_ok() {
         println!("[usertests] t33: umount / accettato?!");
         return false;
     }
@@ -100,35 +98,34 @@ pub fn t_mount() -> bool {
 pub fn t_resolve() -> bool {
     helpers::drain_stray();
     // 1. Nome ben formato ma assente (fat.img non partizionata: niente sda1).
-    if libr::mount("/dev/sda1", "/phantom") == 0 {
+    if libr::mount("/dev/sda1", "/phantom").is_ok() {
         println!("[usertests] t35: mount sda1 assente accettato?!");
         return false;
     }
     // Nessuna spec fantasma: umount deve fallire.
-    if libr::umount("/phantom") == 0 {
+    if libr::umount("/phantom").is_ok() {
         println!("[usertests] t35: spec fantasma dopo mount fallito?!");
         return false;
     }
     // 2. Nome malformato/ignoto: stesso contratto.
-    if libr::mount("/dev/zzz", "/phantom2") == 0 {
+    if libr::mount("/dev/zzz", "/phantom2").is_ok() {
         println!("[usertests] t35: mount nome ignoto accettato?!");
         return false;
     }
-    if libr::umount("/phantom2") == 0 {
+    if libr::umount("/phantom2").is_ok() {
         println!("[usertests] t35: spec fantasma (nome ignoto)?!");
         return false;
     }
     // 3. Mount valido ancora operativo dopo i rifiuti (tabella intatta).
-    if libr::mount("/dev/sda", "/mnt") < 0 {
+    if libr::mount("/dev/sda", "/mnt").is_err() {
         println!("[usertests] t35: mount /dev/sda /mnt FAILED");
         return false;
     }
-    let fd = libr::open("/mnt/HELLO.TXT", 0);
-    if fd < 0 {
+    let Ok(fd) = libr::open("/mnt/HELLO.TXT", 0) else {
         println!("[usertests] t35: open /mnt/HELLO.TXT FAILED");
         let _ = libr::umount("/mnt");
         return false;
-    }
+    };
     let mut hb = [0u8; 32];
     let n = helpers::t33_read_all(fd, &mut hb);
     let _ = libr::close(fd);
@@ -138,19 +135,18 @@ pub fn t_resolve() -> bool {
         return false;
     }
     // 4. Replace con bad source non distrugge il buon mount.
-    if libr::mount("/dev/zzz", "/mnt") == 0 {
+    if libr::mount("/dev/zzz", "/mnt").is_ok() {
         println!("[usertests] t35: replace con bad source accettato?!");
         let _ = libr::umount("/mnt");
         return false;
     }
-    let fd = libr::open("/mnt/HELLO.TXT", 0);
-    if fd < 0 {
+    let Ok(fd4) = libr::open("/mnt/HELLO.TXT", 0) else {
         println!("[usertests] t35: buon mount distrutto dal bad replace?!");
         let _ = libr::umount("/mnt");
         return false;
-    }
-    let _ = libr::close(fd);
-    if libr::umount("/mnt") < 0 {
+    };
+    let _ = libr::close(fd4);
+    if libr::umount("/mnt").is_err() {
         println!("[usertests] t35: umount /mnt FAILED");
         return false;
     }
@@ -169,38 +165,36 @@ pub fn t_rights() -> bool {
     helpers::drain_stray();
     // 1. Default {ALL, root}: GET ritorna ALL, subtree vuoto (= root).
     let mut sb = [0u8; 32];
-    if libr::rights_get(&mut sb) != libr::RIGHTS_ALL as i64 || sb[0] != 0 {
+    if libr::rights_get(&mut sb) != Ok(libr::RIGHTS_ALL) || sb[0] != 0 {
         println!("[usertests] t34: GET default non ALL+root");
         return false;
     }
-    let fd = libr::open("/t34.txt", libr::O_CREAT);
-    if fd < 0 {
+    let Ok(fd) = libr::open("/t34.txt", libr::O_CREAT) else {
         println!("[usertests] t34: open baseline FAILED");
         return false;
-    }
-    if libr::write_fs(fd, b"abcdef", 6) != 6 {
+    };
+    if libr::write_fs(fd, b"abcdef", 6) != Ok(6) {
         println!("[usertests] t34: write baseline FAILED");
         let _ = libr::close(fd);
         return false;
     }
     let _ = libr::close(fd);
     // 2. Drop solo-ops (WRITE via, resto invariato): write -1, read ok.
-    if libr::rights_drop(libr::RIGHTS_ALL & !libr::RIGHTS_WRITE, None) != 0 {
+    if libr::rights_drop(libr::RIGHTS_ALL & !libr::RIGHTS_WRITE, None).is_err() {
         println!("[usertests] t34: rights_drop WRITE FAILED");
         return false;
     }
-    let fd = libr::open("/t34.txt", 0);
-    if fd < 0 {
+    let Ok(fd) = libr::open("/t34.txt", 0) else {
         println!("[usertests] t34: reopen dopo drop FAILED");
         return false;
-    }
-    if libr::write_fs(fd, b"x", 1) >= 0 {
+    };
+    if libr::write_fs(fd, b"x", 1).is_ok() {
         println!("[usertests] t34: write accettata dopo drop?!");
         let _ = libr::close(fd);
         return false;
     }
     let mut rb = [0u8; 8];
-    if libr::read_fs(fd, &mut rb, 6) != 6 || rb[..6] != *b"abcdef" {
+    if libr::read_fs(fd, &mut rb, 6) != Ok(6) || rb[..6] != *b"abcdef" {
         println!("[usertests] t34: read dopo drop FAILED/corrotto");
         let _ = libr::close(fd);
         return false;
@@ -210,24 +204,23 @@ pub fn t_rights() -> bool {
     if libr::rights_drop(
         libr::RIGHTS_ALL & !libr::RIGHTS_WRITE & !libr::RIGHTS_MOUNT,
         Some("/fat"),
-    ) != 0
+    ).is_err()
     {
         println!("[usertests] t34: rights_drop MOUNT+/fat FAILED");
         return false;
     }
-    if libr::mount("/dev/sda", "/mnt") == 0 {
+    if libr::mount("/dev/sda", "/mnt").is_ok() {
         println!("[usertests] t34: mount accettato senza bit?!");
         return false;
     }
-    if libr::open("/hello.txt", 0) >= 0 {
+    if libr::open("/hello.txt", 0).is_ok() {
         println!("[usertests] t34: open fuori subtree accettato?!");
         return false;
     }
-    let fd = libr::open("/fat/HELLO.TXT", 0);
-    if fd < 0 {
+    let Ok(fd) = libr::open("/fat/HELLO.TXT", 0) else {
         println!("[usertests] t34: open dentro subtree FAILED");
         return false;
-    }
+    };
     let mut hb = [0u8; 32];
     let n = helpers::t33_read_all(fd, &mut hb);
     let _ = libr::close(fd);
@@ -236,22 +229,22 @@ pub fn t_rights() -> bool {
         return false;
     }
     let mut eb = [0u8; 256];
-    if libr::readdir("/fat", &mut eb, 256) < 0 {
+    if libr::readdir("/fat", &mut eb, 256).is_err() {
         println!("[usertests] t34: readdir dentro subtree FAILED");
         return false;
     }
-    if libr::readdir("/", &mut eb, 256) != -1 {
+    if libr::readdir("/", &mut eb, 256).is_ok() {
         println!("[usertests] t34: readdir fuori subtree accettato?!");
         return false;
     }
-    // 4. Widen a root rifiutato (da /fat): -1 e diritti invariati.
-    if libr::rights_drop(libr::RIGHTS_ALL, Some("/")) != -1 {
+    // 4. Widen a root rifiutato (da /fat): Err e diritti invariati.
+    if libr::rights_drop(libr::RIGHTS_ALL, Some("/")).is_ok() {
         println!("[usertests] t34: widen a root accettato?!");
         return false;
     }
     let mut sb2 = [0u8; 32];
-    let want = (libr::RIGHTS_ALL & !libr::RIGHTS_WRITE & !libr::RIGHTS_MOUNT) as i64;
-    if libr::rights_get(&mut sb2) != want || sb2[..3] != *b"fat" || sb2[3] != 0 {
+    let want = libr::RIGHTS_ALL & !libr::RIGHTS_WRITE & !libr::RIGHTS_MOUNT;
+    if libr::rights_get(&mut sb2) != Ok(want) || sb2[..3] != *b"fat" || sb2[3] != 0 {
         println!("[usertests] t34: GET finale non mask+/fat");
         return false;
     }
@@ -339,7 +332,7 @@ pub fn t_ps() -> bool {
 pub fn t_stat() -> bool {
     let mut st = libr::Stat { size: 0, kind: 0, readonly: false };
     // File ramfs: size esatta, non readonly.
-    if libr::stat("hello.txt", &mut st) != 0
+    if libr::stat("hello.txt", &mut st).is_err()
         || !st.is_file()
         || st.size as usize != helpers::HELLO.len()
         || st.readonly
@@ -348,25 +341,25 @@ pub fn t_stat() -> bool {
         return false;
     }
     // Root ramfs: dir.
-    if libr::stat("/", &mut st) != 0 || !st.is_dir() {
+    if libr::stat("/", &mut st).is_err() || !st.is_dir() {
         println!("[usertests] t38: stat / FAILED");
         return false;
     }
     // Dir ramfs creata ad hoc + rimozione (stat segue la vita del nodo).
-    if libr::mkdir("/t38dir") != 0 {
+    if libr::mkdir("/t38dir").is_err() {
         println!("[usertests] t38: mkdir /t38dir FAILED");
         return false;
     }
-    if libr::stat("/t38dir", &mut st) != 0 || !st.is_dir() || st.readonly {
+    if libr::stat("/t38dir", &mut st).is_err() || !st.is_dir() || st.readonly {
         println!("[usertests] t38: stat /t38dir FAILED");
         return false;
     }
-    if libr::remove("/t38dir") != 0 || libr::stat("/t38dir", &mut st) == 0 {
+    if libr::remove("/t38dir").is_err() || libr::stat("/t38dir", &mut st).is_ok() {
         println!("[usertests] t38: stat dopo rm accettata?!");
         return false;
     }
     // FAT (scrivibile dalla Fase 20): file + dir NON readonly.
-    if libr::stat("/fat/HELLO.TXT", &mut st) != 0
+    if libr::stat("/fat/HELLO.TXT", &mut st).is_err()
         || !st.is_file()
         || st.size == 0
         || st.readonly
@@ -374,25 +367,25 @@ pub fn t_stat() -> bool {
         println!("[usertests] t38: stat /fat/HELLO.TXT FAILED");
         return false;
     }
-    if libr::stat("/fat", &mut st) != 0 || !st.is_dir() || st.readonly {
+    if libr::stat("/fat", &mut st).is_err() || !st.is_dir() || st.readonly {
         println!("[usertests] t38: stat /fat FAILED");
         return false;
     }
     // Device: tipo device, size 0; padri sintetizzati: dir.
-    if libr::stat("/dev/null", &mut st) != 0 || !st.is_device() || st.size != 0 {
+    if libr::stat("/dev/null", &mut st).is_err() || !st.is_device() || st.size != 0 {
         println!("[usertests] t38: stat /dev/null FAILED");
         return false;
     }
-    if libr::stat("/dev", &mut st) != 0 || !st.is_dir() {
+    if libr::stat("/dev", &mut st).is_err() || !st.is_dir() {
         println!("[usertests] t38: stat /dev FAILED");
         return false;
     }
     // Error paths: inesistente e sotto-device (foglie).
-    if libr::stat("/nonexistent-t38", &mut st) == 0 {
+    if libr::stat("/nonexistent-t38", &mut st).is_ok() {
         println!("[usertests] t38: stat inesistente accettata?!");
         return false;
     }
-    if libr::stat("/dev/null/trailing", &mut st) == 0 {
+    if libr::stat("/dev/null/trailing", &mut st).is_ok() {
         println!("[usertests] t38: stat sotto-device accettata?!");
         return false;
     }
@@ -416,7 +409,7 @@ pub fn t_diskboot() -> bool {
         "/fat/test/testfat.bin",
         "/fat/test/tests.bin",
     ] {
-        if libr::stat(path, &mut st) != 0 || !st.is_file() || st.size == 0 {
+        if libr::stat(path, &mut st).is_err() || !st.is_file() || st.size == 0 {
             println!("[usertests] t39: {} mancante/vuoto", path);
             return false;
         }

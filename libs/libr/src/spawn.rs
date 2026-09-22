@@ -4,12 +4,12 @@ use super::*;
 /// embedded chiamato `name`. Il kernel crea il canale di nascita tra il
 /// chiamante (parent) e il figlio: il figlio lo usa come canale 0 (parent), il
 /// chiamante riceve qui il channel id per parlare col figlio. Ritorna il
-/// channel id o `Err` se il nome non e' noto / la creazione fallisce.
+/// channel id; `NoMemory` se il kernel non ha PID/canali (Fase 39).
 #[inline]
-pub fn spawn(name: &[u8]) -> Result<i64, ()> {
+pub fn spawn(name: &[u8]) -> Result<i64, Error> {
     let pid = unsafe { syscall4(SYS_SPAWN, name.as_ptr() as u64, name.len() as u64, 0, 0) };
     if pid < 0 {
-        return Err(());
+        return Err(Error::NoMemory);
     }
     Ok(pid)
 }
@@ -64,9 +64,15 @@ impl SpawnMeta {
 /// `spawn_image(img, meta)`: come `spawn` ma il binario e' letto dalla memoria
 /// del chiamante (Fase 21, servizi da disco e helper di test). Primitiva
 /// generale: le porte I/O restano privilegio di init (pid 1, gli altri con
-/// `io_count == 0` o rifiuto). Ritorna il channel di nascita o `Err`.
+/// `io_count == 0` o rifiuto). Ritorna il channel di nascita; `Invalid` se
+/// l'immagine/meta sono malformati (pre-validati qui, stesso bound del kernel
+/// `SPAWN_IMAGE_MAX`), `NoMemory` se il kernel esaurisce PID/canali/frame
+/// (Fase 39: i due rifiuti kernel collassano, la pre-validazione distingue).
 #[inline]
-pub fn spawn_image(img: &[u8], meta: &SpawnMeta) -> Result<i64, ()> {
+pub fn spawn_image(img: &[u8], meta: &SpawnMeta) -> Result<i64, Error> {
+    if img.is_empty() || img.len() > SPAWN_IMAGE_MAX {
+        return Err(Error::Invalid);
+    }
     let c = unsafe {
         syscall4(
             SYS_SPAWN_IMAGE,
@@ -76,7 +82,7 @@ pub fn spawn_image(img: &[u8], meta: &SpawnMeta) -> Result<i64, ()> {
             core::mem::size_of::<SpawnMeta>() as u64,
         )
     };
-    if c < 0 { Err(()) } else { Ok(c) }
+    if c < 0 { Err(Error::NoMemory) } else { Ok(c) }
 }
 
 /// `exec_image(img)`: sostituisce l'immagine del chiamante con l'ELF `img`
@@ -87,17 +93,18 @@ pub fn spawn_image(img: &[u8], meta: &SpawnMeta) -> Result<i64, ()> {
 /// ritorna `Err(())` solo a validazione fallita (processo intatto,
 /// completamente utilizzabile). Il FS va ri-fatto lazy: la nuova immagine
 /// parte con stato `libr` pristine (BSS azzerato) e `fs_init` rifa' handshake
-/// al primo uso.
+/// al primo uso. `Invalid` a validazione fallita (Fase 39).
 #[inline]
-pub fn exec_image(img: &[u8]) -> Result<(), ()> {
+pub fn exec_image(img: &[u8]) -> Result<(), Error> {
     exec_image_args(img, &[])
 }
 
 /// `exec_image_args(img, args)`: come `exec_image` ma con argv (Fase 37.1).
 /// `args` = blocco `[argc:8][payload NUL-separated]` entro `ARGS_MAX`
 /// (normalmente costruito da `exec`, non a mano); vuoto = argc=0.
+/// `Invalid` a validazione fallita (Fase 39).
 #[inline]
-pub fn exec_image_args(img: &[u8], args: &[u8]) -> Result<(), ()> {
+pub fn exec_image_args(img: &[u8], args: &[u8]) -> Result<(), Error> {
     let r = unsafe {
         syscall4(
             SYS_EXEC,
@@ -109,7 +116,7 @@ pub fn exec_image_args(img: &[u8], args: &[u8]) -> Result<(), ()> {
     };
     // Successo = nessun ritorno (siamo nella nuova immagine); -1 = rifiuto.
     let _ = r;
-    Err(())
+    Err(Error::Invalid)
 }
 
 /// Serializza gli argv nel blocco `[argc:8][payload NUL-separated]` per
@@ -135,91 +142,98 @@ pub fn serialize_argv(argv: &[&str]) -> Option<alloc::vec::Vec<u8>> {
 /// `exec(path, argv)`: lancia il programma `path` nell'immagine corrente
 /// (Fase 37.1): legge il file via FS, serializza gli argv e chiama
 /// `exec_image_args`. Il kernel non tocca mai il FS (ADR-0005). NON ritorna
-/// mai in caso di successo; `Err(())` = file illeggibile/vuoto, argv oltre il
-/// bound o rifiuto del kernel (processo intatto).
+/// mai in caso di successo; errori nativi (Fase 39: `NotFound` se il file non
+/// si carica — dettaglio in Fase 40 —, `TooBig` se gli argv eccedono il bound,
+/// `Invalid` a rifiuto del kernel; processo intatto).
 #[inline]
-pub fn exec(path: &str, argv: &[&str]) -> Result<(), ()> {
+pub fn exec(path: &str, argv: &[&str]) -> Result<(), Error> {
     let img = match load_file(path) {
         Some(b) if !b.is_empty() => b,
-        _ => return Err(()),
+        _ => return Err(Error::NotFound),
     };
     let buf = match serialize_argv(argv) {
         Some(b) => b,
-        None => return Err(()),
+        None => return Err(Error::TooBig),
     };
     exec_image_args(&img, &buf)
 }
 
 /// `service_register(service)`: occupa lo slot del servizio (ADR-0008). Il
-/// chiamante diventa l'owner raggiungibile per nome. `Err` se gia' occupato.
+/// chiamante diventa l'owner raggiungibile per nome. `Denied` a rifiuto
+/// (Fase 39: gate non-figlio-di-init nel caso comune; slot occupato collassa
+/// qui, indistinguibile dal client).
 #[inline]
-pub fn service_register(service: Service) -> Result<(), ()> {
+pub fn service_register(service: Service) -> Result<(), Error> {
     let r = unsafe { syscall4(SYS_SERVICE_REGISTER, service as u64, 0, 0, 0) };
-    if r < 0 { Err(()) } else { Ok(()) }
+    if r < 0 { Err(Error::Denied) } else { Ok(()) }
 }
 
 /// `service_lookup(service)`: risolve il servizio in un channel verso
-/// l'attuale owner. Ritorna il channel id (>= 0) o `Err`.
+/// l'attuale owner. Ritorna il channel id (>= 0); `NotFound` se non registrato
+/// (Fase 39: il caso comune — lookup pre-server — e' preciso).
 #[inline]
-pub fn service_lookup(service: Service) -> Result<i64, ()> {
+pub fn service_lookup(service: Service) -> Result<i64, Error> {
     let c = unsafe { syscall4(SYS_SERVICE_LOOKUP, service as u64, 0, 0, 0) };
-    if c < 0 { Err(()) } else { Ok(c) }
+    if c < 0 { Err(Error::NotFound) } else { Ok(c) }
 }
 
 /// Fase 14 (init-restart) — `service_pid(service)`: ritorna il pid
-/// dell'attuale owner del servizio, o `Err` se non registrato. Usato per
-/// supervisione/diagnostica (es. verificare che un servizio riavviato sia un
-/// processo NUOVO, pid diverso dal precedente).
+/// dell'attuale owner del servizio; `NotFound` se non registrato (Fase 39).
+/// Usato per supervisione/diagnostica (es. verificare che un servizio
+/// riavviato sia un processo NUOVO, pid diverso dal precedente).
 #[inline]
-pub fn service_pid(service: Service) -> Result<i64, ()> {
+pub fn service_pid(service: Service) -> Result<i64, Error> {
     let p = unsafe { syscall4(SYS_SERVICE_PID, service as u64, 0, 0, 0) };
-    if p < 0 { Err(()) } else { Ok(p) }
+    if p < 0 { Err(Error::NotFound) } else { Ok(p) }
 }
 
 /// Fase 35 (hardening) — `peer_pid(chan)`: pid del peer del canale `chan`
-/// (0 = canale di nascita, come `send`/`recv`), o `Err`. I server lo usano
-/// per attribuire una richiesta a un processo (es. la policy `FS_REGISTER` di
-/// userfs distingue i figli di init).
+/// (0 = canale di nascita, come `send`/`recv`); `ServerDied` se il canale non
+/// esiste o il peer e' morto (Fase 39). I server lo usano per attribuire una
+/// richiesta a un processo (es. la policy `FS_REGISTER` di userfs distingue
+/// i figli di init).
 #[inline]
-pub fn peer_pid(chan: u64) -> Result<i64, ()> {
+pub fn peer_pid(chan: u64) -> Result<i64, Error> {
     let p = unsafe { syscall4(SYS_PEER_PID, chan, 0, 0, 0) };
-    if p < 0 { Err(()) } else { Ok(p) }
+    if p < 0 { Err(Error::ServerDied) } else { Ok(p) }
 }
 
 /// Fase 36 (identita' misurata, Strato 2 di ADR-0026) — `peer_info(chan)`:
-/// hash dell'immagine del peer del canale `chan` (0 = canale di nascita),
-/// o `Err` se il canale non esiste/il peer e' morto. I server lo usano per
-/// la policy su identita' (es. userfs accetta il replace di un prefix solo
-/// dallo stesso binario; init verifica il manifest prima dello spawn).
+/// hash dell'immagine del peer del canale `chan` (0 = canale di nascita);
+/// `ServerDied` se il canale non esiste o il peer e' morto (Fase 39). I server
+/// lo usano per la policy su identita' (es. userfs accetta il replace di un
+/// prefix solo dallo stesso binario; init verifica il manifest pre-spawn).
 #[inline]
-pub fn peer_info(chan: u64) -> Result<u64, ()> {
+pub fn peer_info(chan: u64) -> Result<u64, Error> {
     let (rax, rdi, _, _, _) = unsafe { syscall4_out(SYS_PEER_INFO, chan, 0, 0, 0) };
-    if rax != 0 { Err(()) } else { Ok(rdi) }
+    if rax != 0 { Err(Error::ServerDied) } else { Ok(rdi) }
 }
 
 /// Fase 35 (hardening) — `init_bounce(service)`: chiede a init (canale di
 /// nascita, solo per figli di init) di uccidere+riavviare il servizio
 /// supervisionato `service`. Uccidere un server supervisionato e' operazione
 /// da supervisore: i test guidano il caos tramite init invece di killare
-/// direttamente (il kill diretto e' parent-scoped). Ritorna il pid ucciso o
-/// `Err` (servizio ignoto / init irraggiungibile). La morte+restart si
-/// osservano poi via `service_pid` come prima.
+/// direttamente (il kill diretto e' parent-scoped). Ritorna il pid ucciso;
+/// errori nativi (Fase 39: `ServerDied` se init irraggiungibile, `Failed` se
+/// init rifiuta). La morte+restart si osservano poi via `service_pid`.
 #[inline]
-pub fn init_bounce(service: Service) -> Result<i64, ()> {
+pub fn init_bounce(service: Service) -> Result<i64, Error> {
     match send(CHANNEL_PARENT, INIT_BOUNCE, service as u64, 0) {
         Ok(r) if r.w0 != u64::MAX => Ok(r.w0 as i64),
-        _ => Err(()),
+        Ok(_) => Err(Error::Failed),
+        Err(e) => Err(e),
     }
 }
 
 /// `map_physical(phys, virt, count)`: mappa `count` pagine fisiche a partire
 /// da `phys` all'indirizzo virtuale `virt` nello spazio del chiamante.
 /// Usato dal console server per accedere al frame buffer VGA.
+/// `Denied` se il frame non e' mappabile (gate Fase 35, Fase 39).
 #[inline]
-pub fn map_physical(phys: u64, virt: u64, count: usize) -> Result<(), ()> {
+pub fn map_physical(phys: u64, virt: u64, count: usize) -> Result<(), Error> {
     let r = unsafe { syscall4(SYS_MAP_PHYSICAL, phys, virt, count as u64, 0) };
     if r < 0 {
-        return Err(());
+        return Err(Error::Denied);
     }
     Ok(())
 }
@@ -239,14 +253,14 @@ pub enum ForkResult {
 /// `fork()`: duplica il chiamante in COW (address space condiviso, copie
 /// private al primo write). Il figlio riprende come ritorno dalla syscall con
 /// 0; priorita' e `req_next` ereditati (e divergono), niente canali/fd/ring/
-/// porte/CBS ereditati (solo nascita). `Err` se non c'e' un PID libero o
-/// l'OOM colpisce il walk. Nel ramo figlio avvelena automaticamente l'FS
-/// (`post_fork_child`): le op FS ritornano `Err` invece di aliasare i ring.
+/// porte/CBS ereditati (solo nascita). `NoMemory` se non c'e' un PID libero o
+/// l'OOM colpisce il walk (Fase 39). Nel ramo figlio avvelena automaticamente
+/// l'FS (`post_fork_child`): le op FS ritornano `Err` invece di aliasare i ring.
 #[inline]
-pub fn fork() -> Result<ForkResult, ()> {
+pub fn fork() -> Result<ForkResult, Error> {
     let (rax, rdi, _, _, _) = unsafe { syscall4_out(SYS_FORK, 0, 0, 0, 0) };
     if rax < 0 {
-        return Err(());
+        return Err(Error::NoMemory);
     }
     if rax == 0 {
         crate::fs::session::post_fork_child();

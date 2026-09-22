@@ -32,6 +32,7 @@ mod t_fs;
 mod t_ipc_sched;
 mod t_lifecycle;
 mod t_mapflap;
+mod t_posix;
 mod t_stable;
 // ── main ─────────────────────────────────────────────────────────────
 
@@ -94,6 +95,7 @@ fn real_main(_sp: u64) -> ! {
     helpers::report(&mut total, &mut ok, "t50 hardening (kill/register/map ostili)", t_stable::t_hardening());
     helpers::report(&mut total, &mut ok, "t51 identita' misurata (peer_info/manifest/squat)", t_stable::t_identity());
     helpers::report(&mut total, &mut ok, "t52 exec in-place (stesso PID, hash rimisurato)", t_lifecycle::t_exec_core());
+    helpers::report(&mut total, &mut ok, "t53 fondamenta posix (lookup/errno/gate)", t_posix::t_posix_foundation());
     // t34 per ULTIMO: i drop sono irrevocabili sul canale di usertests.
     helpers::report(&mut total, &mut ok, "t34 diritti per-canale lato server", t_fs::t_rights());
 

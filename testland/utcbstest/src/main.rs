@@ -43,7 +43,7 @@ fn real_main(_sp: u64) -> ! {
     // Crea il server CBS.
     let server_id = match libr::cbs_create(budget, period) {
         Ok(id) => id,
-        Err(()) => {
+        Err(_) => {
             println!("[utcbstest] cbs_create FAILED (Q={} P={})", budget, period);
             let _ = libr::send(parent, T_DONE, 0, 0);
             libr::exit(1);

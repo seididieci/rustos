@@ -64,7 +64,7 @@ fn spawn_child(name: &[u8]) -> Option<i64> {
             println!(" -> child chan={}", chan);
             Some(chan)
         }
-        Err(()) => {
+        Err(_) => {
             println!(" -> FAILED");
             None
         }
@@ -136,7 +136,7 @@ fn spawn_file(meta: &SvcMeta) -> Option<i64> {
             }
             Some(chan)
         }
-        Err(()) => {
+        Err(_) => {
             println!(" -> FAILED (spawn_image rifiutato)");
             None
         }

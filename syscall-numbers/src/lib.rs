@@ -144,6 +144,11 @@ pub const DMA_PAGES_MAX: usize = 4;
 /// NUL-separated]` oltre cui `exec` rifiuta fail-loud. Single source
 /// kernel+user (`libr` lo riesporta): 8 KiB bastano a shell e test con margine.
 pub const ARGS_MAX: u64 = 8 * 1024;
+/// Immagine massima spawabile/eseguibile (Fase 21: 64 frame = 256 KiB; i binari
+/// sono < 70 KiB — un singolo spawn non puo' svuotare il pool frame). Single
+/// source kernel (`sys_spawn_image`, stesso bound per `exec` in Fase 37) +
+/// user (`libr` pre-valida prima della syscall per errori precisi).
+pub const SPAWN_IMAGE_MAX: usize = 256 * 1024;
 /// Protezioni `mmap`/`mprotect` (29: NONE/R/RW con enforcement; W solo e
 /// PROT_EXEC rifiutati — eseguibile solo il codice di spawn).
 pub const PROT_NONE: u64 = 0x0;
@@ -375,10 +380,19 @@ pub enum Service {
     /// espone `/dev/sdX` (+`/dev/sdXn` per le partizioni MBR). userfs lo
     /// risolve per nome per il data-plane `DISK_*`; init lo supervisiona.
     Disk = 7,
+    /// Server di personalita' POSIX in userspace (Fase 39, P0 della roadmap
+    /// 39-45, ADR-0030): tabelle fd virtuali, pipe, job control. Solo
+    /// controllo e stato globale POSIX; il kernel resta neutro (ADR-0025) e
+    /// il data plane resta diretto client→userfs.
+    Posix = 8,
 }
 
 /// Massimo numero di servizi conosciuti = dimensione del registro kernel.
-pub const SERVICE_COUNT: usize = 8;
+/// Fase 39: 8→16 (slot 9-15 liberi per futuri servizi senza ritoccare il
+/// kernel; discriminant 0-7 storici intoccati, ABI stabile).
+
+/// Massimo numero di servizi conosciuti = dimensione del registro kernel.
+pub const SERVICE_COUNT: usize = 16;
 
 /// Canale predefinito del processo: il canale di nascita verso il parent.
 /// Ogni processo nasce con canale 0 = parent (o `CHANNEL_NONE` per init/idle).

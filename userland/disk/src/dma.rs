@@ -125,7 +125,7 @@ impl DmaEngine {
         }
         let phys = match libr::dma_alloc(1) {
             Ok(p) => p,
-            Err(()) => {
+            Err(_) => {
                 println!("[userdisk] DMA: staging alloc fallita — resto in PIO");
                 return None;
             }
