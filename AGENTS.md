@@ -1546,6 +1546,10 @@ velordor/
         40.0 costanti → 40.1 userfs → 40.2 libr → 40.3 posix+init →
         40.4 shell → 40.5 t54+docs. Vittoria: `echo hi > /f`,
         `run ./x > /o`, `ENOENT` distinto da `EROFS`.
+        40.4 FATTO in a/b/c/d/e (mini-lexer bash-like; hook B1 builtin;
+        handoff run via grant+argv-magic e claim in `entry!`; stdin/stderr
+        con `term_err` separato e `2>&1` ordinato; shell-tests+docs):
+        zero kernel/userfs/protocollo, gate invariato. Resta 40.5 (t54).
   - [ ] Fase 41 (P2, parser shell, parallela alla 40): quoting/escape,
         `$VAR/$?/~`, `; && ||`, commenti, glob via `readdir`. Zero cambi IPC.
         Vittoria: `test-shell.py` esteso verde.

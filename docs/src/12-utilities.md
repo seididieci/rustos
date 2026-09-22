@@ -24,15 +24,15 @@ la mostra (`/prova$ `, `$ ` a root).
 | Comando | Descrizione |
 |---------|-------------|
 | `ls [-l] [path]` | Elenco directory (default: cwd; mostra anche i mount: `fat`, `dev`). Con `-l` una riga per entry `tipo size nome[ (ro)]` (tipo `d`/`-`/`v`, via `R_STAT`, Fase 19.2) |
-| `cat <file>` | Stampa contenuto file |
+| `cat <file>` | Stampa contenuto file; senza file legge stdin (`<`, Fase 40.4) |
 | `touch <file>` | Crea file vuoto (`O_CREAT`) |
 | `mkdir <dir>` | Crea directory |
 | `mount <src> <tgt>` | Monta un device/`UUID=`/`LABEL=` su un target (Fase 16b) |
 | `umount <tgt>` | Smonta un target (rifiutato se busy, Fase 16b) |
 | `echo [args]` | Stampa gli argomenti |
 | `clear` | Pulisce lo schermo (form feed, gestito dalla console) |
-| `wc <file>` | Conta righe/parole/byte (`l p b nome`) |
-| `hexdump <file>` | Dump esadecimale a righe di 16 byte |
+| `wc <file>` | Conta righe/parole/byte (`l p b nome`; senza file legge stdin, nome `-`) |
+| `hexdump <file>` | Dump esadecimale a righe di 16 byte (senza file: stdin) |
 | `kill <pid\|servizio>` | Termina un processo (`kill init` rifiutato dal kernel) |
 | `cd [dir]` | Cambia directory (sonda con `readdir`, default `/`) |
 | `pwd` | Stampa la directory corrente |
@@ -53,11 +53,54 @@ la mostra (`/prova$ `, `$ ` a root).
 > Niente job control interattivo (foreground senza scampo: i longevi con `&`;
 > segnali → posix-server futuro).
 
+### Redirect (Fase 40.4)
+
+Sintassi bash-like (ultimo vince per slot; `2>&1` aliasa sullo slot 1 del
+*momento*: `> /o 2>&1` manda stderr nel file, `2>&1 > /o` lo lascia al
+terminale). `> /f` da sola crea/tronca senza eseguire nulla:
+
+| Sintassi | Effetto |
+|----------|---------|
+| `cmd > /f` | stdout su file (crea + tronca) |
+| `cmd >> /f` | stdout in append (crea se manca) |
+| `cmd < /f` | stdin dal file (deve esistere) |
+| `cmd 2> /f`, `2>>` | stderr su file / in append |
+| `cmd > /o 2>&1` | stdout+stderr nello stesso file |
+
+Errori distinti sul terminale (mai nel file): `no such file or directory`
+(`ENOENT`), `is a directory`, `read-only file system`. Gli errori dei builtin
+non inquinano mai `>` (sink separato `term_err`); `run` fallito riporta
+`[exit N]` sul terminale.
+
+Meccanismo (ADR-0031, modello B): per i builtin la shell apre + `set_stdio`
+con restore; per `run` apre + `dup_grant` pre-fork e contrabbanda
+`(vfd, nonce)` nell'ultimo argv (magic `0x7f`, hex senza NUL — il kernel
+rifiuta code extra); lo startup (`entry!`) fa claim + `set_stdio` e nasconde
+la spec ad `args_from_stack`. Data plane sempre diretto (mai relay nella
+shell); grant cancellati a morte osservata. Dettagli e alternative scartate
+(relay, nonce sul canale di nascita, pipe per i file) in ADR-0031 e AGENTS.
+
+### Limiti onesti (redirect)
+
+- **Niente quoting/escape**: un operatore dentro virgolette viene comunque
+  interpretato (parser vero in Fase 41).
+- **Niente pipe/heredoc** (`|`, `<<`): Fase 42 (pipe-buffer nel posix-server).
+- **`2>&1` ≠ zsh `MULTIOS`**: niente tee, ultimo-vince come bash/POSIX.
+- **`<` su device** puo' troncare/EOF subito (solo file testati); `cat`
+  di `/dev/zero` non termina (come da file — stesso comportamento).
+- **stderr dei figli quasi-muto**: niente in userland scrive fd 2 oggi; `2>`
+  su `run` crea il file ma resta vuoto finche' un programma non lo usa.
+- **`open(O_CREAT)` crea i padri** (ramfs `find_or_create`, mkdir -p):
+  `> /nodir/x` crea `/nodir` invece di `ENOENT` (semantica server
+  pre-esistente, fuori scope 40.4).
+- **Offset dup copiato, non condiviso** (dup-for-handoff, ADR-0031).
+
 ### runhello
 
 Primo programma lanciabile (`userland/runhello`, `/bin/runhello.bin` su disco
 — non un servizio: init non lo spawna). Stampa gli argv (uno per riga) su
-seriale ed esce 0; con argomento `fail` esce 3 (dopo aver stampato). Serve a
+seriale ed esce 0; con argomento `fail` esce 3 (dopo aver stampato). Con
+stdin redirectato stampa anche `runhello: stdin:<byte>` (Fase 40.4d). Serve a
 `test-shell.py` come target fg/bg con exit code osservabile.
 
 Line editing: il backspace a riga vuota non mangia il prompt (disciplina di

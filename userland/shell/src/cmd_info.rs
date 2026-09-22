@@ -2,6 +2,7 @@ use super::*;
 
 pub(crate) fn cmd_help() {
     term::term_print("Commands: ls [-l] [path], cat <file>, touch <file>, mkdir <dir>, mount <src> <tgt>, umount <tgt>, echo [args], clear, wc <file>, hexdump <file>, kill <pid|service>, cd [dir], pwd, cp <src> <dst>, mv <src> <dst>, rm <file>, rmdir <dir>, ps, run <path> [args...] [&], jobs, wait [pid], exit, help\n");
+    term::term_print("Redirect (Fase 40.4, bash-like): > >> < 2> 2>> 2>&1 — ultimo vince per slot; cat/wc/hexdump senza file leggono stdin\n");
 }
 
 /// Accoda `s` paddata a `width` con spazi (colonne `ps`, niente format!).

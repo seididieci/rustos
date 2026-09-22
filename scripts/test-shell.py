@@ -7,6 +7,8 @@ seriale (term_write_bytes -> print_string), quindi i risultati sono leggibili
 dal log seriale senza bisogno della VGA.
 
 Comandi testati: ls, cat, mkdir (cat usa hello.txt; '.' si invia come 'dot').
+Fase 40.4: redirect `> >> < 2> 2>&1` (bash-like) + `run` redirectato
+('>' e '<' si inviano come 'shift-dot'/'shift-comma').
 Fase 18.0: backspace a riga vuota non mangia il prompt (verifica via
 screendump QEMU: eco visibile, cancel ripristina, backspace a vuoto = 0
 byte diversi sull'ultima riga a meno del cursore).
@@ -28,8 +30,10 @@ FAT2 = "userland/fs/fat2.img"
 # "invalid parameter" ai nomi ignoti — e lo script lo ignorerebbe in
 # silenzio): 'period' NON esiste (il punto e' 'dot'), le MAIUSCOLE non
 # esistono (si mandano come combo 'shift-x', verificato: 'H' invalido,
-# 'shift-h' ok).
-KEYMAP = {" ": "spc", ".": "dot", "-": "minus", "/": "slash", "&": "shift-7"}
+# 'shift-h' ok). '>' e '<' sono shift-dot/shift-comma (redirect Fase 40.4,
+# verificati come gli altri: senza, la riga arriva troncata).
+KEYMAP = {" ": "spc", ".": "dot", "-": "minus", "/": "slash", "&": "shift-7",
+          ">": "shift-dot", "<": "shift-comma"}
 KEYMAP.update({chr(c): "shift-%s" % chr(c).lower() for c in range(ord("A"), ord("Z") + 1)})
 
 SHOT0 = "/tmp/velordor-shot0.ppm"
@@ -555,6 +559,110 @@ def main():
         found = b"no jobs" in out
         print(("PASS " if found else "FAIL ") + "jobs vuota dopo wait")
         ok = ok and found
+
+        # Fase 40.4: redirect shell (bash-like: ultimo vince per slot).
+        # Builtin stdout: > crea/tronca, >> appende.
+        run("echo hello redir > redir404.txt")
+        out = run_out("cat redir404.txt")
+        found = b"hello redir" in out
+        print(("PASS " if found else "FAIL ") + "echo > file + cat")
+        ok = ok and found
+        run("echo second >> redir404.txt")
+        out = run_out("cat redir404.txt")
+        found = b"hello redir" in out and b"second" in out
+        print(("PASS " if found else "FAIL ") + ">> appende")
+        ok = ok and found
+        run("echo solo > redir404.txt")
+        out = run_out("cat redir404.txt")
+        found = b"solo" in out and b"second" not in out
+        print(("PASS " if found else "FAIL ") + "> tronca")
+        ok = ok and found
+
+        # Stdin builtin: cat/wc/hexdump senza file leggono <.
+        out = run_out("cat < redir404.txt")
+        found = b"solo" in out
+        print(("PASS " if found else "FAIL ") + "cat < file")
+        ok = ok and found
+        out = run_out("wc < redir404.txt")
+        found = b"1 1 5 -" in out
+        print(("PASS " if found else "FAIL ") + "wc < file (=1 1 5 -)")
+        ok = ok and found
+        out = run_out("hexdump < redir404.txt")
+        found = b"73 6f 6c 6f" in out
+        print(("PASS " if found else "FAIL ") + "hexdump < file")
+        ok = ok and found
+        out = run_out("cat < /no404dir")
+        found = b"no such file or directory" in out
+        print(("PASS " if found else "FAIL ") + "< missing (ENOENT distinto)")
+        ok = ok and found
+
+        # Separazione stdout/stderr: l'errore non inquina >.
+        run("cat missing404 > /o404.txt")
+        out = run_out("ls -l")
+        found = b"- 0 o404.txt" in out
+        print(("PASS " if found else "FAIL ") + "errore non inquina > (file vuoto)")
+        ok = ok and found
+        out = run_out("cat missing404 2> /e404.txt")
+        out = run_out("cat /e404.txt")
+        found = b"cannot open" in out
+        print(("PASS " if found else "FAIL ") + "2> cattura errore builtin")
+        ok = ok and found
+        run("cat missing404 > /o404b.txt 2>&1")
+        out = run_out("cat /o404b.txt")
+        found = b"cannot open" in out
+        print(("PASS " if found else "FAIL ") + "2>&1 dopo >: errore nel file")
+        ok = ok and found
+        out = run_out("cat missing404 2>&1 > /o404c.txt")
+        found = b"cannot open" in out
+        print(("PASS " if found else "FAIL ") + "2>&1 prima di >: errore su terminale")
+        ok = ok and found
+        out = run_out("ls -l")
+        found = b"- 0 o404c.txt" in out
+        print(("PASS " if found else "FAIL ") + "2>&1 prima di >: file vuoto")
+        ok = ok and found
+        out = run_out("echo hi >")
+        found = b"missing target" in out
+        print(("PASS " if found else "FAIL ") + "redirect senza target")
+        ok = ok and found
+
+        # run con redirect (handoff grant via argv-magic, claim nello startup).
+        run("run /fat/bin/runhello.bin hello > /ro404.txt")
+        out = run_out("cat /ro404.txt")
+        found = b"runhello: hello" in out and b"non utf8" not in out
+        print(("PASS " if found else "FAIL ") + "run > file (magic nascosto)")
+        ok = ok and found
+        out = run_out("run /fat/bin/runhello.bin fail > /ro404b.txt")
+        found = b"[exit 3]" in out
+        print(("PASS " if found else "FAIL ") + "run > file + exit code")
+        ok = ok and found
+        run("run /fat/bin/runhello.bin < redir404.txt > /ro404c.txt")
+        out = run_out("cat /ro404c.txt")
+        found = b"runhello: stdin:solo" in out
+        print(("PASS " if found else "FAIL ") + "run < > : stdin nel file")
+        ok = ok and found
+        out = run_out("run /fat/bin/runhello.bin bgx > /rb404.txt &")
+        found = b"[bg pid" in out
+        print(("PASS " if found else "FAIL ") + "run bg + redirect")
+        ok = ok and found
+        out = run_out("wait", sleep=2.0)
+        found = b"exit" in out
+        print(("PASS " if found else "FAIL ") + "wait chiude bg redirectato")
+        ok = ok and found
+        out = run_out("cat /rb404.txt")
+        found = b"runhello: bgx" in out
+        print(("PASS " if found else "FAIL ") + "output bg nel file")
+        ok = ok and found
+
+        # Pulizia file di prova (ramfs condivisa: non sporcare i test dopo).
+        run("rm redir404.txt")
+        run("rm /o404.txt")
+        run("rm /o404b.txt")
+        run("rm /o404c.txt")
+        run("rm /e404.txt")
+        run("rm /ro404.txt")
+        run("rm /ro404b.txt")
+        run("rm /ro404c.txt")
+        run("rm /rb404.txt")
 
         if not ok:
             print("---- output seriale (tail) ----")
