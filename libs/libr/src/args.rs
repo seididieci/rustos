@@ -70,19 +70,76 @@ impl Args {
 /// (argc assurdo: stack corrotto o bug kernel — il chiamante esce loud).
 /// La lettura oltre il bound non e' tentata (vedi `Args::get`); un fault su
 /// puntatore spazzatura dentro la finestra resta fail-loud via fault→kill.
+/// Ultimo argv con magic redirect (40.4c) = nascosto: `argc` e' gia' al netto
+/// (il programma non vede mai la spec; il claim vive in `stdio_restore`).
 pub fn args_from_stack(sp: u64) -> Option<Args> {
     let argc = unsafe { core::ptr::read(sp as *const u64) };
     if argc > 1024 {
         return None;
     }
+    if argc > 0 && has_redir_magic(sp, argc) {
+        return Some(Args { argc: argc - 1, argv: sp + 8 });
+    }
     Some(Args { argc, argv: sp + 8 })
 }
 
+/// Legge l'ultimo argv grezzo dallo stack (stessi bound di `Args::get`).
+/// `None` = argc 0/assurdo o ultimo arg fuori finestra/malformato.
+/// Lifetime 'static: lo stack iniziale non viene mai smappato (vive quanto il
+/// processo, come la vista `Args`).
+fn last_arg_raw(sp: u64, argc: u64) -> Option<&'static [u8]> {
+    if argc == 0 || argc > 1024 {
+        return None;
+    }
+    let argv = sp + 8;
+    let arr_end = argv.checked_add(8 * argc.checked_add(2)?)?;
+    let ptr = unsafe { core::ptr::read((argv + (argc - 1) * 8) as *const u64) };
+    let cap = (argv.wrapping_sub(8)).checked_add(ARGS_MAX)?;
+    if ptr < arr_end || ptr >= cap {
+        return None;
+    }
+    let mut len = 0u64;
+    while ptr + len < cap {
+        let b = unsafe { core::ptr::read((ptr + len) as *const u8) };
+        if b == 0 {
+            return Some(unsafe {
+                core::slice::from_raw_parts(ptr as *const u8, len as usize)
+            });
+        }
+        len += 1;
+    }
+    None
+}
+
+/// True se l'ultimo argv ha il prefisso magic redirect (spec valida o no: un
+/// arg craftato col magic si nasconde comunque — dalla shell e' impossibile
+/// produrne uno, `read_line` filtra 0x7f).
+pub(crate) fn has_redir_magic(sp: u64, argc: u64) -> bool {
+    match last_arg_raw(sp, argc) {
+        Some(a) => a.starts_with(crate::stdio::REDIR_MAGIC),
+        None => false,
+    }
+}
+
+/// Ritorna l'ultimo argv se ha il magic redirect (validita' voci a carico di
+/// `stdio_restore`). `None` = nessun redirect per questo processo.
+pub(crate) fn redir_spec_arg(sp: u64) -> Option<&'static [u8]> {
+    let argc = unsafe { core::ptr::read(sp as *const u64) };
+    if argc == 0 || argc > 1024 || !has_redir_magic(sp, argc) {
+        return None;
+    }
+    last_arg_raw(sp, argc)
+}
+
 /// Genera l'entry point `_start` (CRT minimale): naked shim che passa lo stack
-/// pointer iniziale a `$main(sp)` con un salto (`jmp`, rsp invariato — una
-/// `call` sporcherebbe lo stack con l'indirizzo di ritorno). `$main` e' una
-/// normale funzione Rust `fn(u64) -> !` (primo argomento in rdi, ABI SysV).
-/// Stesso simbolo/sezione degli `_start` scritti a mano che sostituisce.
+/// pointer iniziale a `__velordor_entry(sp)` con un salto (`jmp`, rsp invariato —
+/// una `call` sporcherebbe lo stack con l'indirizzo di ritorno).
+/// `__velordor_entry` ripristina i redirect da argv-magic (`stdio_restore`,
+/// Fase 40.4c: nessuno effetto senza magic) poi salta a `$main(sp)` con rsp
+/// ripristinato (stesso stato di un ingresso diretto: `rsp` iniziale in rdi).
+/// `$main` e' una normale funzione Rust `fn(u64) -> !` (primo argomento in rdi,
+/// ABI SysV). Stesso simbolo/sezione degli `_start` scritti a mano che
+/// sostituisce.
 #[macro_export]
 macro_rules! entry {
     ($main:ident) => {
@@ -91,9 +148,22 @@ macro_rules! entry {
         pub extern "C" fn _start() -> ! {
             ::core::arch::naked_asm!(
                 "mov rdi, rsp",
-                "jmp {main}",
-                main = sym $main,
+                "jmp {entry}",
+                entry = sym __velordor_entry,
             );
+        }
+        fn __velordor_entry(sp: u64) -> ! {
+            $crate::stdio_restore(sp);
+            unsafe {
+                ::core::arch::asm!(
+                    "mov rsp, {sp}",
+                    "mov rdi, {sp}",
+                    "jmp {main}",
+                    sp = in(reg) sp,
+                    main = sym $main,
+                    options(noreturn),
+                )
+            }
         }
         // `$main` e' referenziata solo dall'asm sopra: senza questo root
         // `--gc-sections` la scarterebbe (undefined symbol al link).

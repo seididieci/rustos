@@ -32,10 +32,19 @@ pub(crate) fn term_init() -> bool {
 /// Scrive byte sul terminale: userfs li inoltra al console server che li
 /// disegna sulla VGA (DEV_WRITE). Echo dei tasti gestito dal console.
 /// Mirror su seriale per debugging e per test automatici.
+/// Hook B1 (Fase 40.4b): con stdout redirectato (`set_stdio`) i builtin
+/// scrivono sul file invece che sul terminale — e' l'unico punto d'aggancio
+/// (i builtin usano tutti `term_print`, non `println!`). Il mirror seriale
+/// resta sempre (l'output debug non si perde mai).
 pub(crate) fn term_write_bytes(data: &[u8]) {
     let _ = libr::print_string(data);
-    unsafe {
-        let _ = libr::write_fs(TERM_FD, data, data.len());
+    let out = libr::stdout_fd();
+    if out >= 0 {
+        let _ = libr::write_fs(out, data, data.len());
+    } else {
+        unsafe {
+            let _ = libr::write_fs(TERM_FD, data, data.len());
+        }
     }
 }
 

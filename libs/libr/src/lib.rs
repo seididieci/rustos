@@ -134,10 +134,14 @@ pub mod print;
 pub mod spawn;
 
 /// Tabelle stdio vfd + routing stdout/stdin (Fase 40.2, redirect P1):
-/// `set_stdio`/`clear_stdio`/`stdio_active`/`stdin_byte` (il sink seriale
-/// `print_string`/`sys::write` resta sempre seriale per disegno).
+/// `set_stdio`/`clear_stdio`/`stdio_active`/`stdout_fd`/`stdin_byte` (il sink
+/// seriale `print_string`/`sys::write` resta sempre seriale per disegno).
 pub mod stdio;
-pub use stdio::{clear_stdio, set_stdio, stdio_active, stdin_byte};
+pub use stdio::{clear_stdio, set_stdio, stdio_active, stdin_byte, stdout_fd};
+/// Ripristino redirect dallo stack iniziale (Fase 40.4c): CRT-internal, pub
+/// perche' l'espansione `entry!` vive nei crate utenti. Chiamata dal wrapper
+/// `__velordor_entry` prima di `real_main`; mai direttamente dai programmi.
+pub use stdio::stdio_restore;
 pub mod sys;
 pub mod tsc;
 

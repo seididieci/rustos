@@ -31,10 +31,62 @@ fn real_main(_sp: u64) -> ! {
             prompt = cwd + "$ ";
         }
         let line = term::read_line(&prompt);
-        let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
-
-        let args: Vec<&str> = trimmed.split_whitespace().collect();
+        // Redirect (Fase 40.4a/b): parsing sempre; `<`/`2>`/`2>>`/`2>&1`
+        // applicati in 40.4c/d; `run` con redirect in 40.4c (handoff grant).
+        // I builtin `>`/`>>` aprono qui (40.4b): errori sul terminale.
+        let (argv_owned, redirs) = match redirect::parse(&line) {
+            Ok(v) => v,
+            Err(redirect::ParseError::MissingTarget(op)) => {
+                term::term_print("redirect: missing target after ");
+                term::term_print(op);
+                term::term_print("\n");
+                continue;
+            }
+        };
+        let args: Vec<&str> = argv_owned.iter().map(|s| s.as_str()).collect();
+        if args.is_empty() {
+            // `> /f` da sola crea/tronca (bash-like), senza eseguire nulla.
+            if redirs.iter().any(|r| r.slot == 1) {
+                match redirect::open_stdout(&redirs) {
+                    Ok(fd) => {
+                        if fd >= 0 {
+                            let _ = libr::close(fd);
+                        }
+                    }
+                    Err(e) => {
+                        let t = redirs.iter().find(|r| r.slot == 1).unwrap().target.clone();
+                        redirect::report_open_error(&t, e);
+                    }
+                }
+            } else if redirs.iter().any(|r| r.slot != 1) {
+                term::term_print("redirect not yet supported\n");
+            }
+            continue;
+        }
+        // `<`/`2>`/`2>>`/`2>&1` in 40.4d; stdout (`>`/`>>`) qui per i builtin
+        // (40.4b) e per `run` (40.4c, handoff grant via argv-magic).
+        if redirs.iter().any(|r| r.slot != 1) {
+            term::term_print("redirect not yet supported\n");
+            continue;
+        }
+        // Apre TUTTI i target stdout in ordine (ultimo vince); a fallimento
+        // riporta sul terminale e salta il comando (mai nel file).
+        // `run` non passa di qui: apre+grant da se' (40.4c, claim nel figlio).
+        let mut out_fd: i64 = -1;
+        let want_out = redirs.iter().any(|r| r.slot == 1);
+        if want_out && args[0] != "run" {
+            match redirect::open_stdout(&redirs) {
+                Ok(fd) => out_fd = fd,
+                Err(e) => {
+                    let t = redirs.iter().find(|r| r.slot == 1).unwrap().target.clone();
+                    redirect::report_open_error(&t, e);
+                    continue;
+                }
+            }
+            if out_fd >= 0 {
+                libr::set_stdio([-1, out_fd, -1]);
+            }
+        }
         match args[0] {
             "ls" => cmd_fs::cmd_ls(&args),
             "cat" => cmd_fs::cmd_cat(&args),
@@ -54,7 +106,7 @@ fn real_main(_sp: u64) -> ! {
             "rm" => cmd_fs::cmd_rm(&args),
             "rmdir" => cmd_fs::cmd_rmdir(&args),
             "ps" => cmd_info::cmd_ps(),
-            "run" => cmd_run::cmd_run(&args),
+            "run" => cmd_run::cmd_run(&args, &redirs),
             "jobs" => cmd_run::cmd_jobs(),
             "wait" => cmd_run::cmd_wait(&args),
             "exit" => libr::exit(0),
@@ -64,6 +116,12 @@ fn real_main(_sp: u64) -> ! {
                 term::term_print(args[0]);
                 term::term_print("\n");
             }
+        }
+        // Restore: il comando ha scritto sul file via hook B1; errori di
+        // write restano best-effort (mirror seriale gia' emesso).
+        if out_fd >= 0 {
+            libr::clear_stdio();
+            let _ = libr::close(out_fd);
         }
     }
 }

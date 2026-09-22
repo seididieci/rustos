@@ -125,13 +125,45 @@ pub fn exec_image_args(img: &[u8], args: &[u8]) -> Result<(), Error> {
 /// shell: il figlio post-fork ha l'FS avvelenato e non puo' piu' allocare
 /// comodo — il parent prepara tutto, il figlio solo esegue).
 pub fn serialize_argv(argv: &[&str]) -> Option<alloc::vec::Vec<u8>> {
-    if argv.len() > 1024 {
+    serialize_argv_redir(argv, &[])
+}
+
+/// Come `serialize_argv` ma con spec redirect contrabbandata come ultimo argv
+/// (Fase 40.4c): `spec` = `(vfd, nonce)` per slot (max 3, vfd 0..2). Formato
+/// `REDIR_MAGIC + vfd:noncehex (;...)`, hex minuscolo senza NUL (il kernel
+/// rifiuta code extra e spezza al NUL). Lo startup (`stdio_restore` via
+/// `entry!`) la nasconde ad `args_from_stack`: il programma non la vede.
+/// `None` a spec invalida o oltre `ARGS_MAX`.
+pub fn serialize_argv_redir(
+    argv: &[&str],
+    spec: &[(u8, u64)],
+) -> Option<alloc::vec::Vec<u8>> {
+    if spec.len() > crate::stdio::REDIR_MAX_ENTRIES
+        || spec.iter().any(|&(v, _)| v > 2)
+        || argv.len() + if spec.is_empty() { 0 } else { 1 } > 1024
+    {
         return None;
     }
     let mut buf = alloc::vec::Vec::new();
-    buf.extend_from_slice(&(argv.len() as u64).to_le_bytes());
+    let argc = argv.len() + if spec.is_empty() { 0 } else { 1 };
+    buf.extend_from_slice(&(argc as u64).to_le_bytes());
     for a in argv {
         buf.extend_from_slice(a.as_bytes());
+        buf.push(0);
+    }
+    if !spec.is_empty() {
+        buf.extend_from_slice(crate::stdio::REDIR_MAGIC);
+        for (i, &(vfd, nonce)) in spec.iter().enumerate() {
+            if i > 0 {
+                buf.push(b';');
+            }
+            buf.push(b'0' + vfd);
+            buf.push(b':');
+            for shift in (0..16).rev() {
+                let nib = ((nonce >> (shift * 4)) & 0xf) as u8;
+                buf.push(if nib < 10 { b'0' + nib } else { b'a' + nib - 10 });
+            }
+        }
         buf.push(0);
     }
     if buf.len() as u64 > ARGS_MAX + 8 {
