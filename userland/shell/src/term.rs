@@ -52,6 +52,41 @@ pub(crate) fn term_print(s: &str) {
     term_write_bytes(s.as_bytes());
 }
 
+/// Scrive un messaggio d'errore: stderr redirectato (`2>`, Fase 40.4d) o
+/// terminale — MAI lo stdout redirectato (gli errori non devono inquinare il
+/// file di `>`). Mirror su seriale come l'output normale.
+pub(crate) fn term_err_bytes(data: &[u8]) {
+    let _ = libr::print_string(data);
+    let err = libr::stderr_fd();
+    if err >= 0 {
+        let _ = libr::write_fs(err, data, data.len());
+    } else {
+        unsafe {
+            let _ = libr::write_fs(TERM_FD, data, data.len());
+        }
+    }
+}
+
+pub(crate) fn term_err(s: &str) {
+    term_err_bytes(s.as_bytes());
+}
+
+/// Legge TUTTO lo stdin redirectato (`<`, Fase 40.4d) fino a EOF. Vuoto =
+/// file vuoto; `None` interno (errore/byte mancante) chiude comunque come EOF
+/// (file, mai device-a-caratteri qui: `<` su device puo' troncare — limite
+/// documentato, come `cat /dev/zero` da file che non termina mai).
+/// Chiamare solo con stdin redirectato (`stdin_fd() >= 0`).
+pub(crate) fn term_read_stdin() -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        match libr::stdin_byte() {
+            Some(b) => out.push(b),
+            None => break,
+        }
+    }
+    out
+}
+
 /// Legge un byte di input dal terminale. Quando il buffer e' vuoto attende un
 /// breve spin (IF=1) prima di riprovare: niente busy-loop su syscall.
 fn kbd_read_byte() -> Option<u8> {

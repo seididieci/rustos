@@ -42,21 +42,53 @@ pub fn stdout_fd() -> i64 {
     STDIO[1].load(Ordering::Relaxed)
 }
 
+/// fd reale dello stdin redirectato (-1 = tastiera). I builtin che leggono
+/// stdin (`cat` senza file, Fase 40.4d) distinguono "non redirectato" (errore
+/// `missing file`) da "file vuoto" (EOF subito) senza tentare letture.
+pub fn stdin_fd() -> i64 {
+    STDIO[0].load(Ordering::Relaxed)
+}
+
+/// fd reale dello stderr redirectato (-1 = terminale). Hook dei messaggi
+/// d'errore dei builtin (`term_err`, Fase 40.4d): mai fallback sullo stdout
+/// (gli errori non devono inquinare il file redirectato).
+pub fn stderr_fd() -> i64 {
+    STDIO[2].load(Ordering::Relaxed)
+}
+
 /// Magic della spec redirect contrabbandata nell'ultimo argv (Fase 40.4c):
-/// `\x7fVELORDOR_REDIR\x1f` + voci `vfd:noncehex` separate da `;` (una per slot,
-/// max 3). Hex minuscolo: niente byte NUL (il kernel spezza le stringhe argv
-/// al primo NUL e rifiuta code extra — `exec.rs::parse_args`). Il primo byte
-/// 0x7f e' impossibile da digitare (`read_line` accetta 0x20..=0x7e): zero
-/// collisioni con argomenti veri.
+/// `\x7fVELORDOR_REDIR\x1f` + voci separate da `;`: `vfd:noncehex` (grant da
+/// riscuotere) o `vfd:@slot` (alias, Fase 40.4d: `2>&1` = stesso fd dello
+/// slot 1, un solo grant/claim). Hex minuscolo: niente byte NUL (il kernel
+/// spezza le stringhe argv al primo NUL e rifiuta code extra —
+/// `exec.rs::parse_args`). Il primo byte 0x7f e' impossibile da digitare
+/// (`read_line` accetta 0x20..=0x7e): zero collisioni con argomenti veri.
 pub(crate) const REDIR_MAGIC: &[u8] = b"\x7fVELORDOR_REDIR\x1f";
 
 /// Max voci nella spec (un vfd per slot: stdin/stdout/stderr).
 pub(crate) const REDIR_MAX_ENTRIES: usize = 3;
 
-/// Parsa le voci dopo `REDIR_MAGIC`: `out[i] = (vfd, nonce)`. `None` a
-/// qualunque deviazione (vfd fuori 0..2, hex malformato, troppe voci, coda).
-/// Strict: una spec malformata si ignora intera (fail-open loud), mai a meta'.
-pub(crate) fn parse_redir_entries(arg: &[u8], out: &mut [(u8, u64); 3]) -> Option<usize> {
+/// Voce di spec redirect: grant da riscuotere o alias di un altro slot
+/// (stesso fd, zero claim). Il parent emette in ordine di slot (0,1,2) con
+/// gli alias per ultimi: l'alias richiede lo slot target gia' assegnato.
+#[derive(Clone, Copy)]
+pub enum RedirEntry {
+    /// Riscuoti `nonce` come fd dello slot `vfd`.
+    Grant {
+        vfd: u8,
+        nonce: u64,
+    },
+    /// Lo slot `vfd` condivide l'fd dello slot `target` (gia' assegnato).
+    Alias {
+        vfd: u8,
+        target: u8,
+    },
+}
+
+/// Parsa le voci dopo `REDIR_MAGIC` in `out`. `None` a qualunque deviazione
+/// (vfd/target fuori 0..2, hex malformato, troppe voci, coda). Strict: una
+/// spec malformata si ignora intera (fail-open loud), mai a meta'.
+pub(crate) fn parse_redir_entries(arg: &[u8], out: &mut [RedirEntry; 3]) -> Option<usize> {
     let body = arg.strip_prefix(REDIR_MAGIC)?;
     if body.is_empty() {
         return None;
@@ -76,31 +108,48 @@ pub(crate) fn parse_redir_entries(arg: &[u8], out: &mut [(u8, u64); 3]) -> Optio
             return None;
         }
         i += 2;
-        // nonce: 1..16 nibble hex minuscoli, poi ';' o fine.
-        let start = i;
-        while i < body.len() && body[i] != b';' {
-            if !body[i].is_ascii_hexdigit() || body[i].is_ascii_uppercase() {
+        // Alias `2:@1` oppure nonce hex (1..16 nibble minuscoli).
+        if i < body.len() && body[i] == b'@' {
+            i += 1;
+            if i >= body.len() || !(b'0'..=b'2').contains(&body[i]) {
+                return None;
+            }
+            out[n] = RedirEntry::Alias { vfd: vfd - b'0', target: body[i] - b'0' };
+            n += 1;
+            i += 1;
+        } else {
+            let start = i;
+            while i < body.len() && body[i] != b';' {
+                if !body[i].is_ascii_hexdigit() || body[i].is_ascii_uppercase() {
+                    return None;
+                }
+                i += 1;
+            }
+            let digits = i - start;
+            if digits == 0 || digits > 16 {
+                return None;
+            }
+            let mut nonce: u64 = 0;
+            for &d in &body[start..i] {
+                let v = match d {
+                    b'0'..=b'9' => (d - b'0') as u64,
+                    b'a'..=b'f' => (d - b'a' + 10) as u64,
+                    _ => return None,
+                };
+                nonce = (nonce << 4) | v;
+            }
+            out[n] = RedirEntry::Grant { vfd: vfd - b'0', nonce };
+            n += 1;
+        }
+        // Separatore `;` obbligatorio tra voci, vietato in coda.
+        if i < body.len() {
+            if body[i] != b';' {
                 return None;
             }
             i += 1;
-        }
-        let digits = i - start;
-        if digits == 0 || digits > 16 {
-            return None;
-        }
-        let mut nonce: u64 = 0;
-        for &d in &body[start..i] {
-            let v = match d {
-                b'0'..=b'9' => (d - b'0') as u64,
-                b'a'..=b'f' => (d - b'a' + 10) as u64,
-                _ => return None,
-            };
-            nonce = (nonce << 4) | v;
-        }
-        out[n] = (vfd - b'0', nonce);
-        n += 1;
-        if i < body.len() {
-            i += 1; // skip ';'
+            if i >= body.len() {
+                return None;
+            }
         }
     }
     if n == 0 { None } else { Some(n) }
@@ -118,23 +167,36 @@ pub fn stdio_restore(sp: u64) {
     let Some(arg) = crate::args::redir_spec_arg(sp) else {
         return;
     };
-    let mut entries = [(0u8, 0u64); 3];
+    let mut entries = [RedirEntry::Grant { vfd: 0, nonce: 0 }; 3];
     let Some(n) = parse_redir_entries(arg, &mut entries) else {
         let _ = crate::print_string(b"[libr] stdio_restore: spec malformata, ignoro\n");
         return;
     };
     let mut fds = [-1i64; 3];
-    for &(vfd, nonce) in &entries[..n] {
-        match crate::dup_claim(nonce) {
-            Ok(fd) => fds[vfd as usize] = fd,
-            Err(_) => {
-                for &f in &fds {
-                    if f >= 0 {
-                        let _ = crate::close(f);
-                    }
+    let abort = |fds: &[i64; 3], msg: &[u8]| {
+        for &f in fds {
+            if f >= 0 {
+                let _ = crate::close(f);
+            }
+        }
+        let _ = crate::print_string(msg);
+    };
+    for e in &entries[..n] {
+        match *e {
+            RedirEntry::Grant { vfd, nonce } => match crate::dup_claim(nonce) {
+                Ok(fd) => fds[vfd as usize] = fd,
+                Err(_) => {
+                    abort(&fds, b"[libr] stdio_restore: claim fallita, senza redirect\n");
+                    return;
                 }
-                let _ = crate::print_string(b"[libr] stdio_restore: claim fallita, senza redirect\n");
-                return;
+            },
+            RedirEntry::Alias { vfd, target } => {
+                let t = fds[target as usize];
+                if t < 0 {
+                    abort(&fds, b"[libr] stdio_restore: alias su slot vuoto, senza redirect\n");
+                    return;
+                }
+                fds[vfd as usize] = t;
             }
         }
     }

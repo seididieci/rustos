@@ -137,7 +137,12 @@ pub mod spawn;
 /// `set_stdio`/`clear_stdio`/`stdio_active`/`stdout_fd`/`stdin_byte` (il sink
 /// seriale `print_string`/`sys::write` resta sempre seriale per disegno).
 pub mod stdio;
-pub use stdio::{clear_stdio, set_stdio, stdio_active, stdin_byte, stdout_fd};
+pub use stdio::{clear_stdio, set_stdio, stdio_active, stdin_byte, stdin_fd};
+pub use stdio::{stderr_fd, stdout_fd};
+/// Voce di spec redirect per `serialize_argv_redir` (Fase 40.4c/d): grant da
+/// riscuotere o alias di slot (`2>&1`). Costruita dalla shell, consumata dallo
+/// startup — mai visibile ai programmi.
+pub use stdio::RedirEntry;
 /// Ripristino redirect dallo stack iniziale (Fase 40.4c): CRT-internal, pub
 /// perche' l'espansione `entry!` vive nei crate utenti. Chiamata dal wrapper
 /// `__velordor_entry` prima di `real_main`; mai direttamente dai programmi.

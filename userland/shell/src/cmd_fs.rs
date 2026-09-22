@@ -15,7 +15,7 @@ pub(crate) fn cmd_ls(args: &[&str]) {
     let path = cwd::resolve(raw);
     let mut buf = vec![0u8; 4096];
     if libr::readdir(&path, &mut buf, 4096).is_err() {
-        term::term_print("ls: error\n");
+        term::term_err("ls: error\n");
         return;
     }
     // Formato "name\0name\0...\0\0"
@@ -72,14 +72,24 @@ pub(crate) fn cmd_ls(args: &[&str]) {
 
 pub(crate) fn cmd_cat(args: &[&str]) {
     if args.len() < 2 {
-        term::term_print("cat: missing file\n");
+        // Senza file: stdin redirectato (`<`, Fase 40.4d). Non redirectato =
+        // `missing file` (mai tastiera: il REPL la possiede).
+        if libr::stdin_fd() < 0 {
+            term::term_err("cat: missing file\n");
+            return;
+        }
+        let data = term::term_read_stdin();
+        if let Ok(s) = core::str::from_utf8(&data) {
+            term::term_print(s);
+        }
+        term::term_print("\n");
         return;
     }
     let path = cwd::resolve(args[1]);
     let Ok(fd) = libr::open(&path, 0) else {
-        term::term_print("cat: cannot open ");
-        term::term_print(args[1]);
-        term::term_print("\n");
+        term::term_err("cat: cannot open ");
+        term::term_err(args[1]);
+        term::term_err("\n");
         return;
     };
     let mut buf = vec![0u8; 4096];
@@ -100,12 +110,12 @@ pub(crate) fn cmd_cat(args: &[&str]) {
 
 pub(crate) fn cmd_touch(args: &[&str]) {
     if args.len() < 2 {
-        term::term_print("touch: missing file\n");
+        term::term_err("touch: missing file\n");
         return;
     }
     let path = cwd::resolve(args[1]);
     let Ok(fd) = libr::open(&path, libr::O_CREAT) else {
-        term::term_print("touch: failed\n");
+        term::term_err("touch: failed\n");
         return;
     };
     let _ = libr::close(fd);
@@ -113,35 +123,35 @@ pub(crate) fn cmd_touch(args: &[&str]) {
 
 pub(crate) fn cmd_mkdir(args: &[&str]) {
     if args.len() < 2 {
-        term::term_print("mkdir: missing directory\n");
+        term::term_err("mkdir: missing directory\n");
         return;
     }
     let path = cwd::resolve(args[1]);
     if libr::mkdir(&path).is_err() {
-        term::term_print("mkdir: failed\n");
+        term::term_err("mkdir: failed\n");
     }
 }
 
 pub(crate) fn cmd_mount(args: &[&str]) {
     if args.len() < 3 {
-        term::term_print("mount: usage: mount <source> <target>\n");
+        term::term_err("mount: usage: mount <source> <target>\n");
         return;
     }
     // La sorgente NON si risolve: puo' essere `UUID=`/`LABEL=` o un device.
     let target = cwd::resolve(args[2]);
     if libr::mount(args[1], &target).is_err() {
-        term::term_print("mount: failed\n");
+        term::term_err("mount: failed\n");
     }
 }
 
 pub(crate) fn cmd_umount(args: &[&str]) {
     if args.len() < 2 {
-        term::term_print("umount: usage: umount <target>\n");
+        term::term_err("umount: usage: umount <target>\n");
         return;
     }
     let target = cwd::resolve(args[1]);
     if libr::umount(&target).is_err() {
-        term::term_print("umount: failed (busy or not mounted?)\n");
+        term::term_err("umount: failed (busy or not mounted?)\n");
     }
 }
 
@@ -153,15 +163,15 @@ fn copy_file(src: &str, dst: &str) -> bool {
     let from = cwd::resolve(src);
     let to = cwd::resolve(dst);
     let Ok(fd_in) = libr::open(&from, 0) else {
-        term::term_print("cp: cannot open ");
-        term::term_print(src);
-        term::term_print("\n");
+        term::term_err("cp: cannot open ");
+        term::term_err(src);
+        term::term_err("\n");
         return false;
     };
     let Ok(fd_out) = libr::open(&to, 0x200 /* O_CREAT */) else {
-        term::term_print("cp: cannot create ");
-        term::term_print(dst);
-        term::term_print("\n");
+        term::term_err("cp: cannot create ");
+        term::term_err(dst);
+        term::term_err("\n");
         let _ = libr::close(fd_in);
         return false;
     };
@@ -184,13 +194,13 @@ fn copy_file(src: &str, dst: &str) -> bool {
     let _ = libr::close(fd_in);
     let _ = libr::close(fd_out);
     if !ok {
-        term::term_print("cp: I/O error\n");
+        term::term_err("cp: I/O error\n");
     }
     ok
 }
 pub(crate) fn cmd_cp(args: &[&str]) {
     if args.len() < 3 {
-        term::term_print("cp: usage: cp <src> <dst>\n");
+        term::term_err("cp: usage: cp <src> <dst>\n");
         return;
     }
     copy_file(args[1], args[2]);
@@ -198,7 +208,7 @@ pub(crate) fn cmd_cp(args: &[&str]) {
 
 pub(crate) fn cmd_mv(args: &[&str]) {
     if args.len() < 3 {
-        term::term_print("mv: usage: mv <src> <dst>\n");
+        term::term_err("mv: usage: mv <src> <dst>\n");
         return;
     }
     // mv = cp + rm client-side, zero nuove op (Fase 18.2): la sorgente si
@@ -208,31 +218,31 @@ pub(crate) fn cmd_mv(args: &[&str]) {
     }
     let src = cwd::resolve(args[1]);
     if libr::remove(&src).is_err() {
-        term::term_print("mv: copied but cannot remove source\n");
+        term::term_err("mv: copied but cannot remove source\n");
     }
 }
 
 pub(crate) fn cmd_rm(args: &[&str]) {
     if args.len() < 2 {
-        term::term_print("rm: missing file\n");
+        term::term_err("rm: missing file\n");
         return;
     }
     let path = cwd::resolve(args[1]);
     if libr::remove(&path).is_err() {
-        term::term_print("rm: cannot remove ");
-        term::term_print(args[1]);
-        term::term_print("\n");
+        term::term_err("rm: cannot remove ");
+        term::term_err(args[1]);
+        term::term_err("\n");
     }
 }
 
 pub(crate) fn cmd_rmdir(args: &[&str]) {
     if args.len() < 2 {
-        term::term_print("rmdir: missing directory\n");
+        term::term_err("rmdir: missing directory\n");
         return;
     }
     // Stessa op del server (dir vuote): il server rifiuta le non vuote.
     let path = cwd::resolve(args[1]);
     if libr::remove(&path).is_err() {
-        term::term_print("rmdir: failed (not empty or missing?)\n");
+        term::term_err("rmdir: failed (not empty or missing?)\n");
     }
 }

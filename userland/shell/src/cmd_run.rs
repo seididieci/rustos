@@ -16,11 +16,11 @@ struct Job {
     cmd: String,
     bg: bool,
     done: Option<i64>,
-    /// Nonce del grant redirect (Fase 40.4c, `None` senza redirect): cancellato
-    /// best-effort quando la morte e' osservata (mai prima: il claim dello
-    /// startup avverrebbe dopo). Idempotente (grant single-use: dopo il claim
-    /// non esiste piu').
-    redir_nonce: Option<u64>,
+    /// Nonce dei grant redirect (Fase 40.4c/d, vuoto senza redirect):
+    /// cancellati best-effort quando la morte e' osservata (mai prima: il
+    /// claim dello startup avverrebbe dopo). Idempotenti (grant single-use:
+    /// dopo il claim non esistono piu').
+    redir_grants: Vec<u64>,
 }
 
 static mut JOBS: Vec<Job> = Vec::new();
@@ -59,7 +59,7 @@ fn poll_reap() {
             for j in jobs().iter_mut() {
                 if j.chan == m.channel && j.done.is_none() {
                     j.done = Some(m.w0 as i64);
-                    cancel_redir(j.redir_nonce);
+                    cancel_redir(&j.redir_grants);
                 }
             }
         } else {
@@ -68,9 +68,9 @@ fn poll_reap() {
     }
 }
 
-/// Cancella il grant redirect di un job morto (best-effort idempotente).
-fn cancel_redir(nonce: Option<u64>) {
-    if let Some(n) = nonce {
+/// Cancella i grant redirect di un job morto (best-effort idempotenti).
+fn cancel_redir(grants: &[u64]) {
+    for &n in grants {
         let _ = libr::dup_cancel(n);
     }
 }
@@ -97,19 +97,20 @@ fn print_job(idx: usize, j: &Job) {
 /// `run <path> [args...] [&]`: lancia il programma (path relativo ammesso,
 /// argv[0] = path come digitato). `&` finale = background (prompt subito,
 /// `jobs`/`wait` dopo); senza = foreground (attende l'uscita; code != 0
-/// stampato come `[exit N]`). Con redirect stdout (`> >>`, Fase 40.4c): il
-/// parent apre+grant pre-fork e contrabbanda `(1, nonce)` nell'ultimo argv
-/// (magic); lo startup del figlio fa claim + `set_stdio` (tutti i programmi
-/// via `entry!`, zero codice per-target).
+/// stampato come `[exit N]`). Con redirect (Fase 40.4c/d): il parent apre
+/// tutti i target in ordine + grant single-use per fd distinto e contrabbanda
+/// la spec nell'ultimo argv (magic); lo startup del figlio fa claim +
+/// `set_stdio` (tutti i programmi via `entry!`, zero codice per-target).
+/// `2>&1` = alias (un grant solo, voce `Alias` nella spec).
 pub(crate) fn cmd_run(args: &[&str], redirs: &[redirect::Redir]) {
     if args.len() < 2 {
-        term::term_print("run: usage: run <path> [args...] [&]\n");
+        term::term_err("run: usage: run <path> [args...] [&]\n");
         return;
     }
     let bg = args.last() == Some(&"&");
     let end = if bg { args.len() - 1 } else { args.len() };
     if end < 2 {
-        term::term_print("run: usage: run <path> [args...] [&]\n");
+        term::term_err("run: usage: run <path> [args...] [&]\n");
         return;
     }
     let path = cwd::resolve(args[1]);
@@ -117,53 +118,57 @@ pub(crate) fn cmd_run(args: &[&str], redirs: &[redirect::Redir]) {
     let img = match libr::load_file(&path) {
         Some(b) if !b.is_empty() => b,
         _ => {
-            term::term_print("run: cannot load ");
-            term::term_print(args[1]);
-            term::term_print("\n");
+            term::term_err("run: cannot load ");
+            term::term_err(args[1]);
+            term::term_err("\n");
             return;
         }
     };
     let argv: Vec<&str> = args[1..end].to_vec();
-    // Redirect stdout: apri tutti i target (ultimo vince) + grant single-use
-    // sul tenuto. Errori sul terminale, comando non eseguito.
-    let mut redir_fd: i64 = -1;
-    let mut redir_nonce: Option<u64> = None;
-    if redirs.iter().any(|r| r.slot == 1) {
-        redir_fd = match redirect::open_stdout(redirs) {
-            Ok(fd) => fd,
-            Err(e) => {
-                let t = redirs.iter().find(|r| r.slot == 1).unwrap().target.clone();
+    // Redirect: apri in ordine (ultimo vince per slot) + un grant per fd
+    // distinto. Errori su stderr, comando non eseguito.
+    let mut fds = [-1i64; 3];
+    let mut spec: Vec<libr::RedirEntry> = Vec::new();
+    let mut grants: Vec<u64> = Vec::new();
+    if !redirs.is_empty() {
+        fds = match redirect::open_all(redirs) {
+            Ok(f) => f,
+            Err((t, e)) => {
                 redirect::report_open_error(&t, e);
                 return;
             }
         };
-        if redir_fd < 0 {
-            term::term_print("run: redirect failed\n");
-            return;
-        }
-        match libr::dup_grant(redir_fd) {
-            Ok(n) => redir_nonce = Some(n),
-            Err(_) => {
-                let _ = libr::close(redir_fd);
-                term::term_print("run: redirect grant failed\n");
-                return;
+        // Un grant per fd distinto, in ordine di slot; l'alias riusa l'fd
+        // senza grant (lo startup copia dallo slot target).
+        for slot in 0..3 {
+            let fd = fds[slot];
+            if fd < 0 {
+                continue;
+            }
+            if slot == 2 && fd == fds[1] {
+                spec.push(libr::RedirEntry::Alias { vfd: 2, target: 1 });
+                continue;
+            }
+            match libr::dup_grant(fd) {
+                Ok(n) => {
+                    grants.push(n);
+                    spec.push(libr::RedirEntry::Grant { vfd: slot as u8, nonce: n });
+                }
+                Err(_) => {
+                    redirect::close_all(fds);
+                    cancel_redir(&grants);
+                    term::term_err("run: redirect grant failed\n");
+                    return;
+                }
             }
         }
     }
-    let buf = match redir_nonce {
-        Some(n) => libr::serialize_argv_redir(&argv, &[(1, n)]),
-        None => libr::serialize_argv(&argv),
-    };
-    let buf = match buf {
+    let buf = match libr::serialize_argv_redir(&argv, &spec) {
         Some(b) => b,
         None => {
-            if redir_fd >= 0 {
-                let _ = libr::close(redir_fd);
-            }
-            if let Some(n) = redir_nonce {
-                let _ = libr::dup_cancel(n);
-            }
-            term::term_print("run: argv troppo lunghi\n");
+            redirect::close_all(fds);
+            cancel_redir(&grants);
+            term::term_err("run: argv troppo lunghi\n");
             return;
         }
     };
@@ -176,12 +181,10 @@ pub(crate) fn cmd_run(args: &[&str], redirs: &[redirect::Redir]) {
     }
     match libr::fork() {
         Err(_) => {
-            // Fork fallita: nessun figlio, grant orfano da cancellare.
-            if redir_fd >= 0 {
-                let _ = libr::close(redir_fd);
-            }
-            cancel_redir(redir_nonce);
-            term::term_print("run: fork failed\n");
+            // Fork fallita: nessun figlio, grant orfani da cancellare.
+            redirect::close_all(fds);
+            cancel_redir(&grants);
+            term::term_err("run: fork failed\n");
         }
         Ok(libr::ForkResult::Child { .. }) => {
             // FS avvelenato qui: solo exec (byte COW-condivisi in lettura,
@@ -196,19 +199,17 @@ pub(crate) fn cmd_run(args: &[&str], redirs: &[redirect::Redir]) {
             }
         }
         Ok(libr::ForkResult::Parent { pid, chan }) => {
-            // Il grant vive lato server (snapshot): la copia del parent si
-            // chiude subito; la cancellazione avviene a morte osservata
+            // I grant vivono lato server (snapshot): le copie del parent si
+            // chiudono subito; la cancellazione avviene a morte osservata
             // (wait_job/poll_reap: mai prima del claim dello startup).
-            if redir_fd >= 0 {
-                let _ = libr::close(redir_fd);
-            }
+            redirect::close_all(fds);
             jobs().push(Job {
                 pid: pid as i64,
                 chan,
                 cmd,
                 bg,
                 done: None,
-                redir_nonce,
+                redir_grants: grants,
             });
             if bg {
                 let mut s = String::from("[bg pid ");
@@ -221,11 +222,11 @@ pub(crate) fn cmd_run(args: &[&str], redirs: &[redirect::Redir]) {
             let idx = jobs().len() - 1;
             match wait_job(chan) {
                 Some(0) => {
-                    cancel_redir(jobs()[idx].redir_nonce);
+                    cancel_redir(&jobs()[idx].redir_grants);
                     jobs().remove(idx);
                 }
                 Some(code) => {
-                    cancel_redir(jobs()[idx].redir_nonce);
+                    cancel_redir(&jobs()[idx].redir_grants);
                     jobs().remove(idx);
                     let mut s = String::from("[exit ");
                     cmd_info::push_u64(&mut s, code as u64);
@@ -234,7 +235,7 @@ pub(crate) fn cmd_run(args: &[&str], redirs: &[redirect::Redir]) {
                     term::term_print("\n");
                 }
                 None => {
-                    term::term_print("run: wait failed\n");
+                    term::term_err("run: wait failed\n");
                 }
             }
         }
@@ -261,14 +262,14 @@ pub(crate) fn cmd_wait(args: &[&str]) {
         let pid = match cmd_info::parse_i64(args[1]) {
             Some(p) => p,
             None => {
-                term::term_print("wait: bad pid\n");
+                term::term_err("wait: bad pid\n");
                 return;
             }
         };
         let idx = match jobs().iter().position(|j| j.pid == pid) {
             Some(i) => i,
             None => {
-                term::term_print("wait: no such job\n");
+                term::term_err("wait: no such job\n");
                 return;
             }
         };
@@ -278,7 +279,7 @@ pub(crate) fn cmd_wait(args: &[&str]) {
         if jobs()[idx].done.is_none() {
             let chan = jobs()[idx].chan;
             jobs()[idx].done = wait_job(chan);
-            cancel_redir(jobs()[idx].redir_nonce);
+            cancel_redir(&jobs()[idx].redir_grants);
         }
         let j = jobs().remove(idx);
         report_waited(&j);
@@ -290,7 +291,7 @@ pub(crate) fn cmd_wait(args: &[&str]) {
         if jobs()[0].done.is_none() {
             let chan = jobs()[0].chan;
             jobs()[0].done = wait_job(chan);
-            cancel_redir(jobs()[0].redir_nonce);
+            cancel_redir(&jobs()[0].redir_grants);
         }
         let j = jobs().remove(0);
         report_waited(&j);

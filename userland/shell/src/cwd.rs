@@ -65,9 +65,9 @@ pub(crate) fn cmd_cd(args: &[&str]) {    if args.len() < 2 {
     // (open creerebbe il file: mai usarlo come sonda).
     let mut probe = vec![0u8; 256];
     if libr::readdir(&path, &mut probe, 256).is_err() {
-        term::term_print("cd: no such directory: ");
-        term::term_print(args[1]);
-        term::term_print("\n");
+        term::term_err("cd: no such directory: ");
+        term::term_err(args[1]);
+        term::term_err("\n");
         return;
     }
     cwd_set(path);

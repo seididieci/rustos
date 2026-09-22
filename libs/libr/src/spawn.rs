@@ -129,20 +129,29 @@ pub fn serialize_argv(argv: &[&str]) -> Option<alloc::vec::Vec<u8>> {
 }
 
 /// Come `serialize_argv` ma con spec redirect contrabbandata come ultimo argv
-/// (Fase 40.4c): `spec` = `(vfd, nonce)` per slot (max 3, vfd 0..2). Formato
-/// `REDIR_MAGIC + vfd:noncehex (;...)`, hex minuscolo senza NUL (il kernel
-/// rifiuta code extra e spezza al NUL). Lo startup (`stdio_restore` via
-/// `entry!`) la nasconde ad `args_from_stack`: il programma non la vede.
-/// `None` a spec invalida o oltre `ARGS_MAX`.
+/// (Fase 40.4c/d): una voce per slot attivo (max 3). Formato `REDIR_MAGIC +
+/// vfd:noncehex` (grant) o `vfd:@slot` (alias `2>&1`, zero grant) separati da
+/// `;`, hex minuscolo senza NUL (il kernel rifiuta code extra e spezza al NUL).
+/// Lo startup (`stdio_restore` via `entry!`) la nasconde ad `args_from_stack`:
+/// il programma non la vede. `None` a spec invalida o oltre `ARGS_MAX`.
 pub fn serialize_argv_redir(
     argv: &[&str],
-    spec: &[(u8, u64)],
+    spec: &[crate::stdio::RedirEntry],
 ) -> Option<alloc::vec::Vec<u8>> {
+    use crate::stdio::RedirEntry;
     if spec.len() > crate::stdio::REDIR_MAX_ENTRIES
-        || spec.iter().any(|&(v, _)| v > 2)
         || argv.len() + if spec.is_empty() { 0 } else { 1 } > 1024
     {
         return None;
+    }
+    for e in spec {
+        let (v, extra_ok) = match *e {
+            RedirEntry::Grant { vfd, .. } => (vfd, true),
+            RedirEntry::Alias { vfd, target } => (vfd, target <= 2),
+        };
+        if v > 2 || !extra_ok {
+            return None;
+        }
     }
     let mut buf = alloc::vec::Vec::new();
     let argc = argv.len() + if spec.is_empty() { 0 } else { 1 };
@@ -153,15 +162,25 @@ pub fn serialize_argv_redir(
     }
     if !spec.is_empty() {
         buf.extend_from_slice(crate::stdio::REDIR_MAGIC);
-        for (i, &(vfd, nonce)) in spec.iter().enumerate() {
+        for (i, e) in spec.iter().enumerate() {
             if i > 0 {
                 buf.push(b';');
             }
-            buf.push(b'0' + vfd);
-            buf.push(b':');
-            for shift in (0..16).rev() {
-                let nib = ((nonce >> (shift * 4)) & 0xf) as u8;
-                buf.push(if nib < 10 { b'0' + nib } else { b'a' + nib - 10 });
+            match *e {
+                RedirEntry::Grant { vfd, nonce } => {
+                    buf.push(b'0' + vfd);
+                    buf.push(b':');
+                    for shift in (0..16).rev() {
+                        let nib = ((nonce >> (shift * 4)) & 0xf) as u8;
+                        buf.push(if nib < 10 { b'0' + nib } else { b'a' + nib - 10 });
+                    }
+                }
+                RedirEntry::Alias { vfd, target } => {
+                    buf.push(b'0' + vfd);
+                    buf.push(b':');
+                    buf.push(b'@');
+                    buf.push(b'0' + target);
+                }
             }
         }
         buf.push(0);

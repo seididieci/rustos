@@ -97,15 +97,44 @@ pub(crate) fn push_u64(s: &mut String, mut v: u64) {
 }
 
 pub(crate) fn cmd_wc(args: &[&str]) {
+    // Senza file: stdin redirectato (`<`, come `cat`); conta i byte stdin e
+    // stampa con nome `-` (convenzione). Non redirectato = `missing file`.
     if args.len() < 2 {
-        term::term_print("wc: missing file\n");
+        if libr::stdin_fd() < 0 {
+            term::term_err("wc: missing file\n");
+            return;
+        }
+        let data = term::term_read_stdin();
+        let (mut lines, mut words, mut bytes) = (0u64, 0u64, 0u64);
+        let mut in_word = false;
+        for &b in &data {
+            bytes += 1;
+            if b == b'\n' {
+                lines += 1;
+            }
+            if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
+                in_word = false;
+            } else if !in_word {
+                in_word = true;
+                words += 1;
+            }
+        }
+        let mut s = String::new();
+        push_u64(&mut s, lines);
+        s.push(' ');
+        push_u64(&mut s, words);
+        s.push(' ');
+        push_u64(&mut s, bytes);
+        s.push_str(" -");
+        term::term_print(&s);
+        term::term_print("\n");
         return;
     }
     let path = cwd::resolve(args[1]);
     let Ok(fd) = libr::open(&path, 0) else {
-        term::term_print("wc: cannot open ");
-        term::term_print(args[1]);
-        term::term_print("\n");
+        term::term_err("wc: cannot open ");
+        term::term_err(args[1]);
+        term::term_err("\n");
         return;
     };
     let mut buf = vec![0u8; 4096];
@@ -154,15 +183,35 @@ fn push_hex_byte(s: &mut String, b: u8) {
 }
 
 pub(crate) fn cmd_hexdump(args: &[&str]) {
+    // Senza file: stdin redirectato (`<`, come `cat`/`wc`).
     if args.len() < 2 {
-        term::term_print("hexdump: missing file\n");
+        if libr::stdin_fd() < 0 {
+            term::term_err("hexdump: missing file\n");
+            return;
+        }
+        let data = term::term_read_stdin();
+        let mut off = 0usize;
+        for chunk in data.chunks(16) {
+            let mut s = String::new();
+            for shift in (0..8).rev() {
+                s.push(hex_of((off >> (shift * 4)) as u8) as char);
+            }
+            s.push_str(": ");
+            for &b in chunk {
+                push_hex_byte(&mut s, b);
+                s.push(' ');
+            }
+            term::term_print(&s);
+            term::term_print("\n");
+            off += chunk.len();
+        }
         return;
     }
     let path = cwd::resolve(args[1]);
     let Ok(fd) = libr::open(&path, 0) else {
-        term::term_print("hexdump: cannot open ");
-        term::term_print(args[1]);
-        term::term_print("\n");
+        term::term_err("hexdump: cannot open ");
+        term::term_err(args[1]);
+        term::term_err("\n");
         return;
     };
     let mut buf = vec![0u8; 16];
@@ -229,7 +278,7 @@ fn service_by_name(name: &str) -> Option<libr::Service> {
 }
 pub(crate) fn cmd_kill(args: &[&str]) {
     if args.len() < 2 {
-        term::term_print("kill: usage: kill <pid|service>\n");
+        term::term_err("kill: usage: kill <pid|service>\n");
         return;
     }
     let pid = match parse_i64(args[1]) {
@@ -241,17 +290,17 @@ pub(crate) fn cmd_kill(args: &[&str]) {
             Some(svc) => match libr::service_pid(svc) {
                 Ok(p) => p,
                 Err(_) => {
-                    term::term_print("kill: service not running\n");
+                    term::term_err("kill: service not running\n");
                     return;
                 }
             },
             None => {
-                term::term_print("kill: unknown pid/service\n");
+                term::term_err("kill: unknown pid/service\n");
                 return;
             }
         },
     };
     if libr::kill(pid, 1).is_err() {
-        term::term_print("kill: failed (parent/init only, or init/self/unknown?)\n");
+        term::term_err("kill: failed (parent/init only, or init/self/unknown?)\n");
     }
 }
