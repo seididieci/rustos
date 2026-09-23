@@ -41,11 +41,12 @@ la mostra (`/prova$ `, `$ ` a root).
 | `rm <file>` | Cancella file (`R_DELETE`; su `/fat` rifiutato: niente unlink, fuori scope) |
 | `rmdir <dir>` | Cancella directory vuota (rifiutata se piena) |
 | `ps` | Tabella processi stile Linux: PID NAME PRIO STATE TIME PARENT (syscall 37, Fase 19.1) |
+| `export [NAME=val]` | Variabili shell (Fase 41): set persistente o lista; `NAME=valore` nudo equivale |
 | `run <path> [args...] [&]` | Lancia un programma via fork+exec (Fase 37.2): path esatto (niente ricerca: `/fat/bin/runhello.bin`, non `runhello`), argv[0] = path digitato; `&` = background (prompt subito), senza = foreground (attende; `[exit N]` se N != 0) |
 | `jobs` | Tabella job (`[id] pid P run\|done C cmd`; i finiti restano finche' `wait`) |
 | `wait [pid]` | Attende i job (tutti o uno) e li rimuove, stampa `pid P: exit C` |
 | `help` | Mostra comandi disponibili |
-| `exit` | Termina la shell |
+| `exit [code]` | Termina la shell (Fase 41: code opzionale per `$?`/`&&`/`||`) |
 
 > **Fase 37.2**: job = figli diretti (non-detached: muoiono con la shell);
 > uscita via `EXIT_NOTIFY` (nessun `wait` kernel). Il parent carica file+argv
@@ -80,10 +81,37 @@ la spec ad `args_from_stack`. Data plane sempre diretto (mai relay nella
 shell); grant cancellati a morte osservata. Dettagli e alternative scartate
 (relay, nonce sul canale di nascita, pipe per i file) in ADR-0031 e AGENTS.
 
-### Limiti onesti (redirect)
+### Parser (Fase 41)
 
-- **Niente quoting/escape**: un operatore dentro virgolette viene comunque
-  interpretato (parser vero in Fase 41).
+Sintassi bash-like (subset), implementata in `userland/shell/src/parser.rs`
+(client-side, zero cambi IPC/protocollo):
+
+| Sintassi | Effetto |
+|----------|---------|
+| `'...'` | Letterale (niente espansione/split/glob/redirect) |
+| `"..."` | Raggruppa; solo `$` espande (`\$` resta letterale) |
+| `\x` | Escape fuori quote (qualunque char letterale) |
+| `#` | Commento (non quotato, a inizio parola) |
+| `;` | Sequenza (corre sempre) |
+| `&&` / `\|\|` | Short-circuit su exit code (`$?` threadato) |
+| `&` | Background per `run` (connettore, non più in argv) |
+| `$V` / `${V}` / `$?` / `$$` | Variabili shell / ultimo code / pid (unset = vuoto) |
+| `~` | Directory home (`/`) a inizio parola |
+| `*` `?` | Glob via `readdir` (match ordinati, no-match letterale, dotfile solo se il pattern inizia per `.`) |
+| `export [N=v]` / `N=v` | Set persistente o lista (senza comando) |
+
+I builtin ritornano `i64` (0 ok, 1 errore, 127 ignoto, 2 parse) per `$?`/`&&`/`||`.
+Connettori consecutivi: vince l'ultimo. `|` singola rifiutata (`pipe non
+supportata`, Fase 42); `VAR=v comando` rifiutato (Fase 43); virgolette non
+chiuse = resto riga letterale (niente continuazione).
+
+> **Nota tastiera**: `\` e `|` arrivano dal tasto ANSI `0x2B`, che
+> `pc-keyboard 0.7` mappa su `Oem7` (non gestito da `Us104Key`): `usertty` usa
+> un layout `Us104Fix` che lo mappa a `\` / `|` con shift. Senza, i nomi QEMU
+> `backslash`/`shift-backslash` erano validi ma i byte non arrivavano mai.
+
+### Limiti onesti (redirect + parser)
+
 - **Niente pipe/heredoc** (`|`, `<<`): Fase 42 (pipe-buffer nel posix-server).
 - **`2>&1` ≠ zsh `MULTIOS`**: niente tee, ultimo-vince come bash/POSIX.
 - **`<` su device** puo' troncare/EOF subito (solo file testati); `cat`

@@ -28,7 +28,7 @@
 
 extern crate alloc;
 use alloc::collections::VecDeque;
-use pc_keyboard::{DecodedKey, HandleControl, KeyCode, Keyboard, ScancodeSet1, layouts};
+use pc_keyboard::{DecodedKey, HandleControl, KeyCode, Keyboard, KeyboardLayout, ScancodeSet1, layouts};
 
 use libr::println;
 
@@ -54,6 +54,33 @@ use libr::{req_frame_read, resp_frame_write};
 
 // ── Stato ───────────────────────────────────────────────────────────
 
+/// Layout US-ANSI corretto (Fase 41): `pc-keyboard 0.7` mappa lo scancode
+/// `0x2B` (backslash ANSI, quello che QEMU `sendkey backslash` invia) su
+/// `KeyCode::Oem7`, ma `Us104Key` non gestisce `Oem7` (cade in `RawKey`, che
+/// `decode_bytes` scarta) — solo `0x56` (tasto ISO, assente sulle ANSI) dava
+/// `\`/`|`. Risultato: `\` e `|` non arrivavano mai al guest (nomi QEMU validi
+/// ma byte mai consegnati). Si delega tutto a `Us104Key` tranne `Oem7`, mappato
+/// come la posizione ANSI US vuole (`\` / `|` con shift).
+struct Us104Fix;
+
+impl KeyboardLayout for Us104Fix {
+    fn map_keycode(
+        &self,
+        keycode: KeyCode,
+        modifiers: &pc_keyboard::Modifiers,
+        handle_ctrl: HandleControl,
+    ) -> DecodedKey {
+        if keycode == KeyCode::Oem7 {
+            if modifiers.is_shifted() {
+                DecodedKey::Unicode('|')
+            } else {
+                DecodedKey::Unicode('\\')
+            }
+        } else {
+            layouts::Us104Key.map_keycode(keycode, modifiers, handle_ctrl)
+        }
+    }
+}
 const INPUT_CAPACITY: usize = 256;
 /// Coda output verso /dev/console: echo + DEV_WRITE inoltrati, in ordine.
 /// Le scritte VGA non falliscono mai: le relay DEV_WRITE rispondono OK subito.
@@ -91,7 +118,7 @@ struct Tty {
     con_fd: i64,
     input: VecDeque<u8>,
     out: alloc::vec::Vec<u8>,
-    decoder: Keyboard<layouts::Us104Key, ScancodeSet1>,
+    decoder: Keyboard<Us104Fix, ScancodeSet1>,
     err_streak: u32,
     ready_sent: bool,
     flush_wait_until: i64,
@@ -118,7 +145,7 @@ impl Tty {
             out: alloc::vec::Vec::new(),
             decoder: Keyboard::new(
                 ScancodeSet1::new(),
-                layouts::Us104Key,
+                Us104Fix,
                 HandleControl::MapLettersToUnicode,
             ),
             err_streak: 0,

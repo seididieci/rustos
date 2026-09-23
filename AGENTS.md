@@ -1552,9 +1552,15 @@ velordor/
         zero kernel/userfs/protocollo, gate invariato. 40.5 FATTO (t54 a
         livello libr/server: trunc/append/lseek/codici/DUP/stdio/SEEK-deny;
         suite 53/53 → 54/54, Fase 40 CHIUSA).
-  - [ ] Fase 41 (P2, parser shell, parallela alla 40): quoting/escape,
-        `$VAR/$?/~`, `; && ||`, commenti, glob via `readdir`. Zero cambi IPC.
-        Vittoria: `test-shell.py` esteso verde.
+  - [x] Fase 41 (P2, parser shell): quoting/escape, `$VAR/$?/~`, `; && ||`,
+        commenti, glob via `readdir`. Zero cambi IPC. `test-shell.py` 56 → 95
+        verde + `scripts/smoke41.py` (21 check, auto-sonda KEYMAP).
+        Bug veri trovati: (1) `\`/`|` mai consegnati — pc-keyboard 0.7 mappa
+        0x2B su Oem7, non gestito da Us104Key → layout `Us104Fix` in usertty;
+        (2) passo-1: `2>&1` consumava un target inesistente (MissingTarget a
+        `2>&1 > /f`; il test "dopo" passava per asserzione debole, indurita a
+        `cannot open missing404`), `\$` in doppie riespandeva, `EnvPrefix`
+        irraggiungibile, `2>>` mappato su dup. Vittoria: shell 95/95.
   - [ ] Fase 42 (P3, pipe + waitpid): pipe-buffer nel server, `pipe/dup2`,
         heredoc, `waitpid` con status, pipeline `fork+exec` a catena. Vittoria:
         `cat /f | wc`, `a | b > /o`.

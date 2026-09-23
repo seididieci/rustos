@@ -143,11 +143,14 @@ fn tokenize(s: &str) -> Result<Vec<Piece>, ParseError> {
             continue;
         }
         // Virgoletta doppia: letterale, ma \ solo prima di $ " \.
+        // `\$` e' Q_ESC (mai riespanso: senno' `$B` diventerebbe variabile);
+        // `\"`/`\\` restano Q_DOUBLE (char inerti, mai trigger di espansione).
         if c == b'"' {
             i += 1;
             while i < b.len() && b[i] != b'"' {
                 if b[i] == b'\\' && i + 1 < b.len() && matches!(b[i + 1], b'$' | b'"' | b'\\') {
-                    word.push(Ch { b: b[i + 1], q: Q_DOUBLE });
+                    let q = if b[i + 1] == b'$' { Q_ESC } else { Q_DOUBLE };
+                    word.push(Ch { b: b[i + 1], q });
                     i += 2;
                 } else {
                     word.push(Ch { b: b[i], q: Q_DOUBLE });
@@ -519,6 +522,9 @@ fn finish(words: Vec<Vec<Ch>>, redirs: Vec<RawRedir>, status: i64, bg: bool) -> 
             argv_words = &[];
             assign = Some((name, word_string(&val[0])));
         }
+    } else if !words.is_empty() && split_assign(&words[0]).is_some() {
+        // `NAME=val cmd...`: prefisso d'ambiente mono-comando (Fase 43).
+        return Err(ParseError::EnvPrefix);
     }
     let mut argv: Vec<String> = Vec::new();
     for w in argv_words {
@@ -606,14 +612,24 @@ pub(crate) fn parse_line(line: &str, status: i64) -> Result<Seq, ParseError> {
                 i += 1;
             }
             Piece::Op(op) => match op {
-                Op::Gt | Op::GtGt | Op::Lt | Op::E2Gt | Op::E2GtGt | Op::Dup21 => {
+                // `2>&1` non ha target (alias): va registrato da solo, SENZA
+                // consumare la parola dopo (bug passo-1: cadeva nel ramo con
+                // target e `2>&1 > /f` moriva in MissingTarget).
+                Op::Dup21 => {
+                    redirs.push(RawRedir { slot: 2, append: false, dup_to_1: true, target: Vec::new() });
+                    i += 1;
+                }
+                Op::Gt | Op::GtGt | Op::Lt | Op::E2Gt | Op::E2GtGt => {
                     let (slot, append, dup) = match op {
                         Op::Gt => (1, false, false),
                         Op::GtGt => (1, true, false),
                         Op::Lt => (0, false, false),
                         Op::E2Gt => (2, false, false),
                         Op::E2GtGt => (2, true, false),
-                        _ => (2, false, true),
+                        // Irraggiungibile (Dup21 ha un ramo dedicato sopra):
+                        // serve per l'esaustivita'.
+                        Op::Dup21 => (2, false, true),
+                        _ => (1, false, false),
                     };
                     let tgt = match pieces.get(i + 1) {
                         Some(Piece::Word(w)) => w.clone(),

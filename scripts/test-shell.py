@@ -9,6 +9,8 @@ dal log seriale senza bisogno della VGA.
 Comandi testati: ls, cat, mkdir (cat usa hello.txt; '.' si invia come 'dot').
 Fase 40.4: redirect `> >> < 2> 2>&1` (bash-like) + `run` redirectato
 ('>' e '<' si inviano come 'shift-dot'/'shift-comma').
+Fase 41: parser quote-aware ('...' "..." backslash # ; && || & $VAR ${VAR}
+$? $$ ~ glob * ?; pipe rifiutata) coi nomi sendkey sondati in smoke41.py.
 Fase 18.0: backspace a riga vuota non mangia il prompt (verifica via
 screendump QEMU: eco visibile, cancel ripristina, backspace a vuoto = 0
 byte diversi sull'ultima riga a meno del cursore).
@@ -32,8 +34,18 @@ FAT2 = "userland/fs/fat2.img"
 # esistono (si mandano come combo 'shift-x', verificato: 'H' invalido,
 # 'shift-h' ok). '>' e '<' sono shift-dot/shift-comma (redirect Fase 40.4,
 # verificati come gli altri: senza, la riga arriva troncata).
+# Fase 41: nomi per il parser (sondati live via smoke41.py su QEMU 10.2.2:
+# validita' da reply monitor + consegna verificata nel guest; '\\' e '|'
+# richiedono anche il fix Us104Fix in usertty, senza non arrivano mai).
 KEYMAP = {" ": "spc", ".": "dot", "-": "minus", "/": "slash", "&": "shift-7",
-          ">": "shift-dot", "<": "shift-comma"}
+          ">": "shift-dot", "<": "shift-comma", "!": "shift-1",
+          "'": "apostrophe", '"': "shift-apostrophe",
+          "\\": "backslash", "|": "shift-backslash",
+          ";": "semicolon", "$": "shift-4", "*": "shift-8",
+          "?": "shift-slash", "#": "shift-3", "~": "shift-grave_accent",
+          "=": "equal", "_": "shift-minus", ":": "shift-semicolon",
+          "{": "shift-bracket_left", "}": "shift-bracket_right",
+          "`": "grave_accent"}
 KEYMAP.update({chr(c): "shift-%s" % chr(c).lower() for c in range(ord("A"), ord("Z") + 1)})
 
 SHOT0 = "/tmp/velordor-shot0.ppm"
@@ -604,16 +616,21 @@ def main():
         ok = ok and found
         out = run_out("cat missing404 2> /e404.txt")
         out = run_out("cat /e404.txt")
-        found = b"cannot open" in out
+        found = b"cannot open missing404" in out
         print(("PASS " if found else "FAIL ") + "2> cattura errore builtin")
+        ok = ok and found
+        out = run_out("cat missing404 2>> /e404b.txt")
+        out = run_out("cat /e404b.txt")
+        found = b"cannot open missing404" in out
+        print(("PASS " if found else "FAIL ") + "2>> appende errore builtin")
         ok = ok and found
         run("cat missing404 > /o404b.txt 2>&1")
         out = run_out("cat /o404b.txt")
-        found = b"cannot open" in out
+        found = b"cannot open missing404" in out
         print(("PASS " if found else "FAIL ") + "2>&1 dopo >: errore nel file")
         ok = ok and found
         out = run_out("cat missing404 2>&1 > /o404c.txt")
-        found = b"cannot open" in out
+        found = b"cannot open missing404" in out
         print(("PASS " if found else "FAIL ") + "2>&1 prima di >: errore su terminale")
         ok = ok and found
         out = run_out("ls -l")
@@ -653,12 +670,198 @@ def main():
         print(("PASS " if found else "FAIL ") + "output bg nel file")
         ok = ok and found
 
+        # Fase 41: parser quote-aware (quote/escape/commenti, ; && || &,
+        # $VAR ${VAR} $? $$ ~, glob * ?; pipe rifiutata verso Fase 42).
+        # Quote: singolo raggruppa e inibisce tutto, doppio solo $.
+        out = run_out("echo 'a   b'")
+        found = b"a   b" in out
+        print(("PASS " if found else "FAIL ") + "41 single-quote raggruppa")
+        ok = ok and found
+        out = run_out("echo '>'")
+        found = b">" in out
+        print(("PASS " if found else "FAIL ") + "41 redirect in quote letterale")
+        ok = ok and found
+        out = run_out("echo 'a#b'")
+        found = b"a#b" in out
+        print(("PASS " if found else "FAIL ") + "41 # in quote non e' commento")
+        ok = ok and found
+        run("export Q41=vv")
+        out = run_out("echo '$Q41'")
+        found = b"$Q41" in out and b"vv" not in out
+        print(("PASS " if found else "FAIL ") + "41 $ in single-quote letterale")
+        ok = ok and found
+        out = run_out("echo '*'")
+        found = b"*" in out
+        print(("PASS " if found else "FAIL ") + "41 glob in quote inibito")
+        ok = ok and found
+        out = run_out('echo "a   b"')
+        found = b"a   b" in out
+        print(("PASS " if found else "FAIL ") + "41 double-quote raggruppa")
+        ok = ok and found
+        out = run_out('echo "v=$Q41"')
+        found = b"v=vv" in out
+        print(("PASS " if found else "FAIL ") + "41 $ in double-quote espande")
+        ok = ok and found
+        out = run_out('echo "a\\$B"')
+        found = b"a$B" in out
+        print(("PASS " if found else "FAIL ") + "41 escape in double-quote")
+        ok = ok and found
+
+        # Escape fuori quote + commenti.
+        out = run_out("echo a\\ b")
+        found = b"a b" in out
+        print(("PASS " if found else "FAIL ") + "41 escape spazio")
+        ok = ok and found
+        out = run_out("echo a\\;b")
+        found = b"a;b" in out
+        print(("PASS " if found else "FAIL ") + "41 escape punto-e-virgola")
+        ok = ok and found
+        out = run_out("echo hi # trailing")
+        found = b"hi" in out
+        print(("PASS " if found else "FAIL ") + "41 commento trailing")
+        ok = ok and found
+
+        # Variabili: bare-assign, ${}, unset, $$, ~, export lista/errori.
+        run("BARE41=zzz")
+        out = run_out("echo $BARE41")
+        found = b"zzz" in out
+        print(("PASS " if found else "FAIL ") + "41 bare NAME=valore")
+        ok = ok and found
+        out = run_out("echo ${BARE41}!")
+        found = b"zzz!" in out
+        print(("PASS " if found else "FAIL ") + "41 ${VAR}")
+        ok = ok and found
+        out = run_out("echo pre$UNSET41Xpost")
+        found = b"UNSET41X" not in out and out.split(b"\n")[0].strip() == b"pre"
+        print(("PASS " if found else "FAIL ") + "41 $UNSET sparisce")
+        ok = ok and found
+        out = run_out("echo $$")
+        found = re.search(rb"\d+", out) is not None and b"$$" not in out
+        print(("PASS " if found else "FAIL ") + "41 $$ numerico")
+        ok = ok and found
+        out = run_out("echo ~")
+        found = out.split(b"\n")[0].strip() == b"/"
+        print(("PASS " if found else "FAIL ") + "41 tilde -> /")
+        ok = ok and found
+        out = run_out("export")
+        found = b"BARE41=zzz" in out
+        print(("PASS " if found else "FAIL ") + "41 export lista")
+        ok = ok and found
+        out = run_out("export 1BAD41=x")
+        found = b"bad name" in out
+        print(("PASS " if found else "FAIL ") + "41 export nome invalido")
+        ok = ok and found
+        out = run_out("F41X=1 echo hi")
+        found = b"non supportato" in out
+        print(("PASS " if found else "FAIL ") + "41 VAR=v cmd rifiutato (Fase 43)")
+        ok = ok and found
+        # Field-split: una variabile con spazio diventa DUE argv (osservabile
+        # via `cp src dst`: senza split sarebbe un'unica sorgente inesistente).
+        run("echo spcontent > /sp41.txt")
+        run('export F41="/sp41.txt /sp41c.txt"')
+        run("cp $F41")
+        out = run_out("cat /sp41c.txt")
+        found = b"spcontent" in out
+        print(("PASS " if found else "FAIL ") + "41 field-split non quotato")
+        ok = ok and found
+        run("rm /sp41.txt")
+        run("rm /sp41c.txt")
+
+        # Connettori: ; && ||, short-circuit, catene, $?, ignoto=127.
+        out = run_out("echo c41a; echo c41b")
+        found = b"c41a" in out and b"c41b" in out
+        print(("PASS " if found else "FAIL ") + "41 ; sequenza")
+        ok = ok and found
+        out = run_out("cat missing41; echo after41")
+        found = b"after41" in out
+        print(("PASS " if found else "FAIL ") + "41 ; ignora lo status")
+        ok = ok and found
+        out = run_out("echo ok41 && echo yes41")
+        found = b"ok41" in out and b"yes41" in out
+        print(("PASS " if found else "FAIL ") + "41 && catena")
+        ok = ok and found
+        out = run_out("cat missing41 && echo no41")
+        found = b"no41" not in out
+        print(("PASS " if found else "FAIL ") + "41 && short-circuit")
+        ok = ok and found
+        out = run_out("cat missing41 || echo or41")
+        found = b"or41" in out
+        print(("PASS " if found else "FAIL ") + "41 || scatta")
+        ok = ok and found
+        out = run_out("echo ok41b || echo no41b")
+        found = b"ok41b" in out and b"no41b" not in out
+        print(("PASS " if found else "FAIL ") + "41 || salta a successo")
+        ok = ok and found
+        out = run_out("cat missing41 || cat missing41b || echo deep41")
+        found = b"deep41" in out
+        print(("PASS " if found else "FAIL ") + "41 catena || profonda")
+        ok = ok and found
+        run("cat missing41")
+        out = run_out("echo $?")
+        found = b"1" in out
+        print(("PASS " if found else "FAIL ") + "41 $? dopo errore")
+        ok = ok and found
+        out = run_out("nosuchcmd41")
+        found = b"unknown command" in out
+        print(("PASS " if found else "FAIL ") + "41 comando ignoto")
+        ok = ok and found
+        out = run_out("echo $?")
+        found = b"127" in out
+        print(("PASS " if found else "FAIL ") + "41 $? dopo ignoto (=127)")
+        ok = ok and found
+        out = run_out("echo comb41 > /comb41.txt && cat /comb41.txt")
+        found = b"comb41" in out
+        print(("PASS " if found else "FAIL ") + "41 redirect + &&")
+        ok = ok and found
+        run("rm /comb41.txt")
+
+        # Glob via readdir: *, ?, no-match letterale, dotfile esclusi.
+        run("touch g41a1")
+        run("touch g41a2")
+        run("touch g41b1")
+        out = run_out("echo g41*")
+        found = b"g41a1" in out and b"g41a2" in out and b"g41b1" in out
+        print(("PASS " if found else "FAIL ") + "41 glob *")
+        ok = ok and found
+        out = run_out("echo g41a?")
+        found = b"g41a1" in out and b"g41a2" in out and b"g41b1" not in out
+        print(("PASS " if found else "FAIL ") + "41 glob ?")
+        ok = ok and found
+        out = run_out("echo g41nomatch*.zzz")
+        found = b"g41nomatch*.zzz" in out
+        print(("PASS " if found else "FAIL ") + "41 glob no-match letterale")
+        ok = ok and found
+        run("touch .h41")
+        out = run_out("echo *")
+        found = b"h41" not in out
+        print(("PASS " if found else "FAIL ") + "41 glob esclude dotfile")
+        ok = ok and found
+        out = run_out("echo .h*")
+        found = b".h41" in out
+        print(("PASS " if found else "FAIL ") + "41 glob dotfile con punto")
+        ok = ok and found
+        run("rm g41a1")
+        run("rm g41a2")
+        run("rm g41b1")
+        run("rm .h41")
+
+        # Errori parser: pipe, quote non chiusa, redirect senza target.
+        out = run_out("echo a | echo b")
+        found = b"pipe non supportata" in out
+        print(("PASS " if found else "FAIL ") + "41 pipe rifiutata (Fase 42)")
+        ok = ok and found
+        out = run_out('echo "abc')
+        found = b"abc" in out
+        print(("PASS " if found else "FAIL ") + "41 quote non chiusa letterale")
+        ok = ok and found
+
         # Pulizia file di prova (ramfs condivisa: non sporcare i test dopo).
         run("rm redir404.txt")
         run("rm /o404.txt")
         run("rm /o404b.txt")
         run("rm /o404c.txt")
         run("rm /e404.txt")
+        run("rm /e404b.txt")
         run("rm /ro404.txt")
         run("rm /ro404b.txt")
         run("rm /ro404c.txt")
