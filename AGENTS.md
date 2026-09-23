@@ -1561,9 +1561,23 @@ velordor/
         `2>&1 > /f`; il test "dopo" passava per asserzione debole, indurita a
         `cannot open missing404`), `\$` in doppie riespandeva, `EnvPrefix`
         irraggiungibile, `2>>` mappato su dup. Vittoria: shell 95/95.
-  - [ ] Fase 42 (P3, pipe + waitpid): pipe-buffer nel server, `pipe/dup2`,
-        heredoc, `waitpid` con status, pipeline `fork+exec` a catena. Vittoria:
-        `cat /f | wc`, `a | b > /o`.
+  - [x] Fase 42 (P3, pipe + waitpid; ADR-0032): pipe-buffer in **userfs**
+        (feature dell'OS, non nel posix-server: `FileEntry::Pipe` + `PipeTable`
+        cap 8192, `R_PIPE_CREATE` 0x20, `ERR_EMPTY`/`ERR_CLOSED` →
+        `Error::Empty`/`Closed`/EAGAIN/EPIPE, t53 a 17 voci; specifica POSIX in
+        `libr`/shell), handoff stadi = grant con reservation al grant (stesso
+        nonce COW ADR-0031), `fs_child_reinit` nei figli builtin, retry
+        throttled su `Empty` in `read_fs`/`write_fs` (server mai bloccante),
+        shell `cmd_pipeline` (fork+grant per stadio, `wait_all`, status =
+        ultimo) + heredoc pre-exec + `&` su pipeline rifiutata (Fase 44).
+        Bug veri trovati: (1) reservation al grant (close parent prima del
+        claim liberava il buffer); (2) `Empty` trattato da EOF/fatale →
+        blocking; (3) check con aspettative sbagliate (`cat` aggiunge `\n`:
+        pipe = file + 1 linea/byte). Harness split: `shell_harness.py` + 5
+        file di fase + `test-shell-all.sh` (seq e `--jobs` con overlay qcow2;
+        fix `-F raw` per qemu-img 10 + `import re` in 41). Vittoria:
+        `cat /f | wc`, `a | b > /o`, heredoc, EOF, streaming >8192B —
+        shell 29/8/20/37/18 (112 check) verde in seq e `--jobs 5`.
   - [ ] Fase 43 (P4, env/PATH/script): `envp` reale, cwd per-pid, `PATH`,
         `exec` diretto, shebang, history/editing base. Vittoria: `export`,
         binari senza path, `.sh` eseguibili.

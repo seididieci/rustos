@@ -4,7 +4,7 @@ Avvia il proprio QEMU (seriale + monitor dedicati), digita via sendkey,
 verifica sul log seriale. Autonomo: prepara le immagini (salvo --no-prep),
 boota, testa, pulisce le sue fixture. Vedi scripts/shell_harness.py.
 """
-import sys, os
+import sys, os, re
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
 from shell_harness import Shell, Checker, prep_images, parse_shell_args
 def main():

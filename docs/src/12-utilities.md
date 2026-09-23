@@ -101,18 +101,36 @@ Sintassi bash-like (subset), implementata in `userland/shell/src/parser.rs`
 | `export [N=v]` / `N=v` | Set persistente o lista (senza comando) |
 
 I builtin ritornano `i64` (0 ok, 1 errore, 127 ignoto, 2 parse) per `$?`/`&&`/`||`.
-Connettori consecutivi: vince l'ultimo. `|` singola rifiutata (`pipe non
-supportata`, Fase 42); `VAR=v comando` rifiutato (Fase 43); virgolette non
-chiuse = resto riga letterale (niente continuazione).
+Connettori consecutivi: vince l'ultimo. `VAR=v comando` rifiutato (Fase 43);
+virgolette non chiuse = resto riga letterale (niente continuazione).
 
 > **Nota tastiera**: `\` e `|` arrivano dal tasto ANSI `0x2B`, che
 > `pc-keyboard 0.7` mappa su `Oem7` (non gestito da `Us104Key`): `usertty` usa
 > un layout `Us104Fix` che lo mappa a `\` / `|` con shift. Senza, i nomi QEMU
 > `backslash`/`shift-backslash` erano validi ma i byte non arrivavano mai.
 
-### Limiti onesti (redirect + parser)
+### Pipe + heredoc (Fase 42)
 
-- **Niente pipe/heredoc** (`|`, `<<`): Fase 42 (pipe-buffer nel posix-server).
+Stadi concorrenti via fork (builtin e `run` condividono handoff e dispatch);
+redirect file/heredoc espliciti vincono sui pipe-link per-slot:
+
+| Sintassi | Effetto |
+|----------|---------|
+| `a \| b \| ...` | Pipeline N stadi (status gruppo = ultimo, `$?` threadato) |
+| `a \| b > /o` | Pipe + redirect combinati (esplicito vince sul link) |
+| `cat <<EOF` | Heredoc: corpo letterale letto pre-exec (prompt `> `), stdin dello stadio |
+
+Meccanismo (ADR-0032): pipe-buffer **in userfs** (feature dell'OS:
+`FileEntry::Pipe` + `PipeTable` cap 8192, `R_PIPE_CREATE` 0x20,
+`ERR_EMPTY`/`ERR_CLOSED` → `EAGAIN`/`EPIPE` al bordo POSIX); specifica POSIX
+(`pipe()`/`dup2()`, composizione) in `libr`/shell. Handoff stadi = grant con
+reservation al grant (stesso nonce COW di ADR-0031); `libr` riprova throttled
+su `Empty` (server mai bloccante); EOF vero solo a scrittori esauriti.
+Streaming oltre la capacità via intercalazione scheduler. `&` su pipeline
+rifiutato fino alla Fase 44; pipe trailing ignorata.
+
+### Limiti onesti (redirect + parser + pipe)
+
 - **`2>&1` ≠ zsh `MULTIOS`**: niente tee, ultimo-vince come bash/POSIX.
 - **`<` su device** puo' troncare/EOF subito (solo file testati); `cat`
   di `/dev/zero` non termina (come da file — stesso comportamento).
@@ -128,8 +146,8 @@ chiuse = resto riga letterale (niente continuazione).
 Primo programma lanciabile (`userland/runhello`, `/bin/runhello.bin` su disco
 — non un servizio: init non lo spawna). Stampa gli argv (uno per riga) su
 seriale ed esce 0; con argomento `fail` esce 3 (dopo aver stampato). Con
-stdin redirectato stampa anche `runhello: stdin:<byte>` (Fase 40.4d). Serve a
-`test-shell.py` come target fg/bg con exit code osservabile.
+stdin redirectato stampa anche `runhello: stdin:<byte>` (Fase 40.4d). Serve ai
+test shell (`scripts/test-shell-*.py`) come target fg/bg con exit code osservabile.
 
 Line editing: il backspace a riga vuota non mangia il prompt (disciplina di
 linea in `usertty`: conta i digitati, ingoia il resto — Fase 18.0).

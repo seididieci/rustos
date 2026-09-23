@@ -58,3 +58,4 @@
 - [ADR-0029: ATA DMA + IRQ](./adr/0029-ata-dma-irq.md)
 - [ADR-0030: Fondamenta posix (Fase 39)](./adr/0030-posix-fondamenta.md)
 - [ADR-0031: fd handoff + redirect file (disegno Fase 40)](./adr/0031-fd-handoff-redirect.md)
+- [ADR-0032: pipe + heredoc (disegno Fase 42)](./adr/0032-pipe-heredoc.md)
