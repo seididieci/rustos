@@ -298,6 +298,14 @@ pub const R_DUP_CLAIM: u32 = 0x1E;
 /// wedge il parent nel cleanup dei job). Come CLOSE/DROP/GET, sempre
 /// consentito (nessun bit di diritto).
 pub const R_DUP_CANCEL: u32 = 0x1F;
+/// Crea una pipe (Fase 42): nessun payload (expect 0), w0 = hint di capacita'
+/// in byte (clampato server-side a [4096, 16384], default 8192 a hint 0).
+/// Ritorna l'fd di LETTURA nel result e quello di SCRITTURA in w1 (il frame
+/// di risposta porta entrambi: `[result:8][w1:8]`). Buffer in userfs, semantica
+/// non-bloccante: read a vuota con writer aperti → ERR_EMPTY (riprova
+/// throttled), a writer chiusi → 0 (EOF); write a piena → parziale, a lettori
+/// chiusi → ERR_CLOSED. Mai blocco del server single-threaded.
+pub const R_PIPE_CREATE: u32 = 0x20;
 /// `kind` per R_STAT (Fase 19.2): bit 0-1 tipo + bit 7 readonly.
 pub const STAT_FILE: u64 = 0;
 pub const STAT_DIR: u64 = 1;
@@ -363,6 +371,12 @@ pub const ERR_EXISTS: u64 = !0u64 - 5;
 pub const ERR_READONLY: u64 = !0u64 - 6;
 pub const ERR_BUSY: u64 = !0u64 - 7;
 pub const ERR_INVALID: u64 = !0u64 - 8;
+/// Pipe vuota con writer ancora aperti (Fase 42): non EOF, riprova throttled.
+/// Il client la mappa in `Error::Empty` (EAGAIN al bordo POSIX).
+pub const ERR_EMPTY: u64 = !0u64 - 9;
+/// Estremita' opposta della pipe chiusa (Fase 42): write senza lettori o
+/// grant/claim su stato morto. Il client la mappa in `Error::Closed` (EPIPE).
+pub const ERR_CLOSED: u64 = !0u64 - 10;
 
 // ── Costanti condivise kernel/userland ─────────────────────────────────────
 // Pagina fisica scratch riservata dal kernel all'avvio (phys_mem::reserve):

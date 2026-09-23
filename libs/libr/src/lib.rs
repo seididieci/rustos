@@ -57,7 +57,7 @@ pub use syscall_numbers::{DISK_CLOSE, DISK_HELLO, DISK_OPEN, DISK_READ, DISK_RES
 pub use syscall_numbers::{
     R_CLOSE, R_DELETE, R_MKDIR, R_MOUNT, R_OPEN, R_READ, R_READDIR, R_REGISTER, R_UMOUNT,
     R_WRITE, R_RIGHTS_DROP, R_RIGHTS_GET, R_STAT, R_LSEEK, R_DUP_GRANT, R_DUP_CLAIM,
-    R_DUP_CANCEL,
+    R_DUP_CANCEL, R_PIPE_CREATE,
 };
 /// Bit dei diritti per-canale (Fase 17, self-restriction; DELETE in 18.2;
 /// SEEK in 40): mask per `rights_drop`, valore di ritorno di `rights_get`.
@@ -73,7 +73,7 @@ pub use syscall_numbers::{STAT_DEVICE, STAT_DIR, STAT_FILE, STAT_READONLY};
 /// distingue i rifiuti, il client li mappa in `posix::Error`).
 pub use syscall_numbers::{
     O_APPEND, O_CREAT, O_TRUNC, SEEK_CUR, SEEK_END, SEEK_SET, ERR_BUSY, ERR_EXISTS,
-    ERR_INVALID, ERR_ISDIR, ERR_NOTDIR, ERR_NOTFOUND, ERR_READONLY,
+    ERR_INVALID, ERR_ISDIR, ERR_NOTDIR, ERR_NOTFOUND, ERR_READONLY, ERR_EMPTY, ERR_CLOSED,
 };
 
 /// Fase 29 (mmap/mprotect): protezioni + codice di uscita per fault di

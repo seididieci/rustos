@@ -110,6 +110,7 @@ pub fn handle_open(
 pub fn handle_read(
     fs: &ramfs::RamFs,
     ftable: &mut ftable::FileTable,
+    pipes: &mut pipes::PipeTable,
     mounts_fat: &mut Vec<mount::FsMount>,
     rings: &BTreeMap<u64, (u64, u64)>,
     chan: u64,
@@ -133,6 +134,14 @@ pub fn handle_read(
         libr::map_in(driver_chan, resp_phys, libr::CLI_RESP_VA, 1).map_err(|_| ERR)?;
         let reply = libr::send(driver_chan, DEV_READ, remote_fd as u64, count as u64).map_err(|_| ERR)?;
         return Ok(reply.w0);
+    }
+    // Estremita' di pipe in lettura (Fase 42): mai dalla tail condivisa, mai
+    // blocco — vedi handle_pipe_read (Empty vs EOF distinti per costruzione).
+    if let Some((pipe_id, write)) = ftable.get_pipe(chan, fd) {
+        if write {
+            return Err(ERR_INVALID); // read sul lato scrittura
+        }
+        return handle_pipe_read(pipes, rings, chan, pipe_id, count);
     }
     if ftable.get(chan, fd).is_none() {
         return Err(ERR_INVALID);
@@ -192,6 +201,53 @@ pub fn handle_read(
     Ok(bytes_read as u64)
 }
 
+/// Read da estremita' pipe (Fase 42): self-written come le read locali
+/// (il dispatch non riscrive per R_READ). Tre esiti, mai blocco:
+/// dati → frame con payload; vuota con writer aperti → ERR_EMPTY (il client
+/// riprova throttled: 0 significherebbe EOF e troncherebbe la pipeline);
+/// vuota con writer chiusi → frame vuoto + 0 (EOF vero, contratto 18.2-bis).
+fn handle_pipe_read(
+    pipes: &mut pipes::PipeTable,
+    rings: &BTreeMap<u64, (u64, u64)>,
+    chan: u64,
+    pipe_id: u32,
+    count: usize,
+) -> Result<u64, u64> {
+    let mut buf_stack = [0u8; 4096];
+    let n = count.min(4096);
+    let (got, eof) = match pipes.read(pipe_id, &mut buf_stack[..n]) {
+        Some(v) => v,
+        None => return Err(ERR), // id ignoto: inconsistenza interna
+    };
+    if got == 0 && !eof {
+        if rings.get(&chan).is_some() {
+            rings::map_client_resp_ring(rings, chan);
+            rings::resp_ring_write(ERR_EMPTY, 0, &[]);
+        }
+        return Err(ERR_EMPTY);
+    }
+    if let Some(&(_, _)) = rings.get(&chan) {
+        rings::map_client_resp_ring(rings, chan);
+        rings::resp_ring_write(got as u64, 0, &buf_stack[..got]);
+    }
+    Ok(got as u64)
+}
+
+/// Crea una pipe (Fase 42): buffer + due fd (lettura, scrittura) sul canale
+/// del chiamante. Ritorna (read_fd, write_fd): il dispatch li mette in
+/// result e w1 del response frame.
+pub fn handle_pipe_create(
+    ftable: &mut ftable::FileTable,
+    pipes: &mut pipes::PipeTable,
+    chan: u64,
+    hint: usize,
+) -> Result<(u64, u64), u64> {
+    let id = pipes.create(hint);
+    let r = ftable.open_pipe(chan, id, false);
+    let w = ftable.open_pipe(chan, id, true);
+    Ok((r, w))
+}
+
 /// File remoto: inoltro al driver. Il payload del WRITE RESTA nel request ring
 /// del client (zero copy): userfs inietta entrambi i ring del client nel driver
 /// (`map_in`), il driver legge i dati direttamente dal request ring e avanza la
@@ -225,6 +281,7 @@ pub fn handle_write_remote(
 pub fn handle_write_local(
     fs: &mut ramfs::RamFs,
     ftable: &mut ftable::FileTable,
+    pipes: &mut pipes::PipeTable,
     mounts_fat: &mut Vec<mount::FsMount>,
     chan: u64,
     fd: u32,
@@ -232,6 +289,26 @@ pub fn handle_write_local(
     payload: &[u8],
     fgen: &mut u64,
 ) -> Result<u64, u64> {
+    // Estremita' di pipe in scrittura (Fase 42): append/offset ignorati (le
+    // pipe non hanno offset); oltre la capacita' = parziale (il client
+    // rimanda); senza lettori = ERR_CLOSED (SIGPIPE senza segnali).
+    if let Some((pipe_id, write)) = ftable.get_pipe(chan, fd) {
+        if !write {
+            return Err(ERR_INVALID); // write sul lato lettura
+        }
+        if !pipes.has_readers(pipe_id) {
+            return Err(ERR_CLOSED);
+        }
+        let want = count.min(payload.len());
+        match pipes.write(pipe_id, &payload[..want]) {
+            // Zero accettati a lettori vivi (piena): NON 0 (il client lo
+            // leggerebbe come "fatto") ma ERR_EMPTY — il client riprova
+            // throttled finche' il lettore drena (wrapping di write_fs).
+            Some(0) => return Err(ERR_EMPTY),
+            Some(n) => return Ok(n as u64),
+            None => return Err(ERR),
+        }
+    }
     let (path, kind, offset, mnt) = ftable.get(chan, fd).ok_or(ERR_INVALID)?;
     let append = ftable.is_append(chan, fd);
     if kind == mount_legacy::FsKind::Fat {
@@ -284,7 +361,19 @@ pub fn handle_write_local(
     }
 }
 
-pub fn handle_close(ftable: &mut ftable::FileTable, chan: u64, fd: u32) -> Result<u64, u64> {
+pub fn handle_close(
+    ftable: &mut ftable::FileTable,
+    pipes: &mut pipes::PipeTable,
+    chan: u64,
+    fd: u32,
+) -> Result<u64, u64> {
+    // Estremita' pipe: rimuovi l'fd e decrementa il conteggio (l'ultima
+    // close libera il buffer, mai leak a pipeline finite).
+    if let Some((pipe_id, write)) = ftable.get_pipe(chan, fd) {
+        ftable.close(chan, fd);
+        pipes.end_closed(pipe_id, write);
+        return Ok(0);
+    }
     // File remoto: chiudi anche sul server.
     if let Some((driver_chan, remote_fd)) = ftable.get_remote(chan, fd) {
         let _ = libr::send(driver_chan, DEV_CLOSE, remote_fd as u64, 0);

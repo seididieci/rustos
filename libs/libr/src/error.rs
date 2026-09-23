@@ -54,6 +54,14 @@ pub enum Error {
     ReadOnly,
     /// Oltre il limite di dimensione (spawn_image/exec bound, file troppo grosso).
     TooBig,
+    // ── Pipe (Fase 42): dal server, mai dal kernel ──
+    /// Pipe vuota con writer ancora aperti: i wrapper `read_fs`/`write_fs` la
+    /// riprovano throttled da soli (I/O bloccante); la vede solo chi parla il
+    /// protocollo ring a mano. Al bordo: EAGAIN.
+    Empty,
+    /// Estremita' opposta chiusa (write senza lettori): al bordo EPIPE.
+    /// Niente segnali in Fase 42: il chiamante vede l'errore e decide.
+    Closed,
 }
 
 impl From<WaitReplyError> for Error {

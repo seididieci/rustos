@@ -37,6 +37,7 @@ mod ftable;
 mod handlers;
 mod mount;
 mod mount_legacy;
+mod pipes;
 mod ramfs;
 mod rights;
 mod rings;
@@ -56,11 +57,12 @@ use libr::{
 use libr::{
     R_CLOSE, R_DELETE, R_MKDIR, R_MOUNT, R_OPEN, R_READ, R_READDIR, R_REGISTER, R_UMOUNT,
     R_WRITE, R_RIGHTS_DROP, R_RIGHTS_GET, R_STAT, R_LSEEK, R_DUP_GRANT, R_DUP_CLAIM,
-    R_DUP_CANCEL,
+    R_DUP_CANCEL, R_PIPE_CREATE,
 };
 // Sentinelle di errore FS (Fase 40): i rifiuti tipizzati viaggiano qui invece
-// del generico ERR; il client li mappa in `posix::Error`.
-use libr::{ERR_NOTFOUND, ERR_ISDIR, ERR_NOTDIR, ERR_EXISTS, ERR_READONLY, ERR_BUSY, ERR_INVALID};
+// del generico ERR; il client li mappa in `posix::Error`. Fase 42: ERR_EMPTY
+// (pipe vuota, riprova) + ERR_CLOSED (estremita' chiusa).
+use libr::{ERR_NOTFOUND, ERR_ISDIR, ERR_NOTDIR, ERR_EXISTS, ERR_READONLY, ERR_BUSY, ERR_INVALID, ERR_EMPTY, ERR_CLOSED};
 // Tag DEV_* op + device types (DocsD: single source in `syscall-numbers`).
 use libr::{
     DEV_CLOSE, DEV_CONSOLE, DEV_KBD, DEV_KEYBOARD, DEV_NULL, DEV_OPEN, DEV_READ,

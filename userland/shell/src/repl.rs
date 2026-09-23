@@ -32,18 +32,15 @@ fn real_main(_sp: u64) -> ! {
             prompt = cwd + "$ ";
         }
         let line = term::read_line(&prompt);
-        // Parser Fase 41: quote/escape/commenti, ; && || & |, redirect 40.4,
-        // $VAR ${VAR} $? $$, ~, glob. Comandi gia' espansi con connettori.
-        let seq = match parser::parse_line(&line, status) {
+        // Parser Fase 41+42: quote/escape/commenti, ; && || & | <<, redirect
+        // 40.4, $VAR ${VAR} $? $$, ~, glob. Comandi gia' espansi con connettori.
+        let mut seq = match parser::parse_line(&line, status) {
             Ok(s) => s,
             Err(e) => {
                 match e {
                     parser::ParseError::MissingTarget(op) => {
                         term::term_err("redirect: missing target after ");
                         term::term_err(op);
-                    }
-                    parser::ParseError::PipeUnsupported => {
-                        term::term_err("pipe non supportata (Fase 42)");
                     }
                     parser::ParseError::BadSubst => {
                         term::term_err("sostituzione errata");
@@ -57,8 +54,55 @@ fn real_main(_sp: u64) -> ! {
                 continue;
             }
         };
-        for (i, cmd) in seq.cmds.iter().enumerate() {
-            // Short-circuit: && corre solo a status 0, || solo a != 0.
+        // Heredoc (Fase 42): per ogni `<<DELIM` senza corpo, leggi righe fino
+        // alla riga col solo delimitatore (corpo sempre letterale: niente
+        // parsing/espansione dentro). Come bash, si legge tutto PRIMA di
+        // eseguire (anche per gli stadi dopo la pipe).
+        for cmd in seq.cmds.iter_mut() {
+            for r in cmd.redirs.iter_mut() {
+                if r.heredoc && r.heredoc_body.is_none() {
+                    let delim = r.target.clone();
+                    let mut body = String::new();
+                    loop {
+                        let l = term::read_line("> ");
+                        if l == delim {
+                            break;
+                        }
+                        body.push_str(&l);
+                        body.push('\n');
+                    }
+                    r.heredoc_body = Some(body);
+                }
+            }
+        }
+        // Esecuzione: gruppi di stadi legati da Pipe girano concorrenti
+        // (una pipeline); il resto resta sequenziale con short-circuit.
+        let mut i = 0;
+        while i < seq.cmds.len() {
+            let mut j = i;
+            while j + 1 < seq.cmds.len()
+                && matches!(seq.cons.get(j), Some(parser::Conn::Pipe))
+            {
+                j += 1;
+            }
+            if j > i {
+                // Pipeline: short-circuit sul connettore prima del gruppo.
+                if i > 0 {
+                    let go = match seq.cons.get(i - 1) {
+                        Some(parser::Conn::And) => status == 0,
+                        Some(parser::Conn::Or) => status != 0,
+                        _ => true,
+                    };
+                    if !go {
+                        i = j + 1;
+                        continue;
+                    }
+                }
+                status = cmd_run::cmd_pipeline(&seq.cmds[i..=j]);
+                i = j + 1;
+                continue;
+            }
+            // Comando singolo: short-circuit come prima.
             if i > 0 {
                 let go = match seq.cons.get(i - 1) {
                     Some(parser::Conn::And) => status == 0,
@@ -66,10 +110,19 @@ fn real_main(_sp: u64) -> ! {
                     _ => true,
                 };
                 if !go {
+                    i += 1;
                     continue;
                 }
             }
-            status = exec_command(cmd);
+            let cmd = &seq.cmds[i];
+            // Singolo con heredoc ma senza pipe: stessa via pipeline a 1
+            // stadio (il percorso exec_command non sa i corpi heredoc).
+            if cmd.redirs.iter().any(|r| r.heredoc) {
+                status = cmd_run::cmd_pipeline(&seq.cmds[i..=i]);
+            } else {
+                status = exec_command(cmd);
+            }
+            i += 1;
         }
     }
 }
@@ -123,28 +176,44 @@ fn exec_command(cmd: &parser::Command) -> i64 {
         libr::set_stdio(fds);
     }
     let code = match args[0] {
-        "ls" => cmd_fs::cmd_ls(&args),
-        "cat" => cmd_fs::cmd_cat(&args),
-        "touch" => cmd_fs::cmd_touch(&args),
-        "mkdir" => cmd_fs::cmd_mkdir(&args),
-        "mount" => cmd_fs::cmd_mount(&args),
-        "umount" => cmd_fs::cmd_umount(&args),
-        "echo" => cmd_info::cmd_echo(&args),
-        "clear" => cmd_info::cmd_clear(),
-        "wc" => cmd_info::cmd_wc(&args),
-        "hexdump" => cmd_info::cmd_hexdump(&args),
-        "kill" => cmd_info::cmd_kill(&args),
-        "cd" => cwd::cmd_cd(&args),
-        "pwd" => cwd::cmd_pwd(),
-        "cp" => cmd_fs::cmd_cp(&args),
-        "mv" => cmd_fs::cmd_mv(&args),
-        "rm" => cmd_fs::cmd_rm(&args),
-        "rmdir" => cmd_fs::cmd_rmdir(&args),
-        "ps" => cmd_info::cmd_ps(),
-        "export" => cmd_info::cmd_export(&args),
         "run" => cmd_run::cmd_run(&args, &cmd.redirs, cmd.bg),
+        _ => dispatch_builtin(&args),
+    };
+    // Restore: output/errori giá instradati (hook B1 / term_err); le write
+    // restano best-effort (mirror seriale gia' emesso).
+    if fds != [-1i64; 3] {
+        libr::clear_stdio();
+        redirect::close_all(fds);
+    }
+    code
+}
+
+/// Dispatch dei builtin (Fase 42: condiviso tra esecuzione in-processo e
+/// stadi builtin delle pipeline, che girano in figli fork con stdio proprio).
+/// `run` resta fuori (fork+exec dedicata in `cmd_run`); ignoto = 127.
+pub(crate) fn dispatch_builtin(args: &[&str]) -> i64 {
+    match args[0] {
+        "ls" => cmd_fs::cmd_ls(args),
+        "cat" => cmd_fs::cmd_cat(args),
+        "touch" => cmd_fs::cmd_touch(args),
+        "mkdir" => cmd_fs::cmd_mkdir(args),
+        "mount" => cmd_fs::cmd_mount(args),
+        "umount" => cmd_fs::cmd_umount(args),
+        "echo" => cmd_info::cmd_echo(args),
+        "clear" => cmd_info::cmd_clear(),
+        "wc" => cmd_info::cmd_wc(args),
+        "hexdump" => cmd_info::cmd_hexdump(args),
+        "kill" => cmd_info::cmd_kill(args),
+        "cd" => cwd::cmd_cd(args),
+        "pwd" => cwd::cmd_pwd(),
+        "cp" => cmd_fs::cmd_cp(args),
+        "mv" => cmd_fs::cmd_mv(args),
+        "rm" => cmd_fs::cmd_rm(args),
+        "rmdir" => cmd_fs::cmd_rmdir(args),
+        "ps" => cmd_info::cmd_ps(),
+        "export" => cmd_info::cmd_export(args),
         "jobs" => cmd_run::cmd_jobs(),
-        "wait" => cmd_run::cmd_wait(&args),
+        "wait" => cmd_run::cmd_wait(args),
         "exit" => match args.get(1) {
             None => libr::exit(0),
             Some(s) => match cmd_info::parse_i64(s) {
@@ -162,12 +231,5 @@ fn exec_command(cmd: &parser::Command) -> i64 {
             term::term_err("\n");
             127
         }
-    };
-    // Restore: output/errori giá instradati (hook B1 / term_err); le write
-    // restano best-effort (mirror seriale gia' emesso).
-    if fds != [-1i64; 3] {
-        libr::clear_stdio();
-        redirect::close_all(fds);
     }
-    code
 }

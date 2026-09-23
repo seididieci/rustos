@@ -39,7 +39,7 @@ pub fn t_posix_foundation() -> bool {
     }
     // (b) UNICA traduzione nativo→errno: tabella totale e fissata. Se una
     // variante futura nasce senza braccio qui, non compila (match totale).
-    let table: [(libr::Error, i64); 15] = [
+    let table: [(libr::Error, i64); 17] = [
         (libr::Error::NotReady, libr::posix::EIO),
         (libr::Error::Pending, libr::posix::EAGAIN),
         (libr::Error::RingFull, libr::posix::EAGAIN),
@@ -55,6 +55,8 @@ pub fn t_posix_foundation() -> bool {
         (libr::Error::Exists, libr::posix::EEXIST),
         (libr::Error::ReadOnly, libr::posix::EROFS),
         (libr::Error::TooBig, libr::posix::EFBIG),
+        (libr::Error::Empty, libr::posix::EAGAIN),
+        (libr::Error::Closed, libr::posix::EPIPE),
     ];
     for (e, want) in table {
         let got = libr::posix::to_errno(e);

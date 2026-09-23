@@ -22,12 +22,27 @@ pub fn open(path: &str, flags: u32) -> Result<i64, Error> {
     }
 }
 
+/// Throttle tra retry su pipe (Fase 42): solo spin puri (IF=1, mai `get_ticks`
+/// che maschera gli interrupt e affama il timer — lezione scheduler). Ogni
+/// retry e' comunque un round-trip FS in cui il client dorme bloccato in
+/// `send`: niente dilution (il quanto va agli altri, t30).
+fn pipe_throttle() {
+    for _ in 0..200_000 {
+        core::hint::spin_loop();
+    }
+}
+
 /// `read_fs(fd, dst, max_count)`: legge fino a `max_count` byte dal file.
 /// I dati viaggiano nel response ring; se `max_count` supera la capacita' di
 /// un singolo frame, la lettura viene spezzata in piu' round trip (Fase 10.2).
 /// Ritorna i byte letti (0 = EOF); un errore dopo progressi parziali ritorna
 /// `Ok(got)` (semantica POSIX: conta cio' che c'e'), solo a zero progressi e'
 /// `Err` (Fase 39).
+/// Fase 42 (pipe): `Empty` (pipe vuota, writer vivi) si riprova throttled QUI
+/// (read bloccante: i file non emettono mai Empty, quindi per loro nulla
+/// cambia). La morte del writer risolve sempre via purge server-side (EOF):
+/// l'unico stallo possibile e' un writer vivo che non scrive mai — come la
+/// read bloccante POSIX.
 pub fn read_fs(fd: i64, dst: &mut [u8], max_count: usize) -> Result<usize, Error> {
     session::fs_gate()?;
     let mut got = 0usize;
@@ -40,6 +55,13 @@ pub fn read_fs(fd: i64, dst: &mut [u8], max_count: usize) -> Result<usize, Error
             ring::req_ring_write(R_READ, fd as u64, want as u64, &[])
         }) {
             Some((result, _, payload_len)) => {
+                // Pipe vuota (writer vivi): read bloccante — throttled e si
+                // riprova lo STESSO chunk (solo le pipe emettono Empty).
+                if result == ERR_EMPTY {
+                    ring::resp_ring_consume(16);
+                    pipe_throttle();
+                    continue;
+                }
                 if session::fs_reply_check(result).is_err() {
                     ring::resp_ring_consume(16);
                     if got > 0 {
@@ -79,6 +101,10 @@ pub fn read_fs(fd: i64, dst: &mut [u8], max_count: usize) -> Result<usize, Error
 /// singolo frame, la scrittura viene spezzata in piu' round trip (Fase 10.2).
 /// Ritorna i byte scritti; errore dopo progressi parziali = `Ok(done)` (come
 /// `read_fs`, Fase 39).
+/// Fase 42 (pipe): `Empty` (pipe piena, lettori vivi) si riprova throttled
+/// QUI (write bloccante) e il parziale si completa col resto (i file non
+/// emettono mai Empty e il loro parziale resta terminale come prima: ogni
+/// iterazione o avanza `done` o esce — mai loop infinito).
 pub fn write_fs(fd: i64, src: &[u8], count: usize) -> Result<usize, Error> {
     session::fs_gate()?;
     let mut done = 0usize;
@@ -91,6 +117,13 @@ pub fn write_fs(fd: i64, src: &[u8], count: usize) -> Result<usize, Error> {
             ring::req_ring_write(R_WRITE, fd as u64, want as u64, &src[done..done + want])
         }) {
             Some((result, _, _)) => {
+                // Pipe piena (lettori vivi): write bloccante — throttled e si
+                // riprova lo STESSO chunk (solo le pipe emettono Empty).
+                if result == ERR_EMPTY {
+                    ring::resp_ring_consume(16);
+                    pipe_throttle();
+                    continue;
+                }
                 ring::resp_ring_consume(16);
                 let r = match session::fs_reply_check(result) {
                     Ok(v) => v,
@@ -114,9 +147,9 @@ pub fn write_fs(fd: i64, src: &[u8], count: usize) -> Result<usize, Error> {
             break;
         }
         done += n;
-        if n < want {
-            break;
-        }
+        // Parziale: si completa col resto (pipe piena drenata in concorrenza;
+        // i file restano terminali di fatto: il prossimo giro accetta 0 e si
+        // esce qui sopra — mai loop senza progressi).
     }
     Ok(done)
 }
@@ -382,6 +415,35 @@ pub fn dup_cancel(nonce: u64) -> Result<(), Error> {
         Some((result, _, _)) => {
             ring::resp_ring_consume(16);
             session::fs_reply_check(result).map(|_| ())
+        }
+        None => Err(Error::NotReady),
+    }
+}
+
+/// `pipe()` (Fase 42): crea una pipe nel fs server. Ritorna `(read_fd,
+/// write_fd)`: due fd indipendenti sullo stesso buffer server-side.
+/// Semantica bloccante nei wrapper (il server non dorme mai): `read_fs` su
+/// vuota con writer aperti riprova throttled fino a dati/EOF; `write_fs`
+/// oltre la capacita' completa col resto finche' i lettori drenano; senza
+/// lettori → `Err(Closed)`. Gli fd si passano ai figli fork+exec con
+/// `dup_grant`/`dup_claim` come i file (stessa capability).
+#[inline]
+pub fn pipe() -> Result<(i64, i64), Error> {
+    session::fs_gate()?;
+    if !ring::req_ring_write(R_PIPE_CREATE, 0, 0, &[]) {
+        return Err(Error::RingFull);
+    }
+    match session::fs_notify_result(FS_NOTIFY, || {
+        ring::req_ring_write(R_PIPE_CREATE, 0, 0, &[])
+    }) {
+        // Risposta a due fd: result = lettura, w1 = scrittura (nessun
+        // payload). Entrambi passano per `fs_reply_check`: una sentinella in
+        // una delle due posizioni e' un rifiuto, mai un fd.
+        Some((result, w1, _)) => {
+            ring::resp_ring_consume(16);
+            let r = session::fs_reply_check(result)?;
+            let w = session::fs_reply_check(w1)?;
+            Ok((r as i64, w as i64))
         }
         None => Err(Error::NotReady),
     }

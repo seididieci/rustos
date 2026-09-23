@@ -35,6 +35,27 @@ pub fn post_fork_child() {
     FS_PENDING.store(-1, Ordering::Relaxed);
 }
 
+/// Re-inizializza l'FS in un figlio fork per le pipeline builtin (Fase 42).
+/// Il figlio NON eredita canali/ring del padre (aliasing del protocollo
+/// SPSC: due processi sulla stessa coppia di ring corrompono teste/code).
+/// Azzera le cache COW-copiate (canale, fisici, guard) e rifa da zero:
+/// lookup per nome (canale NUOVO) + ring freschi + handshake. Le pagine ring
+/// del padre restano intatte (il remap sostituisce solo i mapping COW del
+/// figlio). Ritorna false se userfs irraggiungibile: il figlio deve fallire
+/// loud (exit 1 con messaggio su seriale), mai usare l'FS a meta'.
+/// Limite: il lookup iniziale e' unbounded come `fs_chan` (userfs e'
+/// supervisionato e garantito a runtime; una sua morte qui appende il figlio
+/// come appenderebbe qualunque client al primo handshake).
+pub fn fs_child_reinit() -> bool {
+    FS_FORKED.store(false, Ordering::Relaxed);
+    FS_CHAN.store(-1, Ordering::Relaxed);
+    REQ_PHYS.store(0, Ordering::Relaxed);
+    RESP_PHYS.store(0, Ordering::Relaxed);
+    FS_PENDING.store(-1, Ordering::Relaxed);
+    FS_INITED.store(false, Ordering::Relaxed);
+    fs_init()
+}
+
 /// True se questo processo e' un figlio fork (FS inutilizzabile).
 #[inline]
 pub(crate) fn fs_forked() -> bool {
@@ -100,6 +121,8 @@ pub(crate) fn fs_reply_check(w0: u64) -> Result<u64, Error> {
         ERR_READONLY => Err(Error::ReadOnly),
         ERR_BUSY => Err(Error::Busy),
         ERR_INVALID => Err(Error::Invalid),
+        ERR_EMPTY => Err(Error::Empty),
+        ERR_CLOSED => Err(Error::Closed),
         v => Ok(v),
     }
 }

@@ -25,6 +25,9 @@ pub(crate) enum Conn {
     Seq,
     And,
     Or,
+    /// Pipe `a | b`: gli stadi girano concorrenti (ognuno nel proprio
+    /// processo figlio); lo status del gruppo e' quello dell'ultimo stadio.
+    Pipe,
 }
 
 pub(crate) struct Command {
@@ -43,7 +46,6 @@ pub(crate) struct Seq {
 
 pub(crate) enum ParseError {
     MissingTarget(&'static str),
-    PipeUnsupported,
     BadSubst,
     EnvPrefix,
 }
@@ -95,20 +97,24 @@ enum Op {
     Gt,
     GtGt,
     Lt,
+    /// Heredoc `<<DELIM`: stdin dal corpo letto nelle righe dopo (Fase 42).
+    Shl,
     E2Gt,
     E2GtGt,
     Dup21,
     Semi,
     And,
     Or,
+    /// Pipe `|` a stadio successivo (Fase 42).
+    Pipe,
     Bg,
 }
 
 /// Tokenizza la riga in parole (con flag di quoting) e operatori. Le quote e
 /// i backslash sono consumati qui (mai nei token). `#` non quotato a inizio
-/// parola = commento (resto riga scartato). `|` singolo = errore (Fase 42).
-/// Virgolette non chiuse = resto riga letterale (documentato, niente
-/// continuazione: `read_line` e' single-line).
+/// parola = commento (resto riga scartato). `|` singolo = pipe (Fase 42),
+/// `||` = Or. Virgolette non chiuse = resto riga letterale (documentato,
+/// niente continuazione: `read_line` e' single-line).
 fn tokenize(s: &str) -> Result<Vec<Piece>, ParseError> {
     let b = s.as_bytes();
     let mut out: Vec<Piece> = Vec::new();
@@ -208,8 +214,15 @@ fn tokenize(s: &str) -> Result<Vec<Piece>, ParseError> {
             if !word.is_empty() {
                 out.push(Piece::Word(core::mem::take(&mut word)));
             }
-            out.push(Piece::Op(Op::Lt));
-            i += 1;
+            // `<<` = heredoc (Fase 42); `<` solo = stdin da file. `<<<`
+            // (herestring) non supportato: `<<` + `<` → errore a valle.
+            if i + 1 < b.len() && b[i + 1] == b'<' {
+                out.push(Piece::Op(Op::Shl));
+                i += 2;
+            } else {
+                out.push(Piece::Op(Op::Lt));
+                i += 1;
+            }
             at_start = true;
             continue;
         }
@@ -243,10 +256,12 @@ fn tokenize(s: &str) -> Result<Vec<Piece>, ParseError> {
             if i + 1 < b.len() && b[i + 1] == b'|' {
                 out.push(Piece::Op(Op::Or));
                 i += 2;
-                at_start = true;
-                continue;
+            } else {
+                out.push(Piece::Op(Op::Pipe));
+                i += 1;
             }
-            return Err(ParseError::PipeUnsupported);
+            at_start = true;
+            continue;
         }
         word.push(Ch { b: c, q: Q_PLAIN });
         at_start = false;
@@ -508,6 +523,9 @@ struct RawRedir {
     append: bool,
     dup_to_1: bool,
     target: Vec<Ch>,
+    /// Heredoc `<<` (Fase 42): `target` e' il delimitatore LETTERALE (mai
+    /// espanso) e il corpo viene letto dal REPL dopo il parse.
+    heredoc: bool,
 }
 
 /// Chiude parole+redirect in un `Command` espanso (o None se vuoto).
@@ -536,12 +554,27 @@ fn finish(words: Vec<Vec<Ch>>, redirs: Vec<RawRedir>, status: i64, bg: bool) -> 
     }
     let mut rr: Vec<redirect::Redir> = Vec::new();
     for r in redirs.iter() {
+        // Heredoc: delimitatore letterale (quote-removal si', espansione mai:
+        // il corpo resta sempre letterale, documentato in 12-utilities).
+        if r.heredoc {
+            rr.push(redirect::Redir {
+                slot: r.slot,
+                append: false,
+                dup_to_1: false,
+                target: word_string(&r.target),
+                heredoc: true,
+                heredoc_body: None,
+            });
+            continue;
+        }
         let t = expand_word(&r.target, status, false)?;
         rr.push(redirect::Redir {
             slot: r.slot,
             append: r.append,
             dup_to_1: r.dup_to_1,
             target: word_string(&t[0]),
+            heredoc: false,
+            heredoc_body: None,
         });
     }
     if assign.is_some() && !argv.is_empty() {
@@ -616,20 +649,27 @@ pub(crate) fn parse_line(line: &str, status: i64) -> Result<Seq, ParseError> {
                 // consumare la parola dopo (bug passo-1: cadeva nel ramo con
                 // target e `2>&1 > /f` moriva in MissingTarget).
                 Op::Dup21 => {
-                    redirs.push(RawRedir { slot: 2, append: false, dup_to_1: true, target: Vec::new() });
+                    redirs.push(RawRedir { slot: 2, append: false, dup_to_1: true, target: Vec::new(), heredoc: false });
                     i += 1;
                 }
+                // Heredoc `<<DELIM` (Fase 42): slot stdin, delimitatore
+                // letterale (il corpo arriva dopo, letto dal REPL).
+                Op::Shl => {
+                    let delim = match pieces.get(i + 1) {
+                        Some(Piece::Word(w)) => w.clone(),
+                        _ => return Err(ParseError::MissingTarget("<<")),
+                    };
+                    redirs.push(RawRedir { slot: 0, append: false, dup_to_1: false, target: delim, heredoc: true });
+                    i += 2;
+                }
                 Op::Gt | Op::GtGt | Op::Lt | Op::E2Gt | Op::E2GtGt => {
-                    let (slot, append, dup) = match op {
-                        Op::Gt => (1, false, false),
-                        Op::GtGt => (1, true, false),
-                        Op::Lt => (0, false, false),
-                        Op::E2Gt => (2, false, false),
-                        Op::E2GtGt => (2, true, false),
-                        // Irraggiungibile (Dup21 ha un ramo dedicato sopra):
-                        // serve per l'esaustivita'.
-                        Op::Dup21 => (2, false, true),
-                        _ => (1, false, false),
+                    let (slot, append) = match op {
+                        Op::Gt => (1, false),
+                        Op::GtGt => (1, true),
+                        Op::Lt => (0, false),
+                        Op::E2Gt => (2, false),
+                        Op::E2GtGt => (2, true),
+                        _ => (1, false),
                     };
                     let tgt = match pieces.get(i + 1) {
                         Some(Piece::Word(w)) => w.clone(),
@@ -644,8 +684,12 @@ pub(crate) fn parse_line(line: &str, status: i64) -> Result<Seq, ParseError> {
                             return Err(ParseError::MissingTarget(name));
                         }
                     };
-                    redirs.push(RawRedir { slot, append, dup_to_1: dup, target: tgt });
+                    redirs.push(RawRedir { slot, append, dup_to_1: false, target: tgt, heredoc: false });
                     i += 2;
+                }
+                Op::Pipe => {
+                    at_conn(&mut cmds, &mut cons, &mut pending, &mut words, &mut redirs, Conn::Pipe, false, status)?;
+                    i += 1;
                 }
                 Op::Semi => {
                     at_conn(&mut cmds, &mut cons, &mut pending, &mut words, &mut redirs, Conn::Seq, false, status)?;

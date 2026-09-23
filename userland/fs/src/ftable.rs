@@ -18,6 +18,12 @@ pub enum FileEntry {
     /// fine file; le read usano `offset` normalmente.
     Local { path: String, kind: mount_legacy::FsKind, offset: usize, mnt: Option<usize>, fat_info: Option<FileInfo>, fat_gen: u64, append: bool },
     Remote { server_chan: u64, remote_fd: u32 },
+    /// Estremita' di una pipe server-side (Fase 42): `pipe` = id in
+    /// `PipeTable`, `write` = lato (false = lettura, true = scrittura).
+    /// Niente path/offset (l'offset non esiste sulle pipe); la condivisione
+    /// tra fd e' per-id con conteggio estremita' (modello B come i grant:
+    /// ogni fd e' indipendente, il buffer muore all'ultima close).
+    Pipe { pipe: u32, write: bool },
 }
 
 pub struct FileTable {
@@ -75,6 +81,7 @@ impl FileTable {
     /// cache FAT NON si eredita (fat_info = None: il primo uso rifa `find`
     /// — grant e claim sono vicini ma mai assumere freschezza oltre l'op).
     /// Ritorna None se lo snapshot non e' Local (mai, per costruzione).
+    /// Le pipe usano `open_cloned_pipe` (serve la PipeTable per il conteggio).
     pub fn open_cloned(&mut self, chan: u64, snap: &FileEntry) -> Option<u64> {
         match snap {
             FileEntry::Local { path, kind, offset, mnt, append, .. } => {
@@ -90,7 +97,9 @@ impl FileTable {
                 });
                 Some(fd as u64)
             }
-            FileEntry::Remote { .. } => None,
+            // Pipe e Remote non si clonano qui (pipe: `open_cloned_pipe`;
+            // remote mai: il grant snapshotta solo Local e Pipe).
+            _ => None,
         }
     }
 
@@ -98,6 +107,24 @@ impl FileTable {
         let fd = self.alloc_fd(chan);
         self.files.insert((chan, fd), FileEntry::Remote { server_chan, remote_fd });
         fd as u64
+    }
+
+    /// Apre un'estremita' di pipe (Fase 42): fd fresco sul canale del
+    /// chiamante. Il conteggio estremita' vive in `PipeTable` (il chiamante
+    /// lo ha gia' incrementato a create/claim).
+    pub fn open_pipe(&mut self, chan: u64, pipe: u32, write: bool) -> u64 {
+        let fd = self.alloc_fd(chan);
+        self.files.insert((chan, fd), FileEntry::Pipe { pipe, write });
+        fd as u64
+    }
+
+    /// (pipe, write) dell'fd se e' un'estremita' pipe, altrimenti None.
+    /// Come `get_remote`: gli accessor tornano Some solo per il proprio tipo.
+    pub fn get_pipe(&self, chan: u64, fd: u32) -> Option<(u32, bool)> {
+        match self.files.get(&(chan, fd))? {
+            FileEntry::Pipe { pipe, write } => Some((*pipe, *write)),
+            _ => None,
+        }
     }
 
     pub fn close(&mut self, chan: u64, fd: u32) -> bool {
@@ -108,13 +135,23 @@ impl FileTable {
     /// unificata Fase 14): fd locali e remoti + contatore next_fd. Raccoglie
     /// in `remotes` le coppie `(server_chan, remote_fd)` da chiudere presso
     /// i driver con DEV_CLOSE (il chiamante lo fa best-effort).
-    pub fn purge(&mut self, chan: u64, remotes: &mut Vec<(u64, u32)>) {
+    /// Raccoglie in `pipe_ends` le `(pipe, write)` chiuse: il chiamante
+    /// decrementa i conteggi (l'ultima close libera il buffer).
+    pub fn purge(
+        &mut self,
+        chan: u64,
+        remotes: &mut Vec<(u64, u32)>,
+        pipe_ends: &mut Vec<(u32, bool)>,
+    ) {
         self.files.retain(|&(c, _), e| {
             if c != chan {
                 return true;
             }
             if let FileEntry::Remote { server_chan, remote_fd } = e {
                 remotes.push((*server_chan, *remote_fd));
+            }
+            if let FileEntry::Pipe { pipe, write } = e {
+                pipe_ends.push((*pipe, *write));
             }
             false
         });
@@ -134,7 +171,9 @@ impl FileTable {
             FileEntry::Local { path, kind, offset, mnt, .. } => {
                 Some((path.as_str(), *kind, *offset, *mnt))
             }
-            FileEntry::Remote { .. } => None,
+            // Remote e Pipe: niente path/offset (il chiamante usa get_remote/
+            // get_pipe prima, o riceve Invalid).
+            _ => None,
         }
     }
 

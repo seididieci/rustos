@@ -70,6 +70,10 @@ fn real_main(_sp: u64) -> ! {
     // Grant single-use per handoff fd (Fase 40, modello B): nonce → snapshot.
     let mut grants = dup::GrantTable::new();
 
+    // Pipe buffer server-side (Fase 42): id → buffer condiviso tra gli fd
+    // delle due estremita' (conteggio estremita', libera all'ultima close).
+    let mut pipes = pipes::PipeTable::new();
+
     // Pre-populate: file di esempio
     if let Some(data) = fs.create_file("hello.txt") {
         data.extend_from_slice(b"Hello from Velordor ramfs!\n");
@@ -216,10 +220,16 @@ fn real_main(_sp: u64) -> ! {
         // (notifica unificata, Fase 14). Senza reply: il peer e' morto.
         if tag == libr::EXIT_NOTIFY {
             let mut remotes = Vec::new();
-            ftable.purge(chan, &mut remotes);
+            let mut pipe_ends = Vec::new();
+            ftable.purge(chan, &mut remotes, &mut pipe_ends);
             for (srv, rfd) in remotes {
                 // Best-effort: il driver potrebbe essere morto a sua volta.
                 let _ = libr::send(srv, DEV_CLOSE, rfd as u64, 0);
+            }
+            // Estremita' pipe del morto: decrementa (l'ultima libera il
+            // buffer; i peer vivi vedono EOF/Closed invece di un hang).
+            for (pipe_id, write) in pipe_ends {
+                pipes.end_closed(pipe_id, write);
             }
             rings.remove(&chan);
             // Diritti effimeri (Fase 17): col peer muore anche la sua riga —
@@ -228,7 +238,7 @@ fn real_main(_sp: u64) -> ! {
             // Grant orfani del morto (Fase 40): un pid riusato non deve poter
             // riscuotere grant altrui (la doppia attestazione al claim chiude
             // comunque la race, ma senza residui non c'e' race).
-            grants.purge_registrant(chan);
+            grants.purge_registrant(chan, &mut pipes);
             // Se il morto era un driver, i suoi mount tornano registrabili:
             // lo stale, primo in lista, avvelenerebbe resolve_mount anche
             // dopo una re-registrazione dello stesso prefix.
@@ -295,6 +305,8 @@ fn real_main(_sp: u64) -> ! {
             R_LSEEK => 1,
             // CLAIM/CANCEL: payload `[nonce:8]`; GRANT solo registri (w0 = fd).
             R_DUP_CLAIM | R_DUP_CANCEL => 8,
+            // PIPE_CREATE: nessun payload (w0 = hint capacita').
+            R_PIPE_CREATE => 0,
             R_READ | R_CLOSE | R_RIGHTS_GET | R_DUP_GRANT => 0,
             _ => {
                 // Tag impossibile: scarta tutto e riallinea (vedi req_resync).
@@ -402,15 +414,15 @@ fn real_main(_sp: u64) -> ! {
             }
 
             R_READ => {
-                handlers::handle_read(&fs, &mut ftable, &mut fat_mounts, &rings, chan, w0 as u32, w1 as usize, &mut fat_gen)
+                handlers::handle_read(&fs, &mut ftable, &mut pipes, &mut fat_mounts, &rings, chan, w0 as u32, w1 as usize, &mut fat_gen)
             }
 
             R_WRITE => {
-                handlers::handle_write_local(&mut fs, &mut ftable, &mut fat_mounts, chan, w0 as u32, w1 as usize, &payload, &mut fat_gen)
+                handlers::handle_write_local(&mut fs, &mut ftable, &mut pipes, &mut fat_mounts, chan, w0 as u32, w1 as usize, &payload, &mut fat_gen)
             }
 
             R_CLOSE => {
-                handlers::handle_close(&mut ftable, chan, w0 as u32)
+                handlers::handle_close(&mut ftable, &mut pipes, chan, w0 as u32)
             }
 
             R_READDIR => {
@@ -466,7 +478,7 @@ fn real_main(_sp: u64) -> ! {
             }
 
             R_DUP_GRANT => {
-                dup::handle_grant(&ftable, &mut grants, chan, w0 as u32)
+                dup::handle_grant(&ftable, &mut grants, &mut pipes, chan, w0 as u32)
             }
 
             R_DUP_CLAIM => {
@@ -478,9 +490,27 @@ fn real_main(_sp: u64) -> ! {
 
             R_DUP_CANCEL => {
                 match payload.first_chunk::<8>() {
-                    Some(nonce) => dup::handle_cancel(&mut grants, chan, u64::from_le_bytes(*nonce)),
+                    Some(nonce) => dup::handle_cancel(&mut grants, &mut pipes, chan, u64::from_le_bytes(*nonce)),
                     None => Err(ERR_INVALID),
                 }
+            }
+
+            // PIPE_CREATE: risposta a due fd (result = lettura, w1 =
+            // scrittura), scritta qui perche' il percorso generico in fondo
+            // porta un solo valore. `continue`: salta frame+reply generici.
+            R_PIPE_CREATE => {
+                match handlers::handle_pipe_create(&mut ftable, &mut pipes, chan, w0 as usize) {
+                    Ok((r, w)) => {
+                        rings::resp_ring_write(r, w, &[]);
+                        let _ = libr::reply(0, r, 0);
+                    }
+                    Err(e) => {
+                        let res = mount::to_reply_res(Err(e));
+                        rings::resp_ring_write(res, 0, &[]);
+                        let _ = libr::reply(0, res, 0);
+                    }
+                }
+                continue;
             }
 
             R_RIGHTS_DROP => rights::handle_rights_drop(&mut rights, chan, w0 as u32, &payload).ok_or(ERR),

@@ -12,6 +12,32 @@ pub(crate) struct Redir {
     pub(crate) append: bool,
     pub(crate) dup_to_1: bool, // true solo per `2>&1` (alias, nessun target)
     pub(crate) target: String,
+    /// Heredoc `<<` (Fase 42): `target` e' il delimitatore; il corpo arriva
+    /// dopo (letto dal REPL). `open_all` SALTA queste voci: le risolve
+    /// l'esecutore pipeline (pipe col corpo), preservando l'ordine con i file
+    /// (esplicito vince sempre sul pipe-link, come bash).
+    pub(crate) heredoc: bool,
+    pub(crate) heredoc_body: Option<String>,
+}
+
+impl Clone for Redir {
+    fn clone(&self) -> Self {
+        Self {
+            slot: self.slot,
+            append: self.append,
+            dup_to_1: self.dup_to_1,
+            target: self.target.clone(),
+            heredoc: self.heredoc,
+            heredoc_body: self.heredoc_body.clone(),
+        }
+    }
+}
+
+/// Ultima voce per lo slot (l'esplicito vince sul pipe-link, come bash:
+/// `a | b > /f` manda stdout di b nel file, `a > /f | b` lascia stdin di b
+/// a EOF). None = nessuno esplicito (vale il pipe-link o il terminale).
+pub(crate) fn slot_source(redirs: &[Redir], slot: u8) -> Option<&Redir> {
+    redirs.iter().rev().find(|r| r.slot == slot)
 }
 
 /// Chiude l'fd dello slot se non condiviso con altri slot (alias `2>&1`).
@@ -30,9 +56,26 @@ fn drop_slot(fds: &mut [i64; 3], slot: usize) {
 /// bash: `> /o 2>&1` manda stderr nel file, `2>&1 > /o` lo lascia al
 /// terminale). A fallimento chiude tutto e ritorna (target, errore): il
 /// chiamante riporta sul terminale, mai nel file.
+/// Le voci heredoc (`<<`) sono SALTATE qui (niente file da aprire: il
+/// delimitatore non e' un path): le risolve l'esecutore pipeline.
 pub(crate) fn open_all(redirs: &[Redir]) -> Result<[i64; 3], (String, libr::Error)> {
-    let mut fds = [-1i64; 3];
+    open_all_seed(redirs, [-1i64; 3])
+}
+
+/// Come `open_all` ma partendo da `seed` (Fase 42, pipeline): prima la pipe,
+/// poi i redirect — gli espliciti vincono sui pipe-link per-slot, e `2>&1`
+/// aliasa sullo stdout finale (link o file). A fallimento chiude tutto
+/// INCLUSI i seed (close idempotente server-side: il chiamante chiude comunque
+/// le sue copie nel cleanup, mai double-free di stato).
+pub(crate) fn open_all_seed(
+    redirs: &[Redir],
+    seed: [i64; 3],
+) -> Result<[i64; 3], (String, libr::Error)> {
+    let mut fds = seed;
     for r in redirs {
+        if r.heredoc {
+            continue;
+        }
         if r.dup_to_1 {
             drop_slot(&mut fds, 2);
             fds[2] = fds[1];

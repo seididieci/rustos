@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="135.46667mm"
+   height="82.133583mm"
+   viewBox="0 0 135.46668 82.133583"
+   version="1.1"
+   id="svg1"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs1">
+    <linearGradient
+       xlink:href="#linearGradient3"
+       id="linearGradient4"
+       x1="-266.89728"
+       y1="213.83067"
+       x2="212.91766"
+       y2="213.83067"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       id="linearGradient3">
+      <stop
+         style="stop-color:#1c84fb;stop-opacity:0.98039216;"
+         offset="0"
+         id="stop4" />
+      <stop
+         style="stop-color:#392bfc;stop-opacity:1;"
+         offset="1"
+         id="stop3" />
+    </linearGradient>
+    <linearGradient
+       xlink:href="#linearGradient1"
+       id="linearGradient2"
+       x1="164.041"
+       y1="271.2861"
+       x2="503.08774"
+       y2="75.537392"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       id="linearGradient1">
+      <stop
+         style="stop-color:#5d35fc;stop-opacity:0.98823529;"
+         offset="0"
+         id="stop1" />
+      <stop
+         style="stop-color:#ae49fc;stop-opacity:0.98823529;"
+         offset="1"
+         id="stop2" />
+    </linearGradient>
+  </defs>
+  <g
+     id="layer1">
+    <g
+       id="g1"
+       transform="matrix(0.17013927,0,0,0.17013927,45.40971,5.2944631)">
+      <path
+         d="M 104.752,451.17305 C 78.237373,448.35932 45.334413,431.91927 29.023303,411.84871 17.438947,397.59434 -266.89729,-23.95392 -266.89729,-23.95392 c 0,0 110.47206,0.04603 138.79238,-0.0094 28.320314,-0.05542 62.828411,15.8990668 80.152379,38.919164 6.823145,9.066599 260.870191,388.170106 260.870191,388.170106 -8.38921,11.95767 -23.57412,25.10759 -32.20063,30.55978 -8.6265,5.45219 -18.51358,10.55617 -30.05976,13.67119 -12.89347,3.47851 -33.47926,5.13476 -45.90527,3.81612 z"
+         id="path6"
+         style="fill:url(#linearGradient4);fill-rule:nonzero" />
+      <path
+         style="display:inline;opacity:1;fill:url(#linearGradient2);fill-opacity:1;fill-rule:nonzero"
+         d="M 229.86577,377.94185 137.81559,235.8911 c 0,0 174.39322,-238.907889 181.96104,-246.950253 7.56782,-8.042364 27.8928,-20.052044 41.68238,-20.058774 13.78958,-0.0067 167.85414,0.05891 167.85414,0.05891 z"
+         id="path5" />
+    </g>
+  </g>
+</svg>

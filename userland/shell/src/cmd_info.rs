@@ -4,6 +4,7 @@ pub(crate) fn cmd_help() -> i64 {
     term::term_print("Commands: ls [-l] [path], cat <file>, touch <file>, mkdir <dir>, mount <src> <tgt>, umount <tgt>, echo [args], clear, wc <file>, hexdump <file>, kill <pid|service>, cd [dir], pwd, cp <src> <dst>, mv <src> <dst>, rm <file>, rmdir <dir>, ps, export [NAME=val], run <path> [args...] [&], jobs, wait [pid], exit [code], help\n");
     term::term_print("Redirect (Fase 40.4, bash-like): > >> < 2> 2>> 2>&1 — ultimo vince per slot; cat/wc/hexdump senza file leggono stdin\n");
     term::term_print("Parser (Fase 41): '...' \"...\" \\ # ; && || & $VAR ${VAR} $? $$ ~ glob * ?\n");
+    term::term_print("Pipe (Fase 42): a | b | ... (stadi concorrenti, status = ultimo), heredoc <<EOF (corpo letterale); & su pipeline in Fase 44\n");
     0
 }
 
