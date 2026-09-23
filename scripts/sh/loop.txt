@@ -1,0 +1,2 @@
+# self-source: la guardia di annidamento (max 4) deve fermarlo.
+source /fat/test/sh/loop.txt

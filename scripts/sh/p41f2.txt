@@ -1,0 +1,7 @@
+# 41: $? dopo errore/ignoto (assert sull'ultima riga: \n<code>\n) + redirect.
+cat missing41
+echo $?
+nosuchcmd41
+echo $?
+echo comb41 > /comb41.txt && cat /comb41.txt
+rm /comb41.txt

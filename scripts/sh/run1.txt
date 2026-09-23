@@ -1,0 +1,7 @@
+# run: fg + errori + bg longevo (il pid per kill/wait lo estrae il .py).
+run /fat/bin/runhello.bin hello world
+run /fat/bin/runhello.bin fail
+run /nonexistent
+wait 99999
+run /fat/bin/uptime.bin &
+jobs

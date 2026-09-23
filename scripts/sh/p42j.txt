@@ -1,0 +1,25 @@
+# 42: streaming oltre la capacita' pipe (raddoppi espliciti, niente loop).
+echo x0123456789abcdef | cat > /big42a.txt
+cp /big42a.txt /big42.txt
+cat /big42.txt >> /big42a.txt
+cp /big42a.txt /big42.txt
+cat /big42.txt >> /big42a.txt
+cp /big42a.txt /big42.txt
+cat /big42.txt >> /big42a.txt
+cp /big42a.txt /big42.txt
+cat /big42.txt >> /big42a.txt
+cp /big42a.txt /big42.txt
+cat /big42.txt >> /big42a.txt
+cp /big42a.txt /big42.txt
+cat /big42.txt >> /big42a.txt
+cp /big42a.txt /big42.txt
+cat /big42.txt >> /big42a.txt
+cp /big42a.txt /big42.txt
+cat /big42.txt >> /big42a.txt
+cp /big42a.txt /big42.txt
+cat /big42.txt >> /big42a.txt
+cp /big42a.txt /big42.txt
+cat /big42.txt | wc
+wc /big42.txt
+rm /big42.txt
+rm /big42a.txt

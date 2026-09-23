@@ -1,0 +1,2 @@
+# 41: $$ numerico (script dedicato: le cifre di altre righe indebolirebbero).
+echo $$

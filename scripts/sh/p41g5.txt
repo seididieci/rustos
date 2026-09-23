@@ -1,0 +1,7 @@
+# 41: dotfile con punto + cleanup + quote non chiusa.
+echo .h*
+rm g41a1
+rm g41a2
+rm g41b1
+rm .h41
+echo "abc

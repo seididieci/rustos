@@ -1,0 +1,5 @@
+# base: ls / + cat + mkdir (test-shell-base.py, via source).
+ls
+cat hello.txt
+mkdir prova
+ls

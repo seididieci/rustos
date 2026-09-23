@@ -1,0 +1,3 @@
+# 42: status = ultimo stadio (assert sull'ultima riga dello slice).
+cat missing404 | echo hi
+echo $?

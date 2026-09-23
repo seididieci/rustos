@@ -1,0 +1,14 @@
+# 42: heredoc da file (corpi letterali dopo la riga, come da tastiera).
+cat <<EOF42
+riga uno
+riga due
+EOF42
+cat <<EOF43 | wc
+aa bb
+cc
+EOF43
+cat <<EOF44 > /hd42.txt
+salvata
+EOF44
+cat /hd42.txt
+rm /hd42.txt

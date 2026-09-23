@@ -1,0 +1,4 @@
+# exit in script termina lo script (mai la shell).
+echo before-exit
+exit 3
+echo never-printed

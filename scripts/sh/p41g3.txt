@@ -1,0 +1,2 @@
+# 41: glob no-match letterale.
+echo g41nomatch*.zzz

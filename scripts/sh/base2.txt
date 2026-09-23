@@ -1,0 +1,10 @@
+# base: builtin + cd/pwd + relativi (cwd=/ in ingresso, / in uscita).
+echo hello world
+wc hello.txt
+hexdump hello.txt
+cd prova
+pwd
+touch inner.txt
+ls
+cd ..
+ls prova

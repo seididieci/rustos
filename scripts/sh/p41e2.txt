@@ -1,0 +1,4 @@
+# 41: || e catene.
+cat missing41 || echo or41
+echo ok41b || echo no41b
+cat missing41 || cat missing41b || echo deep41

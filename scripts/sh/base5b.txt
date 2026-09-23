@@ -1,0 +1,2 @@
+# base: read-fail dopo rm (script separato: l'errore contiene il path).
+cat prova/inner.txt

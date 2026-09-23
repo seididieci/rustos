@@ -1,0 +1,4 @@
+# 42: pipe + > file (esplicito vince sul link).
+echo comb42 | cat > /po42.txt
+cat /po42.txt
+rm /po42.txt

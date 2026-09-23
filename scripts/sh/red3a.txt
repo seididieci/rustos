@@ -1,0 +1,3 @@
+# redirect: l'errore non inquina > (file creato vuoto).
+cat missing404 > /o404.txt
+ls -l

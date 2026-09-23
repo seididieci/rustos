@@ -56,15 +56,20 @@ Righe di gate:
 ## Test shell interattivi (QEMU + sendkey, fuori dal gate kernel)
 
 Un boot QEMU per file di test: seriale su file + monitor su unix socket,
-comandi via sendkey (KEYMAP verificata su QEMU 10.2.2), assert sul log
-seriale (la shell specchia l'output). Harness comune in
-`scripts/shell_harness.py`; runner `scripts/test-shell-all.sh` (sequenziale
-o `--jobs N` con overlay qcow2 privati per istanza — due QEMU sullo stesso
-raw read-write si corromperebbero):
+comandi in script via `source` (1 riga digitata per gruppo, script in
+`/test/sh` su `/fat` da `scripts/sh/` via `inject-bins.sh`; sendkey solo per
+la riga `source`, backspace/clear VGA e i pid di kill/wait — KEYMAP
+verificata su QEMU 10.2.2), assert sul log seriale (la shell specchia
+l'output; `source` e' silenzioso: niente eco, gli assert di assenza restano
+validi). Harness comune in `scripts/shell_harness.py`; runner
+`scripts/test-shell-all.sh` (sequenziale o `--jobs N` con overlay qcow2
+privati per istanza — due QEMU sullo stesso raw read-write si
+corromperebbero):
 
 ```bash
-./scripts/test-shell-all.sh            # seq: base run redirect 41 42
+./scripts/test-shell-all.sh            # seq: base run redirect 41 42 source
 ./scripts/test-shell-all.sh --jobs 5   # parallelo, un overlay per fase
+./scripts/test-shell-all.sh source     # gate veloce: solo `source` (1 boot)
 ```
 
 | File | Fase | Check |
@@ -74,11 +79,18 @@ raw read-write si corromperebbero):
 | `test-shell-redirect.py` | 40.4 (`> >> < 2> 2>&1` + run redirectato) | 20 |
 | `test-shell-41.py` | 41 (quoting/escape, `$VAR/$?/~/$$`, `; && \|\|`, commenti, glob) | 37 |
 | `test-shell-42.py` | 42 (pipe N stadi, pipe+redirect, status ultimo, stadi run, bg rifiutata, heredoc, EOF, streaming >8192B) | 18 |
+| `test-shell-source.py` | `source` (smoke 1-riga, exit, nesting, errori, vuoto) | 22 |
 
-Totale **112 check** verdi in seq e con `--jobs 5` (stesso kernel produzione
+Totale **134 check** verdi in seq e con `--jobs 5` (stesso kernel produzione
 del gate: il kernel embedda init/fs/disk, quindi va ricompilato DOPO
 `build-userland.sh` — ordine di `run.sh` — altrimenti il manifest Strato 2
 di init non matcha i binari su disco e il boot fallisce loud).
+
+> Timing adattivi (`shell_harness.py`): su KVM (`/dev/kvm`) gli sleep sono
+> corti (tasti 0.06s, drain 0.25s, run 0.4s), su TCG restano i valori storici
+> conservativi (0.18s/1.0s/1.0s) contro l'overrun PS/2. Gli sleep espliciti
+> passati dai test restano rispettati; il boot aggiunge `-cpu host` come
+> `bench.sh`.
 
 ## Cosa copre `usertests` (54 test; t34 per ultimo: i drop dei diritti sono
 irrevocabili sul canale della suite)

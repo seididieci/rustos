@@ -1,0 +1,5 @@
+# base: ls -l su root (marcatore dir).
+ls -l
+mkdir lldir
+ls -l
+rmdir lldir

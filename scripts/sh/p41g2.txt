@@ -1,0 +1,2 @@
+# 41: glob ? (assenza di g41b1: script dedicato).
+echo g41a?

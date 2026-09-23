@@ -1,0 +1,3 @@
+# 42: bg su pipeline rifiutata (Fase 44) + pipe trailing ignorata.
+echo a | cat &
+echo tp42 |

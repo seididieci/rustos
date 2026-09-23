@@ -5,7 +5,7 @@
 //! console server possiede la VGA, disegna l'output e fa l'echo dei tasti
 //! (Opzione B). La shell gestisce solo la linea logica dei comandi.
 //! Comandi: ls, cat, touch, mkdir, mount, umount, echo, clear, wc, hexdump,
-//! kill, cd, pwd, cp, mv, rm, rmdir, exit, help. Tutti i path passano per
+//! kill, cd, pwd, cp, mv, rm, rmdir, source, exit, help. Tutti i path passano per
 //! `resolve()`: la shell tiene una cwd client-side e accetta path relativi
 //! (Fase 18.1).
 
@@ -21,6 +21,7 @@ use libr;
 mod cmd_fs;
 mod cmd_info;
 mod cmd_run;
+mod cmd_source;
 mod cwd;
 mod parser;
 mod redirect;

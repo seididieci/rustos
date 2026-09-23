@@ -33,6 +33,30 @@ KEYMAP = {" ": "spc", ".": "dot", "-": "minus", "/": "slash", "&": "shift-7",
           "`": "grave_accent"}
 KEYMAP.update({chr(c): "shift-%s" % chr(c).lower() for c in range(ord("A"), ord("Z") + 1)})
 
+# ── Timing adattivi KVM/TCG (velocizzazione test) ─────────────────────
+# Su KVM la latenza IRQ e' sub-tick (Fase 38.3): gli sleep conservativi
+# pensati per TCG/overrun PS/2 (buffer a 1 byte, drain ~40-60ms) si possono
+# stringere senza flaky. Su TCG restano i valori storici. Rilevato una volta
+# a import (coerente con Shell.boot che usa /dev/kvm per -accel kvm).
+FAST = os.path.exists("/dev/kvm")
+
+# Per-tasto sendkey + pausa di drain ogni 12 tasti (overrun PS/2).
+T_TYPE = 0.06 if FAST else 0.18
+T_DRAIN_EVERY = 12
+T_DRAIN = 0.25 if FAST else 1.0
+# Post-sleep monitor, coda/poll wait_prompt, sleep run/run_out, heredoc.
+T_MON = 0.05 if FAST else 0.12
+T_MON_QUERY = 0.15 if FAST else 0.3
+T_WAIT_TAIL = 0.1 if FAST else 0.3
+T_WAIT_POLL = 0.05 if FAST else 0.2
+T_RUN = 0.4 if FAST else 1.0
+T_HDR_FIRST = 0.3 if FAST else 0.8
+T_HDR_LINE = 0.2 if FAST else 0.5
+T_HDR_LAST = 0.5 if FAST else 1.5
+T_BOOT_SLEEP = 0.3 if FAST else 1.0
+T_BOOT_POLL = 0.1 if FAST else 0.4
+T_DUMP = 0.3 if FAST else 0.6
+
 
 def parse_shell_args(mon_dflt, serial_dflt):
     """CLI minima dei file di fase: --mon/--serial/--fat/--fat2/--kernel/
@@ -91,7 +115,9 @@ class Shell:
 
     # ── Monitor / typing ──────────────────────────────────────────
 
-    def send_mon(self, cmd: str, sleep=0.12):
+    def send_mon(self, cmd: str, sleep=None):
+        if sleep is None:
+            sleep = T_MON
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.connect(self.mon)
         s.sendall(cmd.encode() + b"\n")
@@ -109,7 +135,7 @@ class Shell:
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             s.connect(self.mon)
             s.sendall(cmd.encode() + b"\n")
-            time.sleep(0.3)
+            time.sleep(T_MON_QUERY)
             try:
                 data = s.recv(65536)
             except Exception:
@@ -119,14 +145,17 @@ class Shell:
         except Exception as e:
             return "<mon query failed: %s>" % e
 
-    def type_text(self, text: str, sleep=0.18):
-        # Sleep generoso: a 8 tasti/s il guest perde scancode sotto carico
-        # (buffer PS/2 a 1 byte, drain IRQ1+schedule ~40-60ms — overrun).
+    def type_text(self, text: str, sleep=None):
+        # Su TCG sleep generoso: a 8 tasti/s il guest perde scancode sotto
+        # carico (buffer PS/2 a 1 byte, drain IRQ1+schedule ~40-60ms —
+        # overrun). Su KVM (FAST) latenza sub-tick: 0.06/tasto + drain corto.
         # Pausa di drain ogni 12 tasti (i comandi lunghi troncavano la coda).
+        if sleep is None:
+            sleep = T_TYPE
         for i, ch in enumerate(text):
             self.send_mon("sendkey %s" % KEYMAP.get(ch, ch), sleep=sleep)
-            if (i + 1) % 12 == 0:
-                time.sleep(1.0)
+            if (i + 1) % T_DRAIN_EVERY == 0:
+                time.sleep(T_DRAIN)
 
     def read_log(self):
         try:
@@ -143,15 +172,17 @@ class Shell:
             deadline = time.time() + timeout
             while (self.read_log().count(b"$ ") <= self._prompt_seen
                     and time.time() < deadline):
-                time.sleep(0.2)
+                time.sleep(T_WAIT_POLL)
             self._need_sync = False
-        time.sleep(0.3)
+        time.sleep(T_WAIT_TAIL)
         self._prompt_seen = self.read_log().count(b"$ ")
         dt = time.time() - t0
         if dt > 3:
             print("info slow wait_prompt %.1fs" % dt, flush=True)
 
-    def run(self, cmd: str, sleep=1.0):
+    def run(self, cmd: str, sleep=None):
+        if sleep is None:
+            sleep = T_RUN
         t0 = time.time()
         self.wait_prompt()
         self.type_text(cmd)
@@ -162,9 +193,11 @@ class Shell:
         if dt > 10:
             print("info slow run %.1fs: %s" % (dt, cmd), flush=True)
 
-    def run_out(self, cmd: str, sleep=1.0):
+    def run_out(self, cmd: str, sleep=None):
         """Esegue e ritorna SOLO l'output nuovo (coda del log): serve per
         gli assert di assenza (il log cumulativo contiene gia' tutto)."""
+        if sleep is None:
+            sleep = T_RUN
         t0 = time.time()
         self.wait_prompt()
         mark = len(self.read_log())
@@ -177,18 +210,38 @@ class Shell:
             print("info slow run_out %.1fs: %s" % (dt, cmd), flush=True)
         return self.read_log()[mark:]
 
-    def run_heredoc(self, first: str, lines, delim: str, sleep=1.5):
+    def run_source(self, path: str, sleep=None):
+        """Esegue uno script via `source` (1 riga digitata invece di N
+        comandi): ritorna l'output nuovo come run_out. Gli sleep espliciti
+        passati restano rispettati (es. job bg che richiedono attesa)."""
+        if sleep is None:
+            sleep = T_RUN
+        t0 = time.time()
+        self.wait_prompt()
+        mark = len(self.read_log())
+        self.type_text("source %s" % path)
+        self.send_mon("sendkey ret")
+        time.sleep(sleep)
+        self._need_sync = True
+        dt = time.time() - t0
+        if dt > 10:
+            print("info slow run_source %.1fs: %s" % (dt, path), flush=True)
+        return self.read_log()[mark:]
+
+    def run_heredoc(self, first: str, lines, delim: str, sleep=None):
         """Heredoc Fase 42: prima riga, corpo riga per riga (prompt secondario
         `> `, non contato dai prompt), delimitatore."""
+        if sleep is None:
+            sleep = T_HDR_LAST
         self.wait_prompt()
         mark = len(self.read_log())
         self.type_text(first)
         self.send_mon("sendkey ret")
-        time.sleep(0.8)
+        time.sleep(T_HDR_FIRST)
         for ln in lines:
             self.type_text(ln)
             self.send_mon("sendkey ret")
-            time.sleep(0.5)
+            time.sleep(T_HDR_LINE)
         self.type_text(delim)
         self.send_mon("sendkey ret")
         time.sleep(sleep)
@@ -214,15 +267,16 @@ class Shell:
             "-drive", "file=%s,format=%s,if=ide" % (self.fat2, self.fat_format),
         ]
         # KVM se disponibile: abbatte la tassa di emulazione sui round-trip
-        # tastiera (IRQ1→kbd→tty→shell→prompt).
-        if os.path.exists("/dev/kvm"):
-            args[1:1] = ["-accel", "kvm"]
+        # tastiera (IRQ1→kbd→tty→shell→prompt). `-cpu host` come bench.sh
+        # (TSC/round-trip a velocita' nativa invece che emulata).
+        if FAST:
+            args[1:1] = ["-accel", "kvm", "-cpu", "host"]
         self.q = subprocess.Popen(args)
-        time.sleep(1.0)
+        time.sleep(T_BOOT_SLEEP)
         kvm_info = self.mon_query("info kvm").replace("\r", "").strip().split("\n")
         kvm_tail = [l for l in kvm_info if "kvm" in l.lower()][-1:]
-        print("info accel: %s" % (" | ".join(kvm_tail) if kvm_tail else kvm_info[-1:]),
-              flush=True)
+        print("info accel: %s (timing %s)" % (" | ".join(kvm_tail) if kvm_tail else kvm_info[-1:],
+              "fast" if FAST else "slow"), flush=True)
         deadline = time.time() + timeout
         while time.time() < deadline:
             data = self.read_log()
@@ -231,7 +285,7 @@ class Shell:
                     and b"$ " in data):
                 self.wait_prompt()
                 return self.q
-            time.sleep(0.4)
+            time.sleep(T_BOOT_POLL)
         raise RuntimeError("shell non pronta")
 
     def terminate(self):
@@ -250,7 +304,7 @@ class Shell:
             os.unlink(path)
         except FileNotFoundError:
             pass
-        self.send_mon("screendump %s" % path, sleep=0.6)
+        self.send_mon("screendump %s" % path, sleep=T_DUMP)
         deadline = time.time() + 10
         while time.time() < deadline:
             if os.path.exists(path) and os.path.getsize(path) > 1000:

@@ -1,0 +1,7 @@
+# 41: single-quote (script separato: "vv" non deve apparire nello slice).
+echo 'a   b'
+echo '>'
+echo 'a#b'
+export Q41=vv
+echo '$Q41'
+echo '*'

@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """Test shell RUN (Fase 37.2): run fg con argv/exit-code/errori, bg + jobs/kill/wait."
-Avvia il proprio QEMU (seriale + monitor dedicati), digita via sendkey,
-verifica sul log seriale. Autonomo: prepara le immagini (salvo --no-prep),
-boota, testa, pulisce le sue fixture. Vedi scripts/shell_harness.py.
+Avvia il proprio QEMU (seriale + monitor dedicati); i comandi viaggiano in
+script via `source` (il pid del bg per kill/wait lo estrae il .py dallo
+slice). Verifica sul log seriale. Autonomo: prepara le immagini
+(salvo --no-prep), boota, testa, pulisce le sue fixture.
+Vedi scripts/shell_harness.py.
 """
 import sys, os, re
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
 from shell_harness import Shell, Checker, prep_images, parse_shell_args
+
+SH = "/fat/test/sh"
+
+
 def main():
     args = parse_shell_args("/tmp/velordor-run-mon.sock", "/tmp/velordor-run-serial.log")
     if not args.no_prep:
@@ -16,36 +22,33 @@ def main():
     c = Checker()
     try:
         sh.boot()
-        # Fase 37.2: run/jobs/wait (fork+exec, EXIT_NOTIFY).
+        # Fase 37.2: run/jobs/wait (fork+exec, EXIT_NOTIFY) in un solo script.
+        out = sh.run_source(SH + "/run1.txt")
         # Foreground veloce con argv: runhello stampa gli argv su seriale.
-        out = sh.run_out("run /fat/bin/runhello.bin hello world")
         found = b"runhello: hello" in out and b"runhello: world" in out
         c.check("run fg con argv (echo)", found)
 
         # Exit code != 0 annunciato dal fg come [exit N] (runhello esce 3
         # se un argv e' "fail").
-        out = sh.run_out("run /fat/bin/runhello.bin fail")
         found = b"[exit 3]" in out
         c.check("run fg exit code ([exit 3])", found)
 
         # Errori: path inesistente, wait su job ignoto.
-        out = sh.run_out("run /nonexistent")
         found = b"run: cannot load" in out
         c.check("run su path ignoto", found)
-        out = sh.run_out("wait 99999")
         found = b"wait: no such job" in out
         c.check("wait su job ignoto", found)
 
-        # Background: uptime longevo, jobs lo elenca, kill+wait lo chiudono
-        # (kill parent-scoped: la shell E' il parent, consentito).
-        out = sh.run_out("run /fat/bin/uptime.bin &")
+        # Background: uptime longevo, jobs lo elenca (il pid per kill/wait
+        # si estrae dallo slice: l'annuncio [bg pid N] e' nello slice).
         m = re.search(rb"\[bg pid (\d+)\]", out)
         found = m is not None
         c.check("run bg annuncia pid", found)
         pid = m.group(1).decode() if m else "0"
-        out = sh.run_out("jobs")
         found = b"/fat/bin/uptime.bin" in out and b"run" in out
         c.check("jobs elenca il bg", found)
+        # kill+wait restano digitati (servono il pid appena estratto).
+        # kill parent-scoped: la shell E' il parent, consentito.
         sh.run_out("kill %s" % pid)
         out = sh.run_out("wait %s" % pid)
         found = ("pid %s: exit" % pid).encode() in out

@@ -1,0 +1,5 @@
+# 41: ; && (script separato da e2: "no41b" contiene "no41").
+echo c41a; echo c41b
+cat missing41; echo after41
+echo ok41 && echo yes41
+cat missing41 && echo no41

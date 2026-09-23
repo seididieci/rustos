@@ -31,4 +31,13 @@ mcopy -i "$IMG" testland/build/userhogheap.bin  ::/test/hogheap.bin  || exit 1
 mcopy -i "$IMG" testland/build/userdevreader.bin ::/test/devreadr.bin || exit 1
 mcopy -i "$IMG" testland/build/userdemo.bin     ::/test/demo.bin     || exit 1
 mcopy -i "$IMG" testland/build/userbench.bin    ::/test/bench.bin    || exit 1
+# Script shell per `source` (velocizzazione test: 1 riga digitata invece di N
+# comandi via sendkey) + pilota del builtin permanente. Nomi 8.3 come i .bin
+# (il FAT non ha LFN: oltre 8+3 mcopy fallisce loud, mai nomi troncati in
+# silenzio). Tutti gli script di fase stanno in scripts/sh/.
+mmd -i "$IMG" ::/test/sh || exit 1
+for s in scripts/sh/*.txt; do
+    b="$(basename "$s")"
+    mcopy -i "$IMG" "$s" "::/test/sh/$b" || exit 1
+done
 echo "[inject] servizi in /bin + /test su $IMG"

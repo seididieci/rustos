@@ -1,0 +1,7 @@
+# base: cp/mv ramfs.
+cp hello.txt copy.txt
+cat copy.txt
+mv copy.txt moved.txt
+cat moved.txt
+cat copy.txt
+rm moved.txt

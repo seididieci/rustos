@@ -1,0 +1,7 @@
+# 41: double-quote + escape + commenti.
+echo "a   b"
+echo "v=$Q41"
+echo "a\$B"
+echo a\ b
+echo a\;b
+echo hi # trailing

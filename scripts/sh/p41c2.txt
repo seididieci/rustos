@@ -1,0 +1,2 @@
+# 41: tilde (assert sulla prima riga: script dedicato).
+echo ~

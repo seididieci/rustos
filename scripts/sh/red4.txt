@@ -1,0 +1,19 @@
+# redirect: run con redirect + bg + wait + cleanup fixture.
+run /fat/bin/runhello.bin hello > /ro404.txt
+cat /ro404.txt
+run /fat/bin/runhello.bin fail > /ro404b.txt
+run /fat/bin/runhello.bin < redir404.txt > /ro404c.txt
+cat /ro404c.txt
+run /fat/bin/runhello.bin bgx > /rb404.txt &
+wait
+cat /rb404.txt
+rm redir404.txt
+rm /o404.txt
+rm /o404b.txt
+rm /o404c.txt
+rm /e404.txt
+rm /e404b.txt
+rm /ro404.txt
+rm /ro404b.txt
+rm /ro404c.txt
+rm /rb404.txt

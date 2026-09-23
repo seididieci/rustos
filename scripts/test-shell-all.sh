@@ -5,6 +5,8 @@
 #   ./scripts/test-shell-all.sh            # sequenziale, immagini condivise
 #   ./scripts/test-shell-all.sh --jobs 3   # parallelo, overlay qcow2/istanza
 #   ./scripts/test-shell-all.sh --jobs 3 base 42   # solo fasi scelte
+#   ./scripts/test-shell-all.sh source     # gate veloce: solo `source`
+#                                          # (1 boot, ~10 s: per iterare)
 #
 # Parallelo: ogni istanza scrive su un overlay qcow2 privato (backing = le
 # immagini generate una volta sola) — due QEMU sullo stesso raw read-write
@@ -18,11 +20,11 @@ PHASES=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --jobs) JOBS="$2"; shift 2;;
-        base|run|redirect|41|42) PHASES+=("$1"); shift;;
-        *) echo "fase ignota: $1 (base|run|redirect|41|42)"; exit 2;;
+        base|run|redirect|41|42|source) PHASES+=("$1"); shift;;
+        *) echo "fase ignota: $1 (base|run|redirect|41|42|source)"; exit 2;;
     esac
 done
-[ ${#PHASES[@]} -eq 0 ] && PHASES=(base run redirect 41 42)
+[ ${#PHASES[@]} -eq 0 ] && PHASES=(base run redirect 41 42 source)
 
 echo "[all] preparo immagini FAT (una volta sola)"
 python3 scripts/mkfat.py userland/fs/fat.img

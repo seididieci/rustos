@@ -1,0 +1,7 @@
+# 41: field-split non quotato via cp.
+echo spcontent > /sp41.txt
+export F41="/sp41.txt /sp41c.txt"
+cp $F41
+cat /sp41c.txt
+rm /sp41.txt
+rm /sp41c.txt

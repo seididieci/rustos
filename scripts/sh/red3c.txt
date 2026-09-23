@@ -1,0 +1,3 @@
+# redirect: 2>> appende l'errore del builtin.
+cat missing404 2>> /e404b.txt
+cat /e404b.txt

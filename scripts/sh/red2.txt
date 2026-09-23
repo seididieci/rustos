@@ -1,0 +1,8 @@
+# redirect: > tronca + stdin builtin + ENOENT (script separato da red1:
+# l'assenza di "second" e' sullo slice).
+echo solo > redir404.txt
+cat redir404.txt
+cat < redir404.txt
+wc < redir404.txt
+hexdump < redir404.txt
+cat < /no404dir

@@ -1,0 +1,2 @@
+# base: ls -l /fat (script separato: l'assenza di (ro) e' sullo slice).
+ls -l /fat

@@ -1,0 +1,4 @@
+# 42: EOF vero (file vuoto in pipe: cat stampa comunque il suo \n).
+touch /empty42
+cat /empty42 | wc
+rm /empty42

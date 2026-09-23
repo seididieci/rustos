@@ -1,0 +1,8 @@
+# 41: variabili (UNSET per primo: l'assert e' sulla prima riga dello slice).
+echo pre$UNSET41Xpost
+BARE41=zzz
+echo $BARE41
+echo ${BARE41}!
+export
+export 1BAD41=x
+F41X=1 echo hi

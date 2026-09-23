@@ -1,0 +1,3 @@
+# 42: stadio run (fork+exec con grant).
+run /fat/bin/runhello.bin hello | cat
+run /fat/bin/runhello.bin fail | cat missing404

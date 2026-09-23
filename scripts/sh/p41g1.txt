@@ -1,0 +1,5 @@
+# 41: glob * (script separato: l'output contiene g41b1).
+touch g41a1
+touch g41a2
+touch g41b1
+echo g41*

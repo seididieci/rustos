@@ -1,0 +1,24 @@
+# smoke source (builtin, redirect, pipe, heredoc, run, vars, $?).
+# Eseguito con `source /fat/test/sh/smoke.txt`: 1 riga digitata invece di N.
+echo src-smoke-hi
+export SRCV=abc
+echo val-$SRCV
+echo one; echo two
+echo ok-a && echo ok-b
+nosuchcmd123 || echo or-took
+echo after-$?
+cat hello.txt
+cat hello.txt | wc
+cat <<SRCEOF
+hd-line-one
+SRCEOF
+echo payload > /srcpay.txt
+cat /srcpay.txt
+run /fat/bin/runhello.bin hello
+echo run-code-$?
+rm /srcpay.txt
+mkdir /srcdir
+cd /srcdir
+pwd
+cd /
+rmdir /srcdir

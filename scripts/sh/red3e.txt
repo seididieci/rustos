@@ -1,0 +1,4 @@
+# redirect: 2>&1 prima di > (errore sul terminale, file vuoto).
+cat missing404 2>&1 > /o404c.txt
+ls -l
+echo hi >

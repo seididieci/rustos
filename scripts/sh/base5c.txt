@@ -1,0 +1,3 @@
+# base: rmdir su vuota + sparizione.
+rmdir prova
+ls

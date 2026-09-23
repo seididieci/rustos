@@ -1,0 +1,4 @@
+# 42: pipe base + 3 stadi (cat aggiunge \n in coda: 2 4 26).
+echo hello42 | cat
+cat hello.txt | wc
+echo a | echo b | cat

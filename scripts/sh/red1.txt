@@ -1,0 +1,5 @@
+# redirect: > crea/tronca, >> appende.
+echo hello redir > redir404.txt
+cat redir404.txt
+echo second >> redir404.txt
+cat redir404.txt

@@ -1,0 +1,3 @@
+# redirect: 2> cattura l'errore del builtin.
+cat missing404 2> /e404.txt
+cat /e404.txt

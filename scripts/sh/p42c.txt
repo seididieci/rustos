@@ -1,0 +1,2 @@
+# 42: errore nello stadio sinistro (destro a EOF).
+cat missing404 | cat

@@ -1,0 +1,5 @@
+# base: kill errori + ps.
+kill nosuchsvc
+kill 99999
+kill init
+ps

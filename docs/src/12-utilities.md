@@ -43,6 +43,7 @@ la mostra (`/prova$ `, `$ ` a root).
 | `ps` | Tabella processi stile Linux: PID NAME PRIO STATE TIME PARENT (syscall 37, Fase 19.1) |
 | `export [NAME=val]` | Variabili shell (Fase 41): set persistente o lista; `NAME=valore` nudo equivale |
 | `run <path> [args...] [&]` | Lancia un programma via fork+exec (Fase 37.2): path esatto (niente ricerca: `/fat/bin/runhello.bin`, non `runhello`), argv[0] = path digitato; `&` = background (prompt subito), senza = foreground (attende; `[exit N]` se N != 0) |
+| `source <file>` | Esegue uno script riga-per-riga (stesso parser della tastiera: `; && \|\|`, pipe, redirect, heredoc, `$VAR/$?`, glob, `run`). `$?` iniziale = esterno, exit dello script = ultimo comando; `exit` termina lo script (mai la shell); esecuzione silenziosa (niente eco). Anticipa la Fase 43 (script `.sh`); nato per velocizzare i test (1 riga digitata invece di N) |
 | `jobs` | Tabella job (`[id] pid P run\|done C cmd`; i finiti restano finche' `wait`) |
 | `wait [pid]` | Attende i job (tutti o uno) e li rimuove, stampa `pid P: exit C` |
 | `help` | Mostra comandi disponibili |
@@ -128,6 +129,21 @@ reservation al grant (stesso nonce COW di ADR-0031); `libr` riprova throttled
 su `Empty` (server mai bloccante); EOF vero solo a scrittori esauriti.
 Streaming oltre la capacità via intercalazione scheduler. `&` su pipeline
 rifiutato fino alla Fase 44; pipe trailing ignorata.
+
+### Script con `source`
+
+`source /fat/test/sh/smoke.txt` esegue il file riga-per-riga con lo stesso
+codice del REPL (estratto in `run_one_line`: parse, heredoc, short-circuit —
+zero divergenze tastiera/script). Gli script di test vivono in `/test/sh` su
+`/fat` (iniettati da `scripts/inject-bins.sh`, nomi 8.3); il pilot copre
+builtin, redirect, pipe, heredoc, `run`, variabili, `$?`, `exit` (termina lo
+script, mai la shell), guardia di annidamento (max 4) ed error paths
+(`scripts/test-shell-source.py`, 22 check in 1 boot).
+
+Limiti onesti: file vuoto = no-op; directory/device = errore; redirect
+esterno + redirect interni annidati non si combinano (il restore interno
+cancella anche quello esterno: niente stack stdio in `libr`); `source` in
+pipeline gira nel figlio (effetti scoped, `$?` iniziale 0).
 
 ### Limiti onesti (redirect + parser + pipe)
 

@@ -1,0 +1,4 @@
+# base: rmdir su piena + rm + ls (prova contiene inner.txt da base2).
+rmdir prova
+rm prova/inner.txt
+ls prova
