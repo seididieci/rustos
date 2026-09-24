@@ -54,7 +54,7 @@ pub struct DirEntry {
     /// (serve a 20.3 per aggiornare size/first_cluster sul posto).
     pub entry_off: usize,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct FileInfo {
     pub first_cluster: u32,
     pub size: u32,

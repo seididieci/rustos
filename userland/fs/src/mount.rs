@@ -1,4 +1,5 @@
 use super::*;
+use super::provider::MountedFs;
 
 // ── Mount locali dinamici (Fase 16b) ─────────────────────────────────
 // Tabella VFS userspace (nessun kernel coinvolto, ADR-0005): binding
@@ -10,9 +11,6 @@ use super::*;
 /// (parser + client); `None` = spec registrata ma inattiva (sorgente assente
 /// all'ultimo tentativo: gli accessi sotto il target falliscono invece di
 /// finire shadow in ramfs, e il prossimo accesso ritenta l'attivazione).
-enum MountedFs {
-    Fat(Option<Fat32<IpcDisk>>),
-}
 
 /// Mount locale: binding target → sorgente + istanza.
 pub struct FsMount {
@@ -209,6 +207,7 @@ impl FsMount {
     pub fn fat(&self) -> Option<&Fat32<IpcDisk>> {
         match &self.fs {
             MountedFs::Fat(opt) => opt.as_ref(),
+            MountedFs::Local(_) => None,
         }
     }
 
@@ -234,6 +233,7 @@ impl FsMount {
     pub fn is_active(&self) -> bool {
         match &self.fs {
             MountedFs::Fat(opt) => opt.is_some(),
+            MountedFs::Local(_) => true,
         }
     }
 }

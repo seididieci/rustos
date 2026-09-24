@@ -28,6 +28,7 @@ use libr;
 
 mod fat32;
 mod ipc_disk;
+mod provider;
 
 use fat32::{Fat32, FileInfo};
 use ipc_disk::IpcDisk;

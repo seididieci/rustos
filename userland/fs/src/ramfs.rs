@@ -1,6 +1,30 @@
 use super::*;
+use alloc::boxed::Box;
+use crate::provider::{LocalFs, EntrySink, Meta};
 
 // ── ramfs ──────────────────────────────────────────────────────────
+
+/// Handle per RamFs: path limitato a 64 byte (Copy + PartialEq).
+#[derive(Clone, Copy, PartialEq)]
+pub struct RamHandle {
+    path: [u8; 64],
+    len: usize,
+}
+
+impl RamHandle {
+    fn new(path: &str) -> Self {
+        let bytes = path.as_bytes();
+        let len = bytes.len().min(63);
+        let mut p = [0u8; 64];
+        p[..len].copy_from_slice(&bytes[..len]);
+        Self { path: p, len }
+    }
+
+    fn as_str(&self) -> &str {
+        // SAFETY: i bytes sono stati scritti da as_bytes() di un &str valido.
+        unsafe { core::str::from_utf8_unchecked(&self.path[..self.len]) }
+    }
+}
 
 #[derive(Clone)]
 #[allow(dead_code)] // `mode`: placeholder Strato 0 (16b), enforcement futuro
@@ -165,5 +189,194 @@ impl RamFs {
             }
         }
         None
+    }
+}
+
+// ── Implementazione LocalFs per RamFs (U0, provider trait) ─────────
+
+impl LocalFs for RamFs {
+    type Handle = RamHandle;
+
+    fn open(&mut self, rel: &str, flags: u32) -> Result<Self::Handle, u64> {
+        let path = rel.trim_start_matches('/');
+        if path.is_empty() {
+            return Err(crate::ERR_NOTFOUND);
+        }
+        let creat = flags & libr::O_CREAT != 0;
+        let trunc = flags & libr::O_TRUNC != 0;
+
+        // O_CREAT: crea il file se non esiste.
+        if creat {
+            if self.find(path).is_none() {
+                // Crea il file (e le directory intermedie se necessario).
+                let node = self.find_or_create(path);
+                if node.is_none() {
+                    return Err(crate::ERR_NOTFOUND);
+                }
+                match node.unwrap() {
+                    FsNode::File { data, .. } => {
+                        if trunc {
+                            data.clear();
+                        }
+                    }
+                    _ => return Err(crate::ERR_ISDIR),
+                }
+            } else if trunc {
+                // Il file esiste gia': svuotalo.
+                let node = self.find(path).unwrap();
+                match node {
+                    FsNode::File { data, .. } => {
+                        // Devo usare find_or_create per avere &mut Vec<u8>.
+                        let mut_node = self.find_or_create(path);
+                        if let Some(FsNode::File { data, .. }) = mut_node {
+                            data.clear();
+                        }
+                    }
+                    _ => return Err(crate::ERR_ISDIR),
+                }
+            }
+        } else if trunc {
+            // O_TRUNC senza O_CREAT: il file deve esistere.
+            let node = self.find(path).ok_or(crate::ERR_NOTFOUND)?;
+            match node {
+                FsNode::File { data, .. } => {
+                    let mut_node = self.find_or_create(path);
+                    if let Some(FsNode::File { data, .. }) = mut_node {
+                        data.clear();
+                    }
+                }
+                _ => return Err(crate::ERR_ISDIR),
+            }
+        }
+
+        // Verifica che il nodo sia un file (non una directory).
+        match self.find(path) {
+            Some(FsNode::File { .. }) => Ok(RamHandle::new(path)),
+            Some(FsNode::Dir { .. }) => Err(crate::ERR_ISDIR),
+            None => Err(crate::ERR_NOTFOUND),
+        }
+    }
+
+    fn read(&mut self, h: Self::Handle, off: usize, buf: &mut [u8]) -> Result<usize, u64> {
+        let path = h.as_str();
+        match self.find(path) {
+            Some(FsNode::File { data, .. }) => {
+                let len = data.len().saturating_sub(off);
+                let n = len.min(buf.len());
+                buf[..n].copy_from_slice(&data[off..off + n]);
+                Ok(n)
+            }
+            Some(FsNode::Dir { .. }) => Err(crate::ERR_ISDIR),
+            None => Err(crate::ERR_NOTFOUND),
+        }
+    }
+
+    fn write(&mut self, h: Self::Handle, off: usize, buf: &[u8], append: bool) -> Result<usize, u64> {
+        let path = h.as_str();
+        // Clone il path prima di mutare self (borrow checker).
+        let path_owned: alloc::string::String = path.into();
+        match self.find_or_create(&path_owned) {
+            Some(FsNode::File { data, .. }) => {
+                if append {
+                    let n = buf.len();
+                    data.extend_from_slice(buf);
+                    Ok(n)
+                } else {
+                    // Write con offset: estende il vettore se necessario.
+                    let end = off + buf.len();
+                    if end > data.len() {
+                        data.resize(end, 0);
+                    }
+                    data[off..off + buf.len()].copy_from_slice(buf);
+                    Ok(buf.len())
+                }
+            }
+            Some(FsNode::Dir { .. }) => Err(crate::ERR_ISDIR),
+            None => Err(crate::ERR_NOTFOUND),
+        }
+    }
+
+    fn close(&mut self, _h: Self::Handle) {
+        // RamFs non ha stato per-fd.
+    }
+
+    fn readdir(&mut self, rel: &str, out: &mut dyn EntrySink) -> Result<usize, u64> {
+        // Chiama RamFs::readdir esplicitamente per evitare collisione con LocalFs::readdir.
+        match RamFs::readdir(self, rel) {
+            Some(entries) => {
+                for name in &entries {
+                    out.emit(name);
+                }
+                Ok(entries.len())
+            }
+            None => Err(crate::ERR_NOTFOUND),
+        }
+    }
+
+    fn stat(&mut self, rel: &str) -> Result<Meta, u64> {
+        match self.find(rel) {
+            Some(FsNode::File { data, .. }) => Ok(Meta {
+                size: data.len() as u64,
+                kind: 0, // file
+                readonly: false,
+                mtime: 0,
+            }),
+            Some(FsNode::Dir { .. }) => Ok(Meta {
+                size: 0,
+                kind: 1, // dir
+                readonly: false,
+                mtime: 0,
+            }),
+            None => Err(crate::ERR_NOTFOUND),
+        }
+    }
+
+    fn mkdir(&mut self, rel: &str) -> Result<(), u64> {
+        let path = rel.trim_start_matches('/');
+        if path.is_empty() {
+            return Err(crate::ERR_INVALID);
+        }
+        // Crea la directory (e le intermedie).
+        match self.find(path) {
+            Some(FsNode::Dir { .. }) => Ok(()), // gia' esistente.
+            Some(FsNode::File { .. }) => Err(crate::ERR_NOTDIR),
+            None => {
+                // Crea ricorsivamente.
+                let parts: Vec<&str> = path.split('/').collect();
+                if parts.is_empty() || parts[0].is_empty() {
+                    return Err(crate::ERR_INVALID);
+                }
+                let mut current = &mut self.root;
+                for (i, &part) in parts.iter().enumerate() {
+                    if i == parts.len() - 1 {
+                        // Ultima parte: crea la directory.
+                        current.entry(String::from(part))
+                            .or_insert_with(|| FsNode::Dir {
+                                entries: BTreeMap::new(),
+                                mode: MODE_DIR_DEF,
+                            });
+                        return Ok(());
+                    }
+                    let entry = current.entry(String::from(part))
+                        .or_insert_with(|| FsNode::Dir {
+                            entries: BTreeMap::new(),
+                            mode: MODE_DIR_DEF,
+                        });
+                    match entry {
+                        FsNode::Dir { entries: dir, .. } => current = dir,
+                        _ => return Err(crate::ERR_NOTDIR),
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn remove(&mut self, rel: &str) -> Result<(), u64> {
+        if self.remove(rel).is_some() {
+            Ok(())
+        } else {
+            Err(crate::ERR_NOTFOUND)
+        }
     }
 }
