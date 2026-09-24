@@ -1,7 +1,8 @@
 # ADR-0038: Provider trait per filesystem (Fase 46)
 
 **Status**: Implemented (Fase 46 — gate 5/5 + 7/7 + 57/57, zero FAIL/PANIC;
-Fase 47/U1 wiring handler via trait per ramfs, gate 5/5 + 7/7 + 57/57).
+Fase 47/U1 wiring handler via trait per ramfs, gate 5/5 + 7/7 + 57/57;
+Fase 48/U2 wiring FAT32 via `LocalFsDyn`, fix readonly stat, gate 5/5 + 7/7 + 57/57).
 
 ## Context
 
@@ -94,6 +95,32 @@ Implementato: gli handler userfs instradano ramfs via `LocalFs` trait:
 FAT32 resta sulla variande `Fat` (lazy reactivate, IPC disk client specifici).
 Zero behavioral regression; gate 5/5 + 7/7 + 57/57.
 
+### 48.0 — Routing handler (U2, Fase 48)
+
+Implementato: gli handler userfs instradano FAT32 via `LocalFsDyn` trait:
+- `handle_read`: `LocalFsDyn::read_dyn` per FAT; l'handle e' il `FileInfo`
+  della cache per-fd (Fase 21) passato come puntatore allo stack (niente heap
+  per-op, niente reopen per path = niente find per read: era una regressione
+  ~8x sui load da disco, misurata in t27/t28/t32 e corretta)
+- `handle_write_local`: `LocalFsDyn::write_dyn` per FAT, stessa cache; dopo la
+  mutazione la cache e' rinfrescata con un find fresco (size/first_cluster
+  possono cambiare); O_APPEND dal flag (contratto ramfs)
+- `handle_open`: validazione via `LocalFsDyn::stat_dyn` per FAT; O_CREAT
+  (`create_file`) e O_TRUNC (`truncate`) restano FAT-specifici; `open_fat`
+  popola la cache FileInfo del fd
+- `handle_readdir`: `LocalFsDyn::readdir_dyn` per FAT (sink inline, poi union
+  con mount annidati)
+- `handle_stat`: `LocalFsDyn::stat_dyn` per FAT; `stat_kind` propaga
+  `Meta.readonly` in `STAT_READONLY` (prima ignorato: `libr::stat` lo
+  decodifica ma nessun handler lo scriveva)
+
+`Fat32<B>` implementa `LocalFsDyn` con handles boxati (`*const ()`). Operazioni
+FAT-specifiche (create_file, truncate) restano separate: non parte della trait
+perché sono FAT-specifiche (Fase 20). Fix `Fat32::LocalFs::write`: `write_grow`
+sempre (superset di `write_file`, gestisce anche il primo cluster dei file
+appena creati) e O_APPEND derivato dall'`append` (contratto ramfs). Zero
+behavioral regression; gate 5/5 + 7/7 + 57/57.
+
 ## Consequences
 
 ### Positive
@@ -108,17 +135,19 @@ Zero behavioral regression; gate 5/5 + 7/7 + 57/57.
 
 ### Negative
 
-- **Heap per-op**: `DynHandle::open_dyn` boxa ogni handle (`Box::new(h)`).
-  La regola Fase 24 dice "mai heap nel per-op dei server". Per un filesystem
-  locale con handles piccoli (u32, usize) e lifecycle chiuso (open→use→close
-  nello stesso IPC), l'overhead e' trascurabile; ma se il path diventa hot
-  va sostituito con un allocator a slot (o `LocalFs::Handle` inline).
+- **Heap per-op**: `DynHandle::open_dyn` boxa ogni handle (`Box::new(h)`). La
+  regola Fase 24 dice "mai heap nel per-op dei server". Per un filesystem locale
+  con handles piccoli (u32, usize) e lifecycle chiuso (open→use→close nello stesso
+  IPC), l'overhead e' trascurabile; ma se il path diventa hot va sostituito con
+  un allocator a slot (o `LocalFs::Handle` inline). FAT32 usa lo stesso pattern.
 
 ### Neutral
 
-- **Fat32 non ancora nel path Local**: rimane sulla variande `Fat` perche'
-  la lazy reactivate (`IpcDisk` reconnect) e il cache settoriale (Fase 25)
-  sono specifici. U1 puo' unificare se il pattern si generalizza.
+- **Fat32 ora nel path Local**: U2 (Fase 48) ha instradato FAT32 via `LocalFsDyn`
+  in tutti gli handler. Le operazioni FAT-specifiche (create_file, truncate)
+  restano separate: non parte della trait perché sono FAT-specifiche (Fase 20).
+  Lazy reactivate (`IpcDisk` reconnect) e cache settoriale (Fase 25) restano
+  specifiche ma non impediscono l'unificazione del path principale.
 
 ## Alternatives Considered
 

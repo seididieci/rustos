@@ -7,6 +7,7 @@
 //! mkdir/rm su FAT (solo overwrite/create/grow, Fase 20).
 
 extern crate alloc;
+use alloc::boxed::Box;
 
 use alloc::format;
 
@@ -57,15 +58,16 @@ impl<B: BlockSource> crate::provider::LocalFs for Fat32<B> {
     }
 
     fn write(&mut self, h: Self::Handle, off: usize, buf: &[u8], append: bool) -> Result<usize, u64> {
-        if h.is_dir || h.first_cluster == 0 {
-            return Err(crate::ERR_NOTFOUND);
+        if h.is_dir {
+            return Err(crate::ERR_ISDIR);
         }
-        let n = if append {
-            self.write_grow(&h, off, buf)
-        } else {
-            self.write_file(&h, off, buf)
-        };
-        Ok(n)
+        // Semantica come ramfs: O_APPEND ignora `off` e accoda a fine file;
+        // altrimenti si scrive a `off`. `write_grow` e' un superset di
+        // `write_file` (overwrite entro la size, crescita — e allocazione del
+        // primo cluster per i file appena creati — oltre) come il vecchio
+        // handler FAT faceva sempre.
+        let off = if append { h.size as usize } else { off };
+        Ok(self.write_grow(&h, off, buf))
     }
 
     fn close(&mut self, _h: Self::Handle) {
@@ -85,7 +87,7 @@ impl<B: BlockSource> crate::provider::LocalFs for Fat32<B> {
             Some(info) => Ok(crate::provider::Meta {
                 size: info.size as u64,
                 kind: if info.is_dir { 1 } else { 0 },
-                readonly: true, // FAT e' readonly per userfs (Fase 20+ ma senza unlink).
+                readonly: false, // FAT scrivibile dalla Fase 20 (write/grow).
                 mtime: 0,
             }),
             None => Err(crate::ERR_NOTFOUND),
@@ -100,5 +102,47 @@ impl<B: BlockSource> crate::provider::LocalFs for Fat32<B> {
     fn remove(&mut self, _rel: &str) -> Result<(), u64> {
         // remove su FAT e' fuori scope.
         Err(crate::ERR_READONLY)
+    }
+}
+
+// ── Implementazione LocalFsDyn per Fat32 (Fase 48: wiring handler) ───
+// Fat32 implementa gia' LocalFs; LocalFsDyn e' il wrapper object-safe con
+// handles erasure a *const (). Qui si boxa/unbox come DynHandle<T> ma per
+// Fat32<B> direttamente (nessun wrapper intermedio).
+
+impl<B: BlockSource> crate::provider::LocalFsDyn for Fat32<B> {
+    fn open_dyn(&mut self, rel: &str, flags: u32) -> Result<*const (), u64> {
+        let h = <Self as crate::provider::LocalFs>::open(self, rel, flags)?;
+        Ok(Box::into_raw(Box::new(h)) as *const ())
+    }
+
+    fn read_dyn(&mut self, h: *const (), off: usize, buf: &mut [u8]) -> Result<usize, u64> {
+        let h = unsafe { &*(h as *const <Self as crate::provider::LocalFs>::Handle) };
+        <Self as crate::provider::LocalFs>::read(self, *h, off, buf)
+    }
+
+    fn write_dyn(&mut self, h: *const (), off: usize, buf: &[u8], append: bool) -> Result<usize, u64> {
+        let h = unsafe { &*(h as *const <Self as crate::provider::LocalFs>::Handle) };
+        <Self as crate::provider::LocalFs>::write(self, *h, off, buf, append)
+    }
+
+    fn close_dyn(&mut self, h: *const ()) {
+        unsafe { drop(Box::from_raw(h as *mut <Self as crate::provider::LocalFs>::Handle)) };
+    }
+
+    fn readdir_dyn(&mut self, rel: &str, out: &mut dyn crate::provider::EntrySink) -> Result<usize, u64> {
+        <Self as crate::provider::LocalFs>::readdir(self, rel, out)
+    }
+
+    fn stat_dyn(&mut self, rel: &str) -> Result<crate::provider::Meta, u64> {
+        <Self as crate::provider::LocalFs>::stat(self, rel)
+    }
+
+    fn mkdir_dyn(&mut self, rel: &str) -> Result<(), u64> {
+        <Self as crate::provider::LocalFs>::mkdir(self, rel)
+    }
+
+    fn remove_dyn(&mut self, rel: &str) -> Result<(), u64> {
+        <Self as crate::provider::LocalFs>::remove(self, rel)
     }
 }

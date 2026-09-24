@@ -213,6 +213,7 @@ usertests 17/17, shell 3/3.
 21   Servizi da disco: userfs con cache FileInfo per-fd + generazione (bump a ogni mutazione FAT; stat sempre fresca) e `IpcDisk` con OPEN-once per connessione (re-OPEN solo a canale caduto) — dimezza i round-trip DISK dei load da disco [x]
 46   Provider trait (`LocalFs` + `LocalFsDyn` + `DynHandle<T>`, enum `MountedFs::Local`) — scaffolding [x]
 47   U1 wiring: handler userfs instradano via `LocalFs` per ramfs (open/read/write/readdir/stat/mkdir/delete), fix mkdir esiste→ERR_EXISTS, fix read oltre EOF→0; zero behavioral regression, gate 5/5+7/7+57/57 [x]
+48   U2 wiring: handler userfs instradano via `LocalFsDyn` per FAT32 (read/write_local/open/readdir/stat), fix stat readonly FAT→false (Fase 20), `Fat32<B>` implementa `LocalFsDyn` (handle boxati); create_file/truncate restano FAT-specifici; zero behavioral regression, gate 5/5+7/7+57/57 [x]
 ```
 
 ## File coinvolti
@@ -225,7 +226,7 @@ usertests 17/17, shell 3/3.
 | `libs/libr/src/lib.rs` | Wrappers FS su ring + `fs_init` lazy + chunking read/write + `map_in` + `ring_alloc_raw` (coppia senza handshake, Fase 16) |
 | `userland/fs/src/main.rs` | userfs: finestra ring, registro `chan→(req,resp)` + `ftable`/`next_fd` per canale, map_in per device remoti |
 | `userland/fs/src/ipc_disk.rs` | client `DISK_*` verso userdisk (`BlockSource`, riconnessione lazy, Fase 16; resolve nome→handle + map di entrambi i ring, Fase 16c; OPEN-once per connessione, Fase 21) |
-| `userland/fs/src/provider.rs` | Trait `LocalFs` (presentazione POSIX), `LocalFsDyn` object-safe con handles erasure (`*const ()`), `DynHandle<T>` — Fase 46 scaffolding, Fase 47 wiring handler via trait per ramfs |
+| `userland/fs/src/provider.rs` | Trait `LocalFs` (presentazione POSIX), `LocalFsDyn` object-safe con handles erasure (`*const ()`), `DynHandle<T>` — Fase 46 scaffolding, Fase 47 wiring handler via trait per ramfs, Fase 48 `LocalFsDyn` per FAT32 |
 | `userland/disk/src/main.rs` | userdisk: detect+part, `/dev/sdX`, protocolli `DISK_*`+`DEV_*` (Fase 16; `DISK_RESOLVE` single-source-of-truth, Fase 16c) |
 | `userland/devfs/src/main.rs` | devfs: `/dev/null`, `/dev/zero` |
 | `userland/console/src/main.rs` | console: rendering `/dev/console` su VGA (tastiera in `userkbd`/`usertty` dalla Fase 15) |

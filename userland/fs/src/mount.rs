@@ -211,6 +211,17 @@ impl FsMount {
         }
     }
 
+    /// Istanza filesystem locale (tramite LocalFsDyn). Per FAT: Fat32; per future
+    /// varianti: dispatch diretto. Ritorna None se il mount e' inattivo o non
+    /// ha un provider locale. (Fase 48: wiring FAT via trait.)
+    pub fn local_dyn(&mut self) -> Option<&mut dyn crate::provider::LocalFsDyn> {
+        match &mut self.fs {
+            MountedFs::Fat(Some(f)) => Some(f), // Fat32<B> implements LocalFsDyn
+            MountedFs::Local(dyn_handle) => Some(&mut **dyn_handle),
+            _ => None,
+        }
+    }
+
     /// Invalida il client disco alla morte del peer (solo variante Fat con
     /// mount attivo; le future varianti con client propri fanno lo stesso).
     /// Se eravamo connessi (cambio d'epoca) droppa anche l'istanza: gli handle
