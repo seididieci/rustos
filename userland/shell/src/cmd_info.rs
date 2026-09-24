@@ -1,7 +1,8 @@
 use super::*;
 
 pub(crate) fn cmd_help() -> i64 {
-    term::term_print("Commands: ls [-l] [path], cat <file>, touch <file>, mkdir <dir>, mount <src> <tgt>, umount <tgt>, echo [args], clear, wc <file>, hexdump <file>, kill <pid|service>, cd [dir], pwd, cp <src> <dst>, mv <src> <dst>, rm <file>, rmdir <dir>, ps, export [NAME=val], source <file>, run <prog> [args...] [&], jobs, wait [pid], exit [code], help\n");
+    term::term_print("Commands: ls [-l] [path], cat <file>, touch <file>, mkdir <dir>, mount <src> <tgt>, umount <tgt>, echo [args], clear, wc <file>, hexdump <file>, kill <pid|service>, cd [dir], pwd, cp <src> <dst>, mv <src> <dst>, rm <file>, rmdir <dir>, ps, export [NAME=val], source <file>, run <prog> [args...] [&], jobs, wait [pid], fg [%N|pid], bg [%N|pid], exit [code], help\n");
+    term::term_print("Job control (Fase 44a): Ctrl-Z sospende il fg (`run` singolo), `fg`/`bg` riprendono, `jobs` mostra run/stopped/done; Ctrl-C e' Fase 44b\n");
     term::term_print("Env (Fase 43a): VAR=v (persistente), VAR=v cmd (solo comando, anche run/stadi), tutto l'env ai figli + PWD; PATH (default /fat/bin), bare word = run implicito, #! script eseguibili\n");
     term::term_print("Redirect (Fase 40.4, bash-like): > >> < 2> 2>> 2>&1 — ultimo vince per slot; cat/wc/hexdump senza file leggono stdin\n");
     term::term_print("Parser (Fase 41): '...' \"...\" \\ # ; && || & $VAR ${VAR} $? $$ ~ glob * ?\n");
@@ -47,8 +48,9 @@ fn push_padded(out: &mut String, s: &str, width: usize) {
 }
 
 /// `ps` tabellare stile Linux (Fase 19.1): PID NAME PRIO STATE TIME PARENT.
-/// STATE = run (se stesso) / ready / recv / reply / blocked; TIME = tick
-/// consumati (10 ms); PARENT = pid del padre ("-" per init/idle).
+/// STATE = run (se stesso) / ready / recv / reply / blocked / stopped (44a,
+/// sospeso via `SYS_SUSPEND`); TIME = tick consumati (10 ms); PARENT = pid
+/// del padre ("-" per init/idle).
 pub(crate) fn cmd_ps() -> i64 {
     let me = libr::getpid() as u32;
     let mut out = String::from("PID  NAME           PRIO STATE TIME PARENT\n");
@@ -63,6 +65,8 @@ pub(crate) fn cmd_ps() -> i64 {
         push_padded(&mut out, &cell, 5);
         let state = if pid == me {
             "run"
+        } else if e.stopped() {
+            "stopped"
         } else if e.state == 0 {
             "ready"
         } else if e.ipc == 1 {

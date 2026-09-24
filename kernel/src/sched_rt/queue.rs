@@ -101,8 +101,14 @@ impl Scheduler {
         self.reclaim_len += 1;
     }
 
+    /// Marca pronto (Fase 44a: salta i sospesi — i wake lasciano i messaggi
+    /// in coda senza risvegliare; il resume rientra esplicitamente). Unico
+    /// choke point di tutti i risvegli (IPC, IRQ, tick, resume).
     pub(super) fn set_ready(&mut self, pid: usize) {
         if pid < 32 && pid < self.processes.len() {
+            if self.processes[pid].suspended {
+                return;
+            }
             let p = self.processes[pid].priority.0 as usize;
             self.ready_by_prio[p] |= 1u32 << pid;
             self.ready_prio_mask |= 1u32 << p;

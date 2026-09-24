@@ -6,7 +6,7 @@ use super::service::{sys_service_register, sys_service_lookup, sys_service_pid, 
 use super::spawn::{sys_spawn, sys_spawn_image, sys_fork};
 use super::exec::sys_exec;
 use super::mem::{sys_mmap, sys_munmap, sys_mprotect, sys_shm_create, sys_shm_map, sys_map_physical, sys_sbrk, sys_ring_alloc, sys_map_in, sys_dma_alloc};
-use super::misc::{sys_exit, sys_write, sys_getpid, sys_kill, sys_get_ticks, sys_cbs_create, sys_cbs_attach, sys_cbs_get_info, sys_ps_info, sys_text_stats};
+use super::misc::{sys_exit, sys_write, sys_getpid, sys_kill, sys_suspend, sys_resume, sys_get_ticks, sys_cbs_create, sys_cbs_attach, sys_cbs_get_info, sys_ps_info, sys_text_stats};
 
 /// Handler di dispatch: legge gli argomenti riempiti dall'entry e chiama la
 /// syscall richiesta. Firmato `extern "C" fn() -> i64` per essere invocabile
@@ -45,6 +45,9 @@ pub(super) extern "C" fn syscall_handler() -> i64 {
             syscall_numbers::SYS_CBS_GET_INFO => sys_cbs_get_info((*p).arg1),
             // Fase 14 (ADR-0010): kill di un processo user.
             syscall_numbers::SYS_KILL => sys_kill((*p).arg1, (*p).arg2 as i64),
+            // Fase 44a (job control): suspend/resume di un processo user.
+            syscall_numbers::SYS_SUSPEND => sys_suspend((*p).arg1),
+            syscall_numbers::SYS_RESUME => sys_resume((*p).arg1),
             // Fase 14 (init-restart): pid dell'owner di un servizio.
             syscall_numbers::SYS_SERVICE_PID => sys_service_pid((*p).arg1),
             // Fase 19.1: snapshot `ps` di un processo.

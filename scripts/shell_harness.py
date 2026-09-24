@@ -27,6 +27,7 @@ KEYMAP = {" ": "spc", ".": "dot", "-": "minus", "/": "slash", "&": "shift-7",
           "'": "apostrophe", '"': "shift-apostrophe",
           "\\": "backslash", "|": "shift-backslash",
           ";": "semicolon", "$": "shift-4", "*": "shift-8",
+          "%": "shift-5",
           "?": "shift-slash", "#": "shift-3", "~": "shift-grave_accent",
           "=": "equal", "_": "shift-minus", ":": "shift-semicolon",
           "{": "shift-bracket_left", "}": "shift-bracket_right",
@@ -253,9 +254,30 @@ class Shell:
 
     def press(self, key: str, sleep=0.5):
         """Un tasto speciale via sendkey (43b: up/down/left/right/home/end/
-        delete/esc/backspace). Niente Enter: lo manda il chiamante."""
+        delete/esc/backspace, 44: ctrl-z). Niente Enter: lo manda il chiamante."""
         self.send_mon("sendkey %s" % key)
         time.sleep(sleep)
+
+    def run_until(self, cmd: str, pattern: bytes, timeout=10, sleep=None):
+        """Esegue e attende che `pattern` appaia nell'output nuovo (44: gli
+        annunci `[bg pid N]` seguono il fork da disco, piu' lento dello sleep
+        fisso di `run`). Ritorna lo slice comunque (vuoto di pattern a timeout:
+        l'assert fallisce rumoroso, mai hang)."""
+        if sleep is None:
+            sleep = T_RUN
+        self.wait_prompt()
+        mark = len(self.read_log())
+        self.type_text(cmd)
+        self.send_mon("sendkey ret")
+        time.sleep(sleep)
+        self._need_sync = True
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            out = self.read_log()[mark:]
+            if pattern in out:
+                return out
+            time.sleep(0.2)
+        return self.read_log()[mark:]
 
     def run_heredoc(self, first: str, lines, delim: str, sleep=None):
         """Heredoc Fase 42: prima riga, corpo riga per riga (prompt secondario

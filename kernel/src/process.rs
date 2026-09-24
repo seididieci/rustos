@@ -132,6 +132,13 @@ pub struct Process {
     /// Immutabile. `pick_next` sceglie il livello piu' alto via bitmask.
     pub priority: crate::sched::Priority,
     pub state: State,
+    /// Sospeso via `SYS_SUSPEND` (Fase 44a, job control): fuori dalle ready
+    /// queue finche' `SYS_RESUME` (meccanismo neutro, semantica POSIX in
+    /// shell). Ortogonale a `state`/`ipc_state`: i wake (`set_ready`) lo
+    /// saltano e i messaggi restano in coda; al resume si rientra in Ready
+    /// (o si resta Blocked se la coda e' ancora vuota). `ps` lo mostra come
+    /// Stopped; `terminate` lo ignora (il morto non torna).
+    pub suspended: bool,
     /// Processo padre (chi ha creato questo processo via `spawn`). `None` per i
     /// processi creati direttamente dal kernel (es. init, idle).
     pub parent: Option<usize>,
@@ -269,6 +276,7 @@ impl Process {
             name_len: 0,
             priority,
             state: State::Ready,
+            suspended: false,
             parent,
             detached: false,
             stack_base,
@@ -350,6 +358,7 @@ impl Process {
             name_len: 0,
             priority,
             state: State::Ready,
+            suspended: false,
             parent,
             detached,
             stack_base,
@@ -411,6 +420,7 @@ impl Process {
             name_len,
             priority,
             state: State::Ready,
+            suspended: false,
             parent: Some(parent_pid),
             detached: false,
             stack_base,

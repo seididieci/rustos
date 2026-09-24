@@ -139,6 +139,9 @@ const MODE_DUPCLAIM: u64 = 26;
 const MODE_DUPGRANT: u64 = 27;
 const MODE_DUPSIBCLAIM: u64 = 28;
 const MODE_SEEKDENY: u64 = 29;
+// Fase 44a (t55): sonda suspend/resume ostili (target = pid non-figlio in
+// `rounds`): entrambi DEVONO essere rifiutati (parent-scoped, come kill).
+const MODE_SUSPENDENY: u64 = 30;
 
 // Tag DEV_* + errore IPC (A1): single source in `libr` (prima letterali qui).
 use libr::{DEV_CLOSE, DEV_OPEN, ERR};
@@ -487,6 +490,7 @@ fn real_main(sp: u64) -> ! {
                 MODE_DUPGRANT => run_dupgrant(),
                 MODE_DUPSIBCLAIM => run_dupsibclaim(rounds as u64),
                 MODE_SEEKDENY => run_seekdeny(),
+                MODE_SUSPENDENY => run_suspenddeny(rounds as i64),
                 _ => (false, 1),
             };
             let _ = libr::send(parent, T_DONE, ok as u64, detail as u64);
@@ -702,6 +706,16 @@ fn run_seekdeny() -> (bool, usize) {
         Err(libr::Error::Failed) => (true, 0),
         _ => (false, 2),
     }
+}
+
+/// Fase 44a (t55): tentativi suspend/resume ostili che DEVONO essere rifiutati.
+/// `target` = pid di un processo che NON e' nostro figlio (un fratello
+/// spawnato dall'orchestratore, come in `run_harden`). Ritorna (ok, detail).
+fn run_suspenddeny(target: i64) -> (bool, usize) {
+    let s_denied = libr::suspend(target).is_err();
+    let r_denied = libr::resume(target).is_err();
+    let ok = s_denied && r_denied;
+    (ok, (s_denied as usize) | ((r_denied as usize) << 1))
 }
 
 /// Fase 29: provoca un fault di memoria non recuperabile (write su RO,

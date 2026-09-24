@@ -35,6 +35,45 @@ pub(super) fn sys_getpid() -> i64 {
     current_id() as i64
 }
 
+/// Fase 44a (job control) — `suspend(pid)`: congela un processo user
+/// (meccanismo neutro, semantica POSIX in shell). Stessi gate di `kill`:
+/// solo il parent (o init, pid 1) puo' sospendere. Ritorna 0 se il processo
+/// e' sospeso (o gia' sospeso: idempotente), -1 se il pid non esiste / non e'
+/// sospendibile (init, processi kernel, se stesso, non-figlio, terminato).
+pub(super) fn sys_suspend(pid: u64) -> i64 {
+    let me = current_id() as usize;
+    let target = pid as usize;
+    if me != 1 {
+        match crate::sched::process_ps(target) {
+            Some(s) if s.parent == Some(me) => {}
+            _ => return -1, // non-figlio (o morto/sconosciuto): rifiutato
+        }
+    }
+    if crate::sched::suspend(target) {
+        0
+    } else {
+        -1
+    }
+}
+
+/// Fase 44a (job control) — `resume(pid)`: rimette in schedulazione un
+/// processo sospeso (o no-op ok se gia' running). Stessi gate di `suspend`.
+pub(super) fn sys_resume(pid: u64) -> i64 {
+    let me = current_id() as usize;
+    let target = pid as usize;
+    if me != 1 {
+        match crate::sched::process_ps(target) {
+            Some(s) if s.parent == Some(me) => {}
+            _ => return -1, // non-figlio (o morto/sconosciuto): rifiutato
+        }
+    }
+    if crate::sched::resume(target) {
+        0
+    } else {
+        -1
+    }
+}
+
 /// write(fd, buf, count): stampa su seriale per fd 1/2; ogni altro fd
 /// (nessun file implementato in questa fase) → -1.
 ///
@@ -148,10 +187,15 @@ pub(super) fn sys_ps_info(pid: usize) -> i64 {
     hi_b.copy_from_slice(&snap.name[8..16]);
     let lo = u64::from_le_bytes(lo_b);
     let hi = u64::from_le_bytes(hi_b);
-    let state = match snap.state {
-        crate::process::State::Ready => 0u64,
-        crate::process::State::Blocked => 1u64,
-        crate::process::State::Terminated => return -1, // non dovrebbe accadere
+    // Fase 44a: sospeso = Stopped (2), qualunque sia lo stato sottostante.
+    let state = if snap.suspended {
+        2u64
+    } else {
+        match snap.state {
+            crate::process::State::Ready => 0u64,
+            crate::process::State::Blocked => 1u64,
+            crate::process::State::Terminated => return -1, // non dovrebbe accadere
+        }
     };
     let ipc = match snap.ipc {
         crate::process::IpcState::None => 0u64,

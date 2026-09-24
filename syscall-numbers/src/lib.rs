@@ -72,9 +72,10 @@ pub const SYS_SERVICE_PID: u64 = 36;
 /// Snapshot `ps` del processo `pid` (Fase 19.1): 0 se lo slot e' vivo, -1 se
 /// vuoto/terminato. Campi multi-registro (pattern `CBS_GET_INFO`): nome (16 B,
 /// il piu' lungo oggi e' "userdevreader"=13) in rdi+rsi (LE), `rdx` packed,
-/// `r10` = tick consumati. Layout `rdx`: bit 0-7 stato (0=Ready, 1=Blocked),
-/// 8-15 prio (0-31), 16-23 parent+1 (0=nessuno), 24-31 ipc (0=None, 1=OnRecv,
-/// 2=OnReply). Il chiamante marca "run" il proprio pid (da `getpid`).
+/// `r10` = tick consumati. Layout `rdx`: bit 0-7 stato (0=Ready, 1=Blocked,
+/// 2=Stopped via `SYS_SUSPEND`, Fase 44a), 8-15 prio (0-31), 16-23 parent+1
+/// (0=nessuno), 24-31 ipc (0=None, 1=OnRecv, 2=OnReply). Il chiamante marca
+/// "run" il proprio pid (da `getpid`).
 pub const SYS_PS_INFO: u64 = 37;
 /// Spawna un processo dal binario in memoria del chiamante (Fase 21, servizi
 /// da disco): `(img_ptr, img_len, meta_ptr, meta_len)`. Primitiva generale
@@ -138,6 +139,15 @@ pub const SYS_EXEC: u64 = 48;
 /// (26) ritorna gia' phys alle ring — stessa neutralita' (ADR-0005: il kernel
 /// non tocca il disco, alloca solo frame).
 pub const SYS_DMA_ALLOC: u64 = 49;
+/// Sospende un processo user `pid` (Fase 44a, job control): fuori dalle ready
+/// queue finche' `SYS_RESUME` (i wake lo saltano, i messaggi restano in coda).
+/// Meccanismo neutro (ADR-0025): niente segnali numerati. 0 se sospeso (o gia'
+/// sospeso: idempotente), -1 se il pid non esiste / non e' sospendibile
+/// (init, processi kernel, se stesso, non-figlio, terminato).
+pub const SYS_SUSPEND: u64 = 50;
+/// Rimette in schedulazione un processo sospeso (Fase 44a, job control):
+/// no-op ok se gia' running. Stessi gate di `SYS_SUSPEND`.
+pub const SYS_RESUME: u64 = 51;
 /// Cap pagine di `SYS_DMA_ALLOC` (38.1: 1 pagina = PRD + 7 settori bastano).
 pub const DMA_PAGES_MAX: usize = 4;
 /// Bound del payload argv+env serializzato (Fase 37.1, esteso in 43a):

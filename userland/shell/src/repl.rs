@@ -371,6 +371,8 @@ pub(crate) fn is_builtin(name: &str) -> bool {
             | "source"
             | "jobs"
             | "wait"
+            | "fg"
+            | "bg"
             | "exit"
             | "help"
     )
@@ -404,6 +406,8 @@ pub(crate) fn dispatch_builtin(args: &[&str]) -> i64 {
         "source" => cmd_source::cmd_source(args, 0),
         "jobs" => cmd_run::cmd_jobs(),
         "wait" => cmd_run::cmd_wait(args),
+        "fg" => cmd_run::cmd_fg(args),
+        "bg" => cmd_run::cmd_bg(args),
         "exit" => match args.get(1) {
             None => libr::exit(0),
             Some(s) => match cmd_info::parse_i64(s) {

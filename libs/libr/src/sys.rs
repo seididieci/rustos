@@ -201,6 +201,32 @@ pub fn kill(pid: i64, code: i64) -> Result<(), Error> {
     }
 }
 
+/// Fase 44a (job control) — `suspend(pid)`: chiede al kernel di congelare il
+/// processo user `pid` (meccanismo neutro, semantica POSIX in shell: Ctrl-Z).
+/// Stessi gate di `kill` (solo parent/init). `Ok` se sospeso o gia' sospeso
+/// (idempotente), `Err` se il pid non esiste / non e' sospendibile.
+#[inline]
+pub fn suspend(pid: i64) -> Result<(), Error> {
+    let r = unsafe { syscall4(SYS_SUSPEND, pid as u64, 0, 0, 0) };
+    if r < 0 {
+        Err(Error::Denied)
+    } else {
+        Ok(())
+    }
+}
+
+/// Fase 44a (job control) — `resume(pid)`: rimette in schedulazione un
+/// processo sospeso (no-op ok se gia' running). Stessi gate di `suspend`.
+#[inline]
+pub fn resume(pid: i64) -> Result<(), Error> {
+    let r = unsafe { syscall4(SYS_RESUME, pid as u64, 0, 0, 0) };
+    if r < 0 {
+        Err(Error::Denied)
+    } else {
+        Ok(())
+    }
+}
+
 /// Fase 14 — `is_exit_notify(m)`: true se `m` e' la notifica kernel→parent
 /// della morte di un figlio (`EXIT_NOTIFY`: w0 = exit code, w1 = pid del
 /// figlio). I loop `recv` dei server/test devono ignorarla o gestirla.
@@ -224,6 +250,10 @@ pub struct PsEntry {
 }
 
 impl PsEntry {
+    /// Sospeso via `SYS_SUSPEND` (Fase 44a, job control): `state == 2`.
+    pub fn stopped(&self) -> bool {
+        self.state == 2
+    }
     /// Lunghezza del nome (stop al primo NUL).
     pub fn name_len(&self) -> usize {
         self.name.iter().position(|&b| b == 0).unwrap_or(16)

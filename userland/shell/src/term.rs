@@ -99,6 +99,19 @@ fn kbd_read_byte() -> Option<u8> {
         spin_brief();
     }
 }
+
+/// Legge un byte SENZA attesa (Fase 44a, fg wait): `Some(b)` se presente,
+/// `None` se il buffer e' vuoto. Mai spin qui: lo schedule il chiamante
+/// (`wait_fg` alterna poll e budget di spin puri).
+pub(crate) fn kbd_try_read() -> Option<u8> {
+    let mut buf = [0u8; 1];
+    let n = unsafe { libr::read_fs(TERM_FD, &mut buf, 1).unwrap_or(0) };
+    if n > 0 {
+        Some(buf[0])
+    } else {
+        None
+    }
+}
 // ── Line editing (Fase 43b, readline nella shell) ────────────────────
 // Il tty e' raw: decodifica i tasti (frecce→ESC[D/C/A/B, Home/End→ESC[H/F,
 // Delete→ESC[3~, Esc→ESC) e NON fa echo. L'editor qui possiede buffer,

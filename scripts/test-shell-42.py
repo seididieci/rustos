@@ -60,9 +60,10 @@ def main():
         found = b"[exit 1]" in out
         c.check("42 run fallito in pipe ([exit 1])", found)
 
-        # & su pipeline multi-stadio: Fase 44 (rifiuto chiaro, mai hang).
+        # & su pipeline multi-stadio: job multi-pid rimandato oltre la 44a
+        # (rifiuto chiaro, mai hang).
         out = sh.run_source(SH + "/p42g.txt")
-        found = b"Fase 44" in out
+        found = b"non supportata" in out
         c.check("42 bg pipeline rifiutata", found)
         # Pipe trailing ignorata come gli altri connettori (mai errore).
         found = b"tp42" in out

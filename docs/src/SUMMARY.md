@@ -61,3 +61,4 @@
 - [ADR-0032: pipe + heredoc (disegno Fase 42)](./adr/0032-pipe-heredoc.md)
 - [ADR-0033: env/PATH/script (disegno Fase 43a)](./adr/0033-env-path-script.md)
 - [ADR-0034: history + editing di linea (disegno Fase 43b)](./adr/0034-line-editing.md)
+- [ADR-0035: job control (disegno Fase 44a)](./adr/0035-job-control.md)

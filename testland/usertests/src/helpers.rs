@@ -13,6 +13,9 @@ pub const T_READY: u64 = 107;
 // Mode client.
 pub const M_ECHO: u64 = 0;
 pub const M_ZERO: u64 = 1;
+// Server sacrificale request/reply (come MODE_SRV del client): risponde
+// T_REQ, esce pulito su T_STOP. Usato da t55 (suspend di un bloccato).
+pub const M_SRV: u64 = 3;
 // Lifecycle (Fase 14).
 pub const M_CHURN: u64 = 4;
 pub const M_KILLME: u64 = 5;
@@ -56,6 +59,8 @@ pub const M_DUPCLAIM: u64 = 26;
 pub const M_DUPGRANT: u64 = 27;
 pub const M_DUPSIBCLAIM: u64 = 28;
 pub const M_SEEKDENY: u64 = 29;
+// Fase 44a (t55): sonda suspend/resume ostili (w1 = pid target non-figlio).
+pub const M_SUSPENDENY: u64 = 30;
 // Fase 36 (t51): w0 magico per la sonda di squat di usertest-spin (binario
 // diverso da testcli → hash diverso per il negativo). Speculare a
 // SQUAT_MAGIC in usertest-spin (come i tag T_* speculari al client).

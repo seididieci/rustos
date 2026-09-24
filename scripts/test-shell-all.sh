@@ -20,11 +20,11 @@ PHASES=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --jobs) JOBS="$2"; shift 2;;
-        base|run|redirect|41|42|source|43|43b) PHASES+=("$1"); shift;;
-        *) echo "fase ignota: $1 (base|run|redirect|41|42|source|43|43b)"; exit 2;;
+        base|run|redirect|41|42|source|43|43b|44) PHASES+=("$1"); shift;;
+        *) echo "fase ignota: $1 (base|run|redirect|41|42|source|43|43b|44)"; exit 2;;
     esac
 done
-[ ${#PHASES[@]} -eq 0 ] && PHASES=(base run redirect 41 42 source 43 43b)
+[ ${#PHASES[@]} -eq 0 ] && PHASES=(base run redirect 41 42 source 43 43b 44)
 
 echo "[all] preparo immagini FAT (una volta sola)"
 python3 scripts/mkfat.py userland/fs/fat.img

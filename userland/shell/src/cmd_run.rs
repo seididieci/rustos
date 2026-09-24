@@ -10,12 +10,22 @@ use super::*;
 // segnali → posix-server futuro): un job foreground senza scampo blocca il
 // prompt — i programmi longevi vanno lanciati con `&`.
 
+/// Stato di un job (Fase 44a, job control): in esecuzione (bg o fg),
+/// sospeso via Ctrl-Z/`suspend` (riprende con `fg`/`bg`), finito (code).
+#[derive(Clone, Copy, PartialEq)]
+enum JobState {
+    Running,
+    Stopped,
+    Done(i64),
+}
+
+#[derive(Clone)]
 struct Job {
     pid: i64,
     chan: u64,
     cmd: String,
     bg: bool,
-    done: Option<i64>,
+    state: JobState,
     /// Nonce dei grant redirect (Fase 40.4c/d, vuoto senza redirect):
     /// cancellati best-effort quando la morte e' osservata (mai prima: il
     /// claim dello startup avverrebbe dopo). Idempotenti (grant single-use:
@@ -33,15 +43,17 @@ fn jobs() -> &'static mut Vec<Job> {
 
 /// Attende la morte del job sul canale `chan` (bloccante): exit code o None
 /// (recv fallita, mai in pratica). Le EXIT_NOTIFY altrui (es. servizi morti:
-/// la shell ha canali verso Fs per i lookup) si scartano senza reply; altri
-/// messaggi (nessuno dovrebbe scriverci) con reply difensiva.
+/// la shell ha canali verso Fs per i lookup) si registrano in tabella senza
+/// reply; altri messaggi (nessuno dovrebbe scriverci) con reply difensiva.
 fn wait_job(chan: u64) -> Option<i64> {
     loop {
         match libr::recv() {
             Ok(m) if m.channel == chan && libr::is_exit_notify(&m) => {
                 return Some(m.w0 as i64);
             }
-            Ok(m) if libr::is_exit_notify(&m) => {}
+            Ok(m) if libr::is_exit_notify(&m) => {
+                note_exit(&m);
+            }
             Ok(_) => {
                 let _ = libr::reply(0, 0, 0);
             }
@@ -50,20 +62,77 @@ fn wait_job(chan: u64) -> Option<i64> {
     }
 }
 
-/// Drena senza bloccare: aggiorna i `done` dei job morti, senza stampare
+/// Registra la morte di un job (EXIT_NOTIFY) nella tabella (come poll_reap):
+/// un job Stopped che muore diventa Done (self-healing per la race
+/// Ctrl-Z/morte in `wait_fg`: la sospensione non maschera mai la morte).
+fn note_exit(m: &libr::IpcMsg) {
+    for j in jobs().iter_mut() {
+        if j.chan == m.channel && !matches!(j.state, JobState::Done(_)) {
+            j.state = JobState::Done(m.w0 as i64);
+            cancel_redir(&j.redir_grants);
+        }
+    }
+}
+
+/// Drena senza bloccare: aggiorna gli stati dei job morti, senza stampare
 /// (la stampa e' di `jobs`/`wait`). Notify altrui scartate senza reply.
 /// A morte osservata cancella il grant redirect (40.4c: mai prima del claim).
 fn poll_reap() {
     while let Some(m) = libr::recv_poll() {
         if libr::is_exit_notify(&m) {
-            for j in jobs().iter_mut() {
-                if j.chan == m.channel && j.done.is_none() {
-                    j.done = Some(m.w0 as i64);
-                    cancel_redir(&j.redir_grants);
-                }
-            }
+            note_exit(&m);
         } else {
             let _ = libr::reply(0, 0, 0);
+        }
+    }
+}
+
+/// Esito dell'attesa foreground (44a): uscito (code) o risospeso (Ctrl-Z).
+enum FgDone {
+    Exited(i64),
+    Stopped,
+}
+
+/// Attende il job fg sul canale `chan` (pid `pid`) intercettando Ctrl-Z
+/// (0x1a). A differenza di `wait_job` non si blocca in `recv`, ma alterna
+/// `recv_poll` (drena EXIT/notify come sopra) e lettura tastiera non
+/// bloccante, con budget di spin puri IF=1 tra i giri (anti-dilution,
+/// lezione Fase 21: mai busy su syscall). Solo Ctrl-Z interessa in 44a
+/// (Ctrl-C e' Fase 44b): gli altri tasti durante il fg si scartano (la shell
+/// possiede il device, nessun fg lo legge — documentato in 12-utilities).
+/// A Ctrl-Z sospende il figlio (parent-scoped, sempre consentito qui) e
+/// ritorna Stopped; se il figlio moriva proprio in quel momento, un ultimo
+/// drain decide ed Exited vince sulla sospensione (mai morte mascherata).
+fn wait_fg(chan: u64, pid: i64) -> FgDone {
+    loop {
+        while let Some(m) = libr::recv_poll() {
+            if m.channel == chan && libr::is_exit_notify(&m) {
+                return FgDone::Exited(m.w0 as i64);
+            } else if libr::is_exit_notify(&m) {
+                note_exit(&m);
+            } else {
+                let _ = libr::reply(0, 0, 0);
+            }
+        }
+        while let Some(b) = term::kbd_try_read() {
+            if b == 0x1a {
+                let _ = libr::suspend(pid);
+                // Race morte/sospensione: un ultimo drain, Exited vince.
+                while let Some(m) = libr::recv_poll() {
+                    if m.channel == chan && libr::is_exit_notify(&m) {
+                        return FgDone::Exited(m.w0 as i64);
+                    } else if libr::is_exit_notify(&m) {
+                        note_exit(&m);
+                    } else {
+                        let _ = libr::reply(0, 0, 0);
+                    }
+                }
+                return FgDone::Stopped;
+            }
+            // Altri tasti durante il fg: scartati (44a).
+        }
+        for _ in 0..200_000 {
+            core::hint::spin_loop();
         }
     }
 }
@@ -81,12 +150,13 @@ fn print_job(idx: usize, j: &Job) {
     s.push_str("] pid ");
     cmd_info::push_u64(&mut s, j.pid as u64);
     s.push(' ');
-    match j.done {
-        Some(c) => {
+    match j.state {
+        JobState::Done(c) => {
             s.push_str("done ");
             cmd_info::push_u64(&mut s, c as u64);
         }
-        None => s.push_str("run"),
+        JobState::Stopped => s.push_str("stopped"),
+        JobState::Running => s.push_str("run"),
     }
     s.push(' ');
     s.push_str(&j.cmd);
@@ -434,7 +504,7 @@ pub(crate) fn cmd_run(
                 chan: sp.chan,
                 cmd,
                 bg,
-                done: None,
+                state: JobState::Running,
                 redir_grants: sp.grants,
             });
             if bg {
@@ -446,14 +516,14 @@ pub(crate) fn cmd_run(
                 return 0;
             }
             let idx = jobs().len() - 1;
-            let chan = sp.chan;
-            match wait_job(chan) {
-                Some(0) => {
+            let (chan, pid) = (jobs()[idx].chan, jobs()[idx].pid);
+            match wait_fg(chan, pid) {
+                FgDone::Exited(0) => {
                     cancel_redir(&jobs()[idx].redir_grants);
                     jobs().remove(idx);
                     0
                 }
-                Some(code) => {
+                FgDone::Exited(code) => {
                     cancel_redir(&jobs()[idx].redir_grants);
                     jobs().remove(idx);
                     let mut s = String::from("[exit ");
@@ -463,9 +533,12 @@ pub(crate) fn cmd_run(
                     term::term_print("\n");
                     code
                 }
-                None => {
-                    term::term_err("run: wait failed\n");
-                    1
+                // Ctrl-Z (44a): il job resta in tabella come Stopped (non
+                // rimosso: `fg`/`bg` lo riprendono). `$?` = 0.
+                FgDone::Stopped => {
+                    jobs()[idx].state = JobState::Stopped;
+                    print_stopped(idx);
+                    0
                 }
             }
         }
@@ -487,7 +560,10 @@ pub(crate) fn cmd_jobs() -> i64 {
 }
 
 /// `wait [pid]`: attende i job (tutti, o quello col pid) e li rimuove,
-/// stampando `pid <P>: exit <C>` per ciascuno.
+/// stampando `pid <P>: exit <C>` per ciascuno. I job Stopped NON si attendono
+/// (resterebbero fermi per sempre): si riportano `stopped` e restano in
+/// tabella per `fg`/`bg`. Attesa bloccante senza Ctrl-Z (solo il vero fg in
+/// `wait_fg` intercetta, 44a).
 pub(crate) fn cmd_wait(args: &[&str]) -> i64 {
     if args.len() >= 2 {
         let pid = match cmd_info::parse_i64(args[1]) {
@@ -504,45 +580,231 @@ pub(crate) fn cmd_wait(args: &[&str]) -> i64 {
                 return 1;
             }
         };
-        // Se e' gia' done (visto da jobs), niente attesa: solo report+remove
+        // Se e' gia' Done (visto da jobs), niente attesa: solo report+remove
         // (il grant e' gia' cancellato da poll_reap).
         poll_reap();
-        if jobs()[idx].done.is_none() {
+        if jobs()[idx].state == JobState::Stopped {
+            let j = jobs()[idx].clone();
+            report_waited(&j);
+            return 0;
+        }
+        if jobs()[idx].state == JobState::Running {
             let chan = jobs()[idx].chan;
-            jobs()[idx].done = wait_job(chan);
-            cancel_redir(&jobs()[idx].redir_grants);
+            match wait_job(chan) {
+                Some(c) => {
+                    cancel_redir(&jobs()[idx].redir_grants);
+                    jobs()[idx].state = JobState::Done(c);
+                }
+                // recv fallita (mai in pratica): come prima, "wait failed".
+                None => {
+                    let j = jobs().remove(idx);
+                    term::term_print("pid ");
+                    let mut cell = String::new();
+                    cmd_info::push_u64(&mut cell, j.pid as u64);
+                    term::term_print(&cell);
+                    term::term_print(": wait failed\n");
+                    return 0;
+                }
+            }
         }
         let j = jobs().remove(idx);
         report_waited(&j);
         return 0;
     }
-    // Tutti: in ordine di tabella (i done saltano l'attesa via poll).
+    // Tutti: in ordine di tabella (i Done saltano l'attesa via poll, gli
+    // Stopped si riportano e restano).
     poll_reap();
-    while !jobs().is_empty() {
-        if jobs()[0].done.is_none() {
-            let chan = jobs()[0].chan;
-            jobs()[0].done = wait_job(chan);
-            cancel_redir(&jobs()[0].redir_grants);
+    let mut i = 0usize;
+    while i < jobs().len() {
+        if jobs()[i].state == JobState::Stopped {
+            let j = jobs()[i].clone();
+            report_waited(&j);
+            i += 1;
+            continue;
         }
-        let j = jobs().remove(0);
+        if jobs()[i].state == JobState::Running {
+            let chan = jobs()[i].chan;
+            match wait_job(chan) {
+                Some(c) => {
+                    cancel_redir(&jobs()[i].redir_grants);
+                    jobs()[i].state = JobState::Done(c);
+                }
+                None => {
+                    let j = jobs().remove(i);
+                    term::term_print("pid ");
+                    let mut cell = String::new();
+                    cmd_info::push_u64(&mut cell, j.pid as u64);
+                    term::term_print(&cell);
+                    term::term_print(": wait failed\n");
+                    continue;
+                }
+            }
+        }
+        let j = jobs().remove(i);
         report_waited(&j);
     }
     0
 }
 
-/// Stampa `pid <P>: exit <C>` (o `wait failed` se la wait non e' tornata).
+/// Stampa `pid <P>: exit <C>` (o `stopped` / `wait failed`).
 fn report_waited(j: &Job) {
     let mut s = String::from("pid ");
     cmd_info::push_u64(&mut s, j.pid as u64);
-    match j.done {
-        Some(c) => {
+    match j.state {
+        JobState::Done(c) => {
             s.push_str(": exit ");
             cmd_info::push_u64(&mut s, c as u64);
         }
-        None => s.push_str(": wait failed"),
+        JobState::Stopped => s.push_str(": stopped"),
+        JobState::Running => s.push_str(": wait failed"),
     }
     term::term_print(&s);
     term::term_print("\n");
+}
+
+/// Annuncia la sospensione come POSIX (`[N]+ Stopped cmd`).
+fn print_stopped(idx: usize) {
+    let j = &jobs()[idx];
+    let mut s = String::from("[");
+    cmd_info::push_u64(&mut s, idx as u64);
+    s.push_str("]+ Stopped ");
+    s.push_str(&j.cmd);
+    term::term_print(&s);
+    term::term_print("\n");
+}
+
+/// Risolve un job target di `fg`/`bg` (`%N` indice come in `jobs`, pid
+/// numerico, o default = ultimo): indice in tabella o `None` (errore gia'
+/// stampato su stderr).
+fn resolve_job(arg: Option<&str>, what: &str) -> Option<usize> {
+    match arg {
+        None => {
+            if jobs().is_empty() {
+                term::term_err(what);
+                term::term_err(": no jobs\n");
+                None
+            } else {
+                Some(jobs().len() - 1)
+            }
+        }
+        Some(s) => {
+            if let Some(rest) = s.strip_prefix('%') {
+                match cmd_info::parse_i64(rest) {
+                    Some(n) if n >= 0 && (n as usize) < jobs().len() => Some(n as usize),
+                    _ => {
+                        term::term_err(what);
+                        term::term_err(": no such job\n");
+                        None
+                    }
+                }
+            } else {
+                match cmd_info::parse_i64(s) {
+                    Some(p) => match jobs().iter().position(|j| j.pid == p) {
+                        Some(i) => Some(i),
+                        None => {
+                            term::term_err(what);
+                            term::term_err(": no such job\n");
+                            None
+                        }
+                    },
+                    None => {
+                        term::term_err(what);
+                        term::term_err(": bad job spec\n");
+                        None
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `fg [%N|pid]`: porta un job in foreground e lo attende (44a). Senza args:
+/// l'ultimo job. Se Stopped → `resume` prima (fallito = morto nel mentre:
+/// report via poll); se Done → report + remove (come `wait`). Ritorna il code
+/// del job, 0 dopo Ctrl-Z, 1 a errori d'uso.
+pub(crate) fn cmd_fg(args: &[&str]) -> i64 {
+    let idx = match resolve_job(args.get(1).copied(), "fg") {
+        Some(i) => i,
+        None => return 1,
+    };
+    poll_reap();
+    if let JobState::Done(code) = jobs()[idx].state {
+        let j = jobs().remove(idx);
+        report_waited(&j);
+        return code;
+    }
+    if jobs()[idx].state == JobState::Stopped {
+        let pid = jobs()[idx].pid;
+        if libr::resume(pid).is_err() {
+            // Morto nel mentre? Rivaluta via poll prima di fallire.
+            poll_reap();
+            if let JobState::Done(code) = jobs()[idx].state {
+                let j = jobs().remove(idx);
+                report_waited(&j);
+                return code;
+            }
+            term::term_err("fg: resume failed\n");
+            return 1;
+        }
+        jobs()[idx].state = JobState::Running;
+    }
+    jobs()[idx].bg = false;
+    let (chan, pid) = (jobs()[idx].chan, jobs()[idx].pid);
+    match wait_fg(chan, pid) {
+        FgDone::Exited(0) => {
+            cancel_redir(&jobs()[idx].redir_grants);
+            jobs().remove(idx);
+            0
+        }
+        FgDone::Exited(code) => {
+            cancel_redir(&jobs()[idx].redir_grants);
+            jobs().remove(idx);
+            let mut s = String::from("[exit ");
+            cmd_info::push_u64(&mut s, code as u64);
+            s.push(']');
+            term::term_print(&s);
+            term::term_print("\n");
+            code
+        }
+        FgDone::Stopped => {
+            jobs()[idx].state = JobState::Stopped;
+            print_stopped(idx);
+            0
+        }
+    }
+}
+
+/// `bg [%N|pid]`: riprende in background un job sospeso (44a). Senza args:
+/// l'ultimo job. Su Running (già bg o meno) = no-op con stampa; su Done =
+/// report + remove. Ritorna 0, 1 a errori d'uso.
+pub(crate) fn cmd_bg(args: &[&str]) -> i64 {
+    let idx = match resolve_job(args.get(1).copied(), "bg") {
+        Some(i) => i,
+        None => return 1,
+    };
+    poll_reap();
+    if let JobState::Done(_) = jobs()[idx].state {
+        let j = jobs().remove(idx);
+        report_waited(&j);
+        return 0;
+    }
+    if jobs()[idx].state == JobState::Stopped {
+        let pid = jobs()[idx].pid;
+        if libr::resume(pid).is_err() {
+            poll_reap();
+            if let JobState::Done(_) = jobs()[idx].state {
+                let j = jobs().remove(idx);
+                report_waited(&j);
+                return 0;
+            }
+            term::term_err("bg: resume failed\n");
+            return 1;
+        }
+        jobs()[idx].state = JobState::Running;
+    }
+    jobs()[idx].bg = true;
+    print_job(idx, &jobs()[idx].clone());
+    0
 }
 
 // ── Pipeline `a | b | ...` + heredoc (Fase 42) ───────────────────────
@@ -553,7 +815,8 @@ fn report_waited(j: &Job) {
 // Gli stadi comunicano su pipe server-side (`libr::pipe`); gli espliciti
 // (file/heredoc) vincono sui pipe-link per-slot. Status del gruppo = ultimo
 // stadio (bash); `$?` threadato dal chiamante. Solo foreground: `&` su
-// pipeline multi-stadio e' Fase 44. Gli stadi fg NON entrano nella tabella
+// pipeline multi-stadio (job multi-pid) e' rimandato oltre la 44a. Gli stadi
+// fg NON entrano nella tabella
 // job (gruppo atteso inline e rimosso subito); `kill <pid>` resta per pid.
 
 /// Breve attesa IF=1 tra retry di scrittura corpo heredoc (mai busy su syscall).
@@ -662,10 +925,11 @@ pub(crate) fn cmd_pipeline(stages: &[parser::Command]) -> i64 {
     if n == 0 {
         return 0;
     }
-    // Background su pipeline: job control (Fase 44). I singoli `run ... &`
-    // non passano di qui (via vecchia in exec_command).
+    // Background su pipeline: job multi-pid, rimandato oltre la 44a (job
+    // control solo su `run` singolo). I singoli `run ... &` non passano di
+    // qui (via vecchia in exec_command).
     if stages.iter().any(|s| s.bg) {
-        term::term_err("background pipeline: Fase 44 (usare `run ... &`)\n");
+        term::term_err("background pipeline: non supportata (usare `run ... &`)\n");
         return 1;
     }
     // 1. Link tra stadi: n-1 pipe (lettura allo stadio dopo, scrittura a prima).

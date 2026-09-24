@@ -1601,9 +1601,22 @@ velordor/
         kernel → helper `has_line`/`count_lines` (applicati a 7 assert di
         41/42/43). Shell 160 check (29/8/20/37/18/22/17/9); gate invariato
         5/5+7/7+54/54 (zero kernel).
-  - [ ] Fase 44 (P5, job control + segnali): `SIGINT/SIGTSTP` catturabili,
-        `fg/bg`, Ctrl-C/Z solo foreground, causa morte. Vittoria: `&`, `fg`,
-        Ctrl-C selettivo.
+  - [x] Fase 44a (P5, job control; ADR-0035): meccanismo kernel neutro
+        (`suspended` + `set_ready` che salta i sospesi, `SYS_SUSPEND`/`RESUME`
+        50/51 parent-scoped, `ps` Stopped=2); shell `JobState`, `fg`/`bg`
+        (`%N`/pid), `wait_fg` (recv_poll + tastiera non bloccante throttled,
+        solo Ctrl-Z su `run` singolo, altri tasti scartati; race decisa da
+        ultimo drain + self-healing `note_exit`); `wait` salta gli Stopped.
+        t55 (gate, TIME congelato, coda-senza-sveglia, hardening) + shell
+        14 check (`test-shell-44.py`: run_until su pattern, `%` in KEYMAP).
+        Bug veri: `%` non digitabile (KEYMAP senza `shift-5` → `fg 0` =
+        pid-path); sleep fissi < latenza fork/input sotto carico → run_until;
+        `job_line` matchava righe kernel (`pid N` non univoco) → regex
+        `[N] pid P STATO`. `&` pipeline rimandato (job multi-pid). Gate
+        5/5 + 7/7 + 55/55 + shell 174 check.
+  - [ ] Fase 44b (P5, segnali): Ctrl-C selettivo (cancel nativo cooperativo
+        sul canale di nascita + escalation `kill(130)`), causa morte 128+sig,
+        helper catchable. Vittoria: Ctrl-C selettivo con catch.
   - [ ] Fase 45 (P6, indurimento + chiusura): diritti Fase 17 sui vfd, policy
         same-identity, sandbox build, docs finali. Vittoria: suite + restart
         verdi con policy attive.
@@ -1801,9 +1814,9 @@ rg '\[bench\]' /tmp/bench-run1.log /tmp/bench-run2.log /tmp/bench-run3.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 7/7
-#   [usertests] PASS 54/54
+#   [usertests] PASS 55/55
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 54/54' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 55/55' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 

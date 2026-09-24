@@ -75,6 +75,88 @@ pub fn kill(pid: usize, code: i64) -> bool {
     true
 }
 
+/// `suspend(pid)` (Fase 44a, job control): congela un processo user (non piu'
+/// schedulato) finche' `resume`. Meccanismo neutro (ADR-0025): niente segnali
+/// numerati, solo fuori/dentro le ready queue. Gate come `kill`: qualunque
+/// processo user tranne init (pid 1), i processi kernel e se stesso.
+/// Idempotente (doppio suspend = ok). Ritorna `true` se il processo e'
+/// sospeso (o gia' sospeso).
+pub fn suspend(pid: usize) -> bool {
+    if !INITIALIZED.load(Ordering::Acquire) {
+        return false;
+    }
+    let mut guard = SCHED.lock();
+    let sched = guard.as_mut().expect("scheduler non inizializzato");
+
+    if pid >= sched.processes.len() || pid == 1 || sched.current == Some(pid) {
+        return false;
+    }
+    let p = &sched.processes[pid];
+    if p.state == State::Terminated {
+        return false;
+    }
+    if p.cr3 == crate::vmm_user::kernel_cr3() {
+        return false; // processo kernel (solo idle oltre init)
+    }
+    let name = name_buf(p);
+    {
+        let p = &mut sched.processes[pid];
+        p.suspended = true;
+        if p.state == State::Ready {
+            // Fuori dalle ready queue; se Blocked non c'e' da togliere nulla
+            // (i wake via `set_ready` lo saltano, i messaggi restano in coda).
+            sched.clear_ready(pid);
+        }
+    }
+    crate::serial_println!("[job  ] pid {} '{}' sospeso", pid, name_str_of(&name));
+    true
+}
+
+/// `resume(pid)` (Fase 44a, job control): rimette in schedulazione un processo
+/// sospeso. Stessi gate di `suspend` (parent/init a monte, qui i controlli di
+/// esistenza/vitalita'). Idempotente (resume di un running = ok, no-op).
+/// Un bloccato in `recv` con messaggi in coda si sveglia subito; un bloccato
+/// con coda vuota (o in attesa di reply) resta bloccato e i waker futuri lo
+/// riaggiungono (ora `set_ready` funziona di nuovo).
+pub fn resume(pid: usize) -> bool {
+    if !INITIALIZED.load(Ordering::Acquire) {
+        return false;
+    }
+    let mut guard = SCHED.lock();
+    let sched = guard.as_mut().expect("scheduler non inizializzato");
+
+    if pid >= sched.processes.len() || pid == 1 || sched.current == Some(pid) {
+        return false;
+    }
+    let p = &sched.processes[pid];
+    if p.state == State::Terminated {
+        return false;
+    }
+    if p.cr3 == crate::vmm_user::kernel_cr3() {
+        return false; // processo kernel (solo idle oltre init)
+    }
+    if !sched.processes[pid].suspended {
+        return true;
+    }
+    let name = name_buf(&sched.processes[pid]);
+    {
+        let p = &mut sched.processes[pid];
+        p.suspended = false;
+        if p.ipc_state == crate::process::IpcState::BlockedOnRecv && !p.msg_queue.is_empty() {
+            // Messaggi arrivati da sospeso: sveglia ora (`ipc_recv`, che al
+            // ritorno dallo switch ricontrolla la coda, li trovera').
+            p.ipc_state = crate::process::IpcState::None;
+            p.state = State::Ready;
+            sched.set_ready(pid);
+        } else if p.state == State::Ready {
+            sched.set_ready(pid);
+        }
+        // Blocked (coda vuota o attesa reply): resta; i waker lo riprendono.
+    }
+    crate::serial_println!("[job  ] pid {} '{}' ripreso", pid, name_str_of(&name));
+    true
+}
+
 impl Scheduler {
     /// Morte logica del processo `pid` (Fase 14, ADR-0010): marca
     /// `Terminated`, sblocca i mittenti sincroni che attendevano una reply da
@@ -98,6 +180,9 @@ impl Scheduler {
         {
             let p = &mut self.processes[pid];
             p.state = State::Terminated;
+            // Il morto non torna (44a): azzera il flag cosi' nessun percorso
+            // (wake/reuse) lo vede mai insieme a Terminated.
+            p.suspended = false;
             p.exit_code = code;
             p.ipc_state = crate::process::IpcState::None;
             p.reply_chan = None;

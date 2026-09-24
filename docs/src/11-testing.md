@@ -50,7 +50,7 @@ Righe di gate:
 ```
 [testfs] PASS 5/5
 [testfat] PASS 7/7
-[usertests] PASS 54/54
+[usertests] PASS 55/55
 ```
 
 ## Test shell interattivi (QEMU + sendkey, fuori dal gate kernel)
@@ -82,8 +82,9 @@ corromperebbero):
 | `test-shell-source.py` | `source` (smoke 1-riga, exit, nesting, errori, vuoto) | 22 |
 | `test-shell-43.py` | 43a (env ereditato, VAR=v, PWD, PATH/bare-word, shebang, env stadi) | 17 |
 | `test-shell-43b.py` | 43b (history Up/Down, Left/Right/Home/End/Delete, Esc; digitazione reale) | 9 |
+| `test-shell-44.py` | 44a (fg/bg, Ctrl-Z su run singolo, jobs/ps stopped, selettivita', cleanup) | 14 |
 
-Totale **160 check** verdi in seq e con `--jobs 5` (stesso kernel produzione
+Totale **174 check** verdi in seq e con `--jobs 5` (stesso kernel produzione
 del gate: il kernel embedda init/fs/disk, quindi va ricompilato DOPO
 `build-userland.sh` — ordine di `run.sh` — altrimenti il manifest Strato 2
 di init non matcha i binari su disco e il boot fallisce loud).
@@ -152,6 +153,7 @@ irrevocabili sul canale della suite)
 | t52 | exec in-place (Fase 37.0 nucleo + 37.1 argv, env in 43a): helper EXECDEMO diventa testspin su T_GO — stesso PID (T_ACK pre/post), hash rimisurato (diverso da prima, uguale a spin fresco), nuova immagine operativa (T_DONE); gamba argv+env (w1=1, exec ["ARGPROBE","hello","world"] + `T52E=envok`) con report T_DONE(argc,fnv) dal fresh `_start` (env verificato dalla sonda: assente = T_DONE(0,0)); reap via `poll_gone` (i `recv_done` consumano le EXIT_NOTIFY: `wait_exit` dopo sarebbe hang) |
 | t53 | fondamenta posix (Fase 39, ADR-0030; skeleton 40.3; pipe 42, ADR-0032): `Posix` registrato e supervisionato (lookup ok, pid figlio di init), tabella `to_errno` totale (17 varianti: 15 + `Empty`/`Closed`→EAGAIN/EPIPE), `R_PIPE_CREATE` 0x20, gate di registrazione sul nuovo slot 8 via helper HARDEN esteso (kill + register Init + register Posix rifiutati) |
 | t54 | fd virtuali + redirect a livello libr/server (Fase 40.5): `O_TRUNC` (size 0 + rewrite), `O_APPEND` (offset ignorato), `lseek` SET/CUR/END + oltre-EOF lecito + negativo/whence-ignota/remoto = `Invalid` con offset invariato, codici esatti (`NotFound`/`IsDir`/`Exists`/`Invalid`, grant remoto e claim ignoto), handoff DUP modello B (claim con offset copiato, single-use, cancel, attestazione parentela via sibling: helper DUPCLAIM/DUPGRANT/DUPSIBCLAIM), routing stdio diretto (println→file, stdin drain+EOF, restore), diniego SEEK via diritti (helper SEEKDENY → `Failed`); fixture `/t54*` con cleanup |
+| t55 | suspend/resume (Fase 44a, ADR-0035): gate (self/morto rifiutati, idempotenza, resume no-op), figlio running con TIME congelato su ~40 tick + resume→T_DONE/exit 0, figlio bloccato con `send_async` accodata senza sveglia + reply su resume, hardening non-parent (helper SUSPENDENY) |
 | t34 | diritti per-canale lato server (Fase 17, per ultimo: drop irrevocabili): GET default ALL+root, drop WRITE (write -1/read ok), drop MOUNT+subtree /fat (mount/open-fuori -1, open-dentro+read+readdir-dentro ok, readdir-fuori -1), widen rifiutato + GET conferma |
 
 > Il CBS e' sempre attivo (lo scheduler RT e' l'unico): t18/t19 sono test

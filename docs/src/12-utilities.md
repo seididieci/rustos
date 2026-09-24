@@ -46,16 +46,21 @@ la mostra (`/prova$ `, `$ ` a root).
 | `run <prog> [args...] [&]` | Lancia un programma via fork+exec (37.2, PATH in 43a: senza `/` cerca in `$PATH`, default `/fat/bin`, fallback `.bin`; `argv[0]` = path risolto); `&` = background (prompt subito), senza = foreground (attende; `[exit N]` se N != 0) |
 | `prog args...` | Bare word (43a): non-builtin cercato in PATH ed eseguito come `run` (ignoto = 127); con `/` è path diretto |
 | `source <file>` | Esegue uno script riga-per-riga (stesso parser della tastiera: `; && \|\|`, pipe, redirect, heredoc, `$VAR/$?`, glob, `run`). `$?` iniziale = esterno, exit dello script = ultimo comando; `exit` termina lo script (mai la shell); esecuzione silenziosa (niente eco). Anticipa la Fase 43 (script `.sh`); nato per velocizzare i test (1 riga digitata invece di N) |
-| `jobs` | Tabella job (`[id] pid P run\|done C cmd`; i finiti restano finche' `wait`) |
-| `wait [pid]` | Attende i job (tutti o uno) e li rimuove, stampa `pid P: exit C` |
+| `jobs` | Tabella job (`[id] pid P run\|stopped\|done C cmd`; i finiti restano finche' `wait`) |
+| `wait [pid]` | Attende i job (tutti o uno) e li rimuove, stampa `pid P: exit C` (gli Stopped si riportano e restano; attesa bloccante senza Ctrl-Z) |
+| `fg [%N\|pid]` | Porta un job in foreground e lo attende (44a; se Stopped lo riprende prima) |
+| `bg [%N\|pid]` | Riprende in background un job sospeso (44a) |
 | `help` | Mostra comandi disponibili |
 | `exit [code]` | Termina la shell (Fase 41: code opzionale per `$?`/`&&`/`||`) |
 
 > **Fase 37.2**: job = figli diretti (non-detached: muoiono con la shell);
 > uscita via `EXIT_NOTIFY` (nessun `wait` kernel). Il parent carica file+argv
 > prima del fork (il figlio ha l'FS avvelenato: solo `exec_image_args`).
-> Niente job control interattivo (foreground senza scampo: i longevi con `&`;
-> segnali → posix-server futuro).
+> **Fase 44a**: job control su `run` singolo — Ctrl-Z sospende il fg
+> (`SYS_SUSPEND` neutro, `[N]+ Stopped`), `fg`/`bg` riprendono
+> (`SYS_RESUME`); durante il fg la shell intercetta solo Ctrl-Z (altri tasti
+> scartati, documentato); `&` su pipeline resta non supportato (job
+> multi-pid, fase futura). Ctrl-C e' Fase 44b.
 
 ### Redirect (Fase 40.4)
 
@@ -130,7 +135,7 @@ Meccanismo (ADR-0032): pipe-buffer **in userfs** (feature dell'OS:
 reservation al grant (stesso nonce COW di ADR-0031); `libr` riprova throttled
 su `Empty` (server mai bloccante); EOF vero solo a scrittori esauriti.
 Streaming oltre la capacità via intercalazione scheduler. `&` su pipeline
-rifiutato fino alla Fase 44; pipe trailing ignorata.
+rifiutato oltre la 44a (job multi-pid, fase futura); pipe trailing ignorata.
 
 ### Env / PATH / shebang (Fase 43a)
 

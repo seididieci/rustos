@@ -21,6 +21,9 @@ pub fn process_state(pid: usize) -> Option<State> {
 pub struct PsSnap {
     pub name: [u8; 16],
     pub state: State,
+    /// Sospeso via `SYS_SUSPEND` (Fase 44a): `sys_ps_info` lo espone come
+    /// Stopped (2), non come Ready/Blocked sottostante.
+    pub suspended: bool,
     pub prio: u8,
     pub parent: Option<usize>,
     pub ipc: crate::process::IpcState,
@@ -55,6 +58,7 @@ pub fn process_ps(pid: usize) -> Option<PsSnap> {
     Some(PsSnap {
         name: name_buf(p).0,
         state: p.state,
+        suspended: p.suspended,
         prio: p.priority.0,
         parent: p.parent,
         ipc: p.ipc_state,
