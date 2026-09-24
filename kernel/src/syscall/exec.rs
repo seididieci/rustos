@@ -5,7 +5,8 @@ use super::spawn::SPAWN_IMAGE_MAX;
 /// del CHIAMANTE con l'ELF in sua memoria (Fase 37; argv in 37.1.2). Il kernel
 /// non tocca mai il FS (ADR-0005): caricare da path e' compito di `libr::exec`
 /// (load_file + questa syscall). `args_len == 0` = nessun argv (argc=0, come
-/// `exec_image`); altrimenti blocco `[argc:8][payload]` entro `ARGS_MAX`.
+/// `exec_image`); altrimenti blocco `[argc:8][envc:8][payload]` entro
+/// `ARGS_MAX` (env = byte opachi, mai ispezionati: kernel neutro).
 /// Stesso bound immagine di `spawn_image` (256 KiB); validazione ELF + args
 /// prima di toccare qualunque stato (fallita = -1, processo intatto).
 /// Successo = nessun ritorno (salto all'entry nuova); il valore 0 non e' mai

@@ -59,3 +59,4 @@
 - [ADR-0030: Fondamenta posix (Fase 39)](./adr/0030-posix-fondamenta.md)
 - [ADR-0031: fd handoff + redirect file (disegno Fase 40)](./adr/0031-fd-handoff-redirect.md)
 - [ADR-0032: pipe + heredoc (disegno Fase 42)](./adr/0032-pipe-heredoc.md)
+- [ADR-0033: env/PATH/script (disegno Fase 43a)](./adr/0033-env-path-script.md)

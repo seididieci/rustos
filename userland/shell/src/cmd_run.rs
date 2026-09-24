@@ -196,32 +196,197 @@ fn wait_all(chans: &[u64]) -> Vec<Option<i64>> {
     }
     done
 }
-/// `run <path> [args...] [&]`: lancia il programma (path relativo ammesso,
-/// argv[0] = path come digitato). `&` finale = background (prompt subito,
-/// `jobs`/`wait` dopo); senza = foreground (attende l'uscita; code != 0
-/// stampato come `[exit N]`). Con redirect (Fase 40.4c/d): il parent apre
-/// tutti i target in ordine + grant single-use per fd distinto e contrabbanda
-/// la spec nell'ultimo argv (magic); lo startup del figlio fa claim +
-/// `set_stdio` (tutti i programmi via `entry!`, zero codice per-target).
-/// `2>&1` = alias (un grant solo, voce `Alias` nella spec).
-pub(crate) fn cmd_run(args: &[&str], redirs: &[redirect::Redir], bg: bool) -> i64 {
-    if args.len() < 2 {
-        term::term_err("run: usage: run <path> [args...] [&]\n");
-        return 1;
+/// PATH di default (Fase 43a): i binari da disco stanno in `/fat/bin`.
+const DEFAULT_PATH: &str = "/fat/bin";
+
+/// Risolve un nome programma (43a): con `/` e' path diretto (`cwd::resolve`),
+/// senza e' cercato nelle dir di `$PATH` (`:`-separate, default `/fat/bin`).
+/// Per dir si prova il nome esatto e poi con suffisso `.bin` (gli eseguibili
+/// su FAT 8.3 sono `.bin`: `runhello` trova `/fat/bin/runhello.bin`).
+/// La sonda e' via `stat` (1 round trip, niente dati); il load resta al
+/// chiamante (TOCTOU → `cannot load` loud). `None` = non trovato.
+pub(crate) fn resolve_prog(name: &str) -> Option<String> {
+    if name.contains('/') {
+        return Some(cwd::resolve(name));
     }
-    let end = args.len();
-    let path = cwd::resolve(args[1]);
-    // Carica + serializza nel PARENT (il figlio non puo' piu' usare l'FS).
+    let path = parser::vars_get("PATH").unwrap_or_else(|| String::from(DEFAULT_PATH));
+    for dir in path.split(':') {
+        if dir.is_empty() {
+            continue;
+        }
+        let mut cand = String::from(dir);
+        if !cand.ends_with('/') {
+            cand.push('/');
+        }
+        cand.push_str(name);
+        if is_reg_file(&cand) {
+            return Some(cand);
+        }
+        let mut with_ext = cand;
+        with_ext.push_str(".bin");
+        if is_reg_file(&with_ext) {
+            return Some(with_ext);
+        }
+    }
+    None
+}
+
+/// Sonda esistenza file regolare via `stat` (niente dati, niente effetti).
+fn is_reg_file(path: &str) -> bool {
+    let mut st = libr::Stat { size: 0, kind: 0, readonly: false };
+    match libr::stat(path, &mut st) {
+        Ok(()) => st.is_file(),
+        Err(_) => false,
+    }
+}
+
+/// Environment del figlio (43a): prefissi del comando (ultimo vince, bash),
+/// poi VARS persistenti, poi `PWD=cwd` se assente. `Env::get` vede la prima
+/// occorrenza: l'ordine e' la priorita'. Tutte le VARS passano (niente flag
+/// export: eredita' totale deterministica, serve al self-hosting).
+pub(crate) fn child_env(extra: &[(String, String)]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    // Ultimo vince tra duplicati: scansione inversa, primo inserimento.
+    for (k, v) in extra.iter().rev() {
+        if !seen.iter().any(|s| s.as_str() == k.as_str()) {
+            seen.push(k.clone());
+            out.push((k.clone(), v.clone()));
+        }
+    }
+    for (k, v) in parser::vars_list() {
+        if !seen.iter().any(|s| s.as_str() == k.as_str()) {
+            seen.push(k.clone());
+            out.push((k, v));
+        }
+    }
+    if !seen.iter().any(|s| s == "PWD") {
+        out.push((String::from("PWD"), cwd::cwd_get()));
+    }
+    out
+}
+
+/// Profondita' shebang (come `SOURCE_DEPTH`: loop `a→b→a` mai infiniti).
+static mut SHEBANG_DEPTH: u8 = 0;
+/// Annidamento shebang massimo (lo script di livello 5 e' rifiutato).
+const SHEBANG_MAX_DEPTH: u8 = 4;
+
+/// Programma caricato e pronto al fork: immagine + argv figlio + riga jobs.
+struct LoadedProg {
+    img: Vec<u8>,
+    argv: Vec<String>,
+    cmdline: String,
+}
+
+/// Carica `prog` (come digitato) con `rest` come argv coda (43a): risoluzione
+/// PATH (`resolve_prog`), shebang (`#!interp [arg]` → argv =
+/// `[interp, script, args...]`, ricorsione bound — il kernel resta ELF-puro,
+/// ADR-0005). L'env viaggia separato (il chiamante serializza). Errori su
+/// stderr, `Err(())`. Carica nel PARENT (il figlio post-fork ha l'FS
+/// avvelenato e non puo' piu' caricare).
+fn load_prog(prog: &str, rest: &[&str]) -> Result<LoadedProg, ()> {
+    let depth = unsafe { SHEBANG_DEPTH };
+    if depth >= SHEBANG_MAX_DEPTH {
+        term::term_err("run: shebang too deep\n");
+        return Err(());
+    }
+    let path = if prog.contains('/') {
+        cwd::resolve(prog)
+    } else {
+        match resolve_prog(prog) {
+            Some(p) => p,
+            None => {
+                term::term_err("run: cannot load ");
+                term::term_err(prog);
+                term::term_err("\n");
+                return Err(());
+            }
+        }
+    };
     let img = match libr::load_file(&path) {
         Some(b) if !b.is_empty() => b,
         _ => {
             term::term_err("run: cannot load ");
-            term::term_err(args[1]);
+            term::term_err(prog);
             term::term_err("\n");
-            return 1;
+            return Err(());
         }
     };
-    let argv: Vec<&str> = args[1..end].to_vec();
+    // Shebang: solo testo con `#!` in testa (l'ELF passa oltre: magic diverso).
+    // Convenzione classica: `#!interp [arg]` su una riga (`\r` tollerato).
+    if img.len() > 2 && img[0] == b'#' && img[1] == b'!' {
+        let line_end = img.iter().position(|&b| b == b'\n').unwrap_or(img.len());
+        let line = core::str::from_utf8(&img[2..line_end]).unwrap_or("");
+        let line = line.trim().trim_end_matches('\r').trim();
+        let mut parts = line.splitn(2, |c| c == ' ' || c == '\t');
+        let interp = parts.next().unwrap_or("").trim();
+        let arg = parts.next().map(|s| s.trim()).filter(|s| !s.is_empty());
+        if interp.is_empty() {
+            term::term_err("run: bad interpreter\n");
+            return Err(());
+        }
+        // Ricorsione sull'interprete (puo' essere a sua volta script):
+        // argv = [interp, arg?, script, rest...].
+        let mut sub: Vec<String> = Vec::new();
+        if let Some(a) = arg {
+            sub.push(String::from(a));
+        }
+        sub.push(path);
+        for r in rest {
+            sub.push(String::from(*r));
+        }
+        let sub_ref: Vec<&str> = sub.iter().map(|s| s.as_str()).collect();
+        unsafe {
+            SHEBANG_DEPTH = depth + 1;
+        }
+        let r = load_prog(interp, &sub_ref);
+        unsafe {
+            SHEBANG_DEPTH = depth;
+        }
+        return r;
+    }
+    let mut argv: Vec<String> = Vec::new();
+    argv.push(path);
+    for r in rest {
+        argv.push(String::from(*r));
+    }
+    let mut cmdline = String::new();
+    for (i, a) in argv.iter().enumerate() {
+        if i > 0 {
+            cmdline.push(' ');
+        }
+        cmdline.push_str(a);
+    }
+    Ok(LoadedProg { img, argv, cmdline })
+}
+
+/// `run <path> [args...] [&]`: lancia il programma (path cercato in `PATH`
+/// se senza `/`, 43a; shebang rieseguito sull'interprete; `argv[0]` = path
+/// risolto). `&` finale = background (prompt subito, `jobs`/`wait` dopo);
+/// senza = foreground (attende l'uscita; code != 0 stampato come `[exit N]`).
+/// `env` = prefissi `VAR=v` del comando (piu' VARS+PWD via `child_env`).
+/// Con redirect (Fase 40.4c/d): il parent apre tutti i target in ordine +
+/// grant single-use per fd distinto e contrabbanda la spec nell'ultimo argv
+/// (magic); lo startup del figlio fa claim + `set_stdio` (tutti i programmi
+/// via `entry!`, zero codice per-target). `2>&1` = alias (un grant solo).
+pub(crate) fn cmd_run(
+    args: &[&str],
+    redirs: &[redirect::Redir],
+    bg: bool,
+    env: &[(String, String)],
+) -> i64 {
+    if args.len() < 2 {
+        term::term_err("run: usage: run <path> [args...] [&]\n");
+        return 1;
+    }
+    // Carica nel PARENT (il figlio non puo' piu' usare l'FS).
+    let loaded = match load_prog(args[1], &args[2..]) {
+        Ok(l) => l,
+        Err(()) => return 1,
+    };
+    let full_env = child_env(env);
+    let env_ref: Vec<(&str, &str)> =
+        full_env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     // Redirect: apri in ordine (ultimo vince per slot) + un grant per fd
     // distinto. Errori su stderr, comando non eseguito.
     let mut fds = [-1i64; 3];
@@ -247,7 +412,8 @@ pub(crate) fn cmd_run(args: &[&str], redirs: &[redirect::Redir], bg: bool) -> i6
             }
         }
     }
-    let buf = match libr::serialize_argv_redir(&argv, &spec) {
+    let argv_ref: Vec<&str> = loaded.argv.iter().map(|s| s.as_str()).collect();
+    let buf = match libr::serialize_argv_redir_env(&argv_ref, &env_ref, &spec) {
         Some(b) => b,
         None => {
             redirect::close_all(fds);
@@ -256,14 +422,8 @@ pub(crate) fn cmd_run(args: &[&str], redirs: &[redirect::Redir], bg: bool) -> i6
             return 1;
         }
     };
-    let mut cmd = String::new();
-    for (i, a) in args[1..end].iter().enumerate() {
-        if i > 0 {
-            cmd.push(' ');
-        }
-        cmd.push_str(a);
-    }
-    match spawn_run_exec(&argv, &img, &buf, fds, grants) {
+    let cmd = loaded.cmdline;
+    match spawn_run_exec(&argv_ref, &loaded.img, &buf, fds, grants) {
         Err(()) => {
             term::term_err("run: fork failed\n");
             1
@@ -432,11 +592,13 @@ fn write_heredoc_body(w: i64, body: &str) {
 
 /// Fork per uno stadio builtin (Fase 42): il figlio re-inizializza l'FS con
 /// ring freschi (mai i ring COW del parent), riscuote i grant della spec in
-/// ordine (Alias replicato), imposta lo stdio, esegue il builtin e muore col
-/// suo codice (chiude prima gli fd: l'EOF si propaga subito, senza aspettare
-/// il reclaim kernel). `fds`/`grants` del parent chiusi qui in ogni caso.
+/// ordine (Alias replicato), imposta lo stdio, applica l'env dello stadio
+/// alle proprie VARS (scoped: muoiono col figlio, 43a), esegue il builtin e
+/// muore col suo codice (chiude prima gli fd: l'EOF si propaga subito, senza
+/// aspettare il reclaim kernel). `fds`/`grants` del parent chiusi in ogni caso.
 fn spawn_builtin_stage(
     argv: &[&str],
+    env: &[(String, String)],
     fds: [i64; 3],
     spec: Vec<libr::RedirEntry>,
     grants: Vec<u64>,
@@ -470,6 +632,9 @@ fn spawn_builtin_stage(
                 }
             }
             libr::set_stdio(cfds);
+            for (k, v) in env.iter() {
+                parser::vars_set(k, v);
+            }
             let code = repl::dispatch_builtin(argv);
             // Chiudi gli fd rivendicati (l'EOF va agli altri stadi subito).
             let mut seen = [-1i64; 3];
@@ -534,8 +699,10 @@ pub(crate) fn cmd_pipeline(stages: &[parser::Command]) -> i64 {
         if failed {
             break;
         }
-        // Assegnazioni in pipeline: semantica subshell (bash) = nessun effetto
-        // sul parent; argv vuoto (solo redirect): soli effetti collaterali.
+        // Env in pipeline: semantica subshell (bash) = nessun effetto sul
+        // parent (builtin: VARS nel figlio; esterni: blocco envp; vuoti:
+        // set scartati); argv vuoto (solo redirect/env): soli effetti
+        // collaterali.
         let args: Vec<&str> = st.argv.iter().map(|s| s.as_str()).collect();
         // 2. Seed dai link + open dei file in ordine (ultimo vince per slot;
         // gli espliciti vincono sui link, come bash: prima la pipe, poi i
@@ -617,36 +784,55 @@ pub(crate) fn cmd_pipeline(stages: &[parser::Command]) -> i64 {
             codes[i] = Some(0);
             continue;
         }
-        if args[0] == "run" {
+        // Stadio esterno (`run` esplicito o bare word via PATH, 43a) oppure
+        // builtin: `source`/`exit`/ignoti restano a `dispatch_builtin` nel
+        // figlio (come prima); `run` senza path resta usage.
+        let want_external = args[0] == "run" || !repl::is_builtin(args[0]);
+        if want_external {
             // 5a. Stadio esterno: immagine precaricata + fork + exec.
-            if args.len() < 2 {
-                redirect::close_all(fds);
-                cancel_redir(&grants);
-                for (w, _) in stage_bodies.iter() {
-                    let _ = libr::close(*w);
-                }
-                term::term_err("run: usage: run <path> [args...]\n");
-                failed = true;
-                continue;
-            }
-            let path = cwd::resolve(args[1]);
-            let img = match libr::load_file(&path) {
-                Some(b) if !b.is_empty() => b,
-                _ => {
+            let prog = if args[0] == "run" {
+                if args.len() < 2 {
                     redirect::close_all(fds);
                     cancel_redir(&grants);
                     for (w, _) in stage_bodies.iter() {
                         let _ = libr::close(*w);
                     }
-                    term::term_err("run: cannot load ");
-                    term::term_err(args[1]);
-                    term::term_err("\n");
+                    term::term_err("run: usage: run <path> [args...]\n");
+                    failed = true;
+                    continue;
+                }
+                args[1]
+            } else {
+                args[0]
+            };
+            let rest: Vec<&str> =
+                if args[0] == "run" { args[2..].to_vec() } else { args[1..].to_vec() };
+            let loaded = match load_prog(prog, &rest) {
+                Ok(l) => l,
+                Err(()) => {
+                    redirect::close_all(fds);
+                    cancel_redir(&grants);
+                    for (w, _) in stage_bodies.iter() {
+                        let _ = libr::close(*w);
+                    }
+                    // `load_prog` ha gia' riportato (`cannot load`/shebang);
+                    // la bare word ignota senza `/` merita il 127 classico
+                    // (con `/` resta l'errore path, come nel singolo).
+                    if args[0] != "run" && !prog.contains('/') {
+                        term::term_err("unknown command: ");
+                        term::term_err(args[0]);
+                        term::term_err("\n");
+                    }
                     failed = true;
                     continue;
                 }
             };
-            let exec_argv: Vec<&str> = args[1..].to_vec();
-            let buf = match libr::serialize_argv_redir(&exec_argv, &spec) {
+            let full_env = child_env(&st.env);
+            let env_ref: Vec<(&str, &str)> =
+                full_env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            let argv_ref: Vec<&str> =
+                loaded.argv.iter().map(|s| s.as_str()).collect();
+            let buf = match libr::serialize_argv_redir_env(&argv_ref, &env_ref, &spec) {
                 Some(b) => b,
                 None => {
                     redirect::close_all(fds);
@@ -659,7 +845,7 @@ pub(crate) fn cmd_pipeline(stages: &[parser::Command]) -> i64 {
                     continue;
                 }
             };
-            match spawn_run_exec(&exec_argv, &img, &buf, fds, grants) {
+            match spawn_run_exec(&argv_ref, &loaded.img, &buf, fds, grants) {
                 Ok(sp) => {
                     bodies.extend(stage_bodies);
                     all_grants.extend(sp.grants.iter());
@@ -676,8 +862,9 @@ pub(crate) fn cmd_pipeline(stages: &[parser::Command]) -> i64 {
                 }
             }
         } else {
-            // 5b. Stadio builtin: fork + re-init + claim + dispatch + exit.
-            match spawn_builtin_stage(&args, fds, spec, grants) {
+            // 5b. Stadio builtin: fork + re-init + claim + dispatch + exit
+            // (l'env dello stadio vive nelle VARS del figlio: scoped).
+            match spawn_builtin_stage(&args, &st.env, fds, spec, grants) {
                 Ok(sp) => {
                     bodies.extend(stage_bodies);
                     all_grants.extend(sp.grants.iter());

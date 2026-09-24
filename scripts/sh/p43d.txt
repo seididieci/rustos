@@ -1,0 +1,3 @@
+# 43a: shebang (argv=[interp, script, args...] e [interp, EXTRA, script]).
+run /fat/test/sh/h43.sh HI
+run /fat/test/sh/h43a.sh

@@ -709,9 +709,11 @@ pub fn t_exec_core() -> bool {
         println!("[usertests] t52: reap mancato (h={}, r={})", gone_h, gone_r);
         return false;
     }
-    // Leg argv (37.1): secondo helper, exec con argv ["ARGPROBE","hello",
-    // "world"]. Il fresh _start vede argc=3 e riporta T_DONE(argc, fnv) da
-    // solo (nessun T_CFG: la nuova immagine non parla il protocollo CFG).
+    // Leg argv+env (37.1, env in 43a): secondo helper, exec con argv
+    // ["ARGPROBE","hello","world"] + env `T52E=envok`. Il fresh _start vede
+    // argc=3 e riporta T_DONE(argc, fnv) da solo (nessun T_CFG: la nuova
+    // immagine non parla il protocollo CFG); l'env e' verificato dalla sonda
+    // (assente/diverso = T_DONE(0,0), che fallisce il check sotto).
     // Stesso binario: hash coerente (uguale al pre-exec); la PROVA dell'exec
     // e' il report argv (la vecchia immagine non poteva produrlo).
     let (a_chan, a_pid) = match helpers::spawn_cfg(

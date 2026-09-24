@@ -1578,9 +1578,19 @@ velordor/
         fix `-F raw` per qemu-img 10 + `import re` in 41). Vittoria:
         `cat /f | wc`, `a | b > /o`, heredoc, EOF, streaming >8192B —
         shell 29/8/20/37/18 (112 check) verde in seq e `--jobs 5`.
-  - [ ] Fase 43 (P4, env/PATH/script): `envp` reale, cwd per-pid, `PATH`,
-        `exec` diretto, shebang, history/editing base. Vittoria: `export`,
-        binari senza path, `.sh` eseguibili.
+  - [x] Fase 43a (P4, env/PATH/script; ADR-0033): blocco
+        `[argc][envc][argv][magic?][env]`, kernel opaco (mai `=`/PATH/`#!`/cwd
+        nel kernel — verifica: `rg` vuoto fuori commenti); `libr::{Env,
+        serialize_argv_redir_env, exec_env}`; shell: `Command.env` (niente piu'
+        `EnvPrefix`), builtin save/set/restore, esterni via envp, `child_env`
+        (prefissi + VARS + `PWD`), `resolve_prog` (`/` diretto, else `$PATH`
+        default `/fat/bin`, fallback `.bin`), bare word = run implicito (127),
+        shebang shell-side bound 4; `runhello` dumpa env; t52+`T52E`
+        (stesso `T_DONE`); `test-shell-43.py` 17 check. Bug vero: magic dopo
+        gli env invece che ultimo argv (incrocio solo magic+env) — contratto
+        d'ordine argv/magic/env. Shell 29/8/20/37/18/22/17 (151 check).
+  - [ ] Fase 43b (P4, history/editing base: frecce oggi scartate in usertty,
+        serve cooperazione tty+shell). Vittoria: Up/Down history, Left/Right.
   - [ ] Fase 44 (P5, job control + segnali): `SIGINT/SIGTSTP` catturabili,
         `fg/bg`, Ctrl-C/Z solo foreground, causa morte. Vittoria: `&`, `fg`,
         Ctrl-C selettivo.

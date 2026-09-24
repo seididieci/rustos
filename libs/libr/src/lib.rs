@@ -245,7 +245,7 @@ pub use print::*;
 pub use spawn::*;
 pub use sys::*;
 pub use tsc::*;
-pub use args::{Args, args_from_stack, ARGS_MAX};
+pub use args::{Args, Env, args_from_stack, env_from_stack, ARGS_MAX};
 // `CHANNEL_PARENT` e' anche in `syscall-numbers` (glob privato sopra):
 // il single-item esplicito vince sui glob e preserva `libr::CHANNEL_PARENT`.
 pub use ipc::CHANNEL_PARENT;

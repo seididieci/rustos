@@ -145,12 +145,23 @@ use libr::{DEV_CLOSE, DEV_OPEN, ERR};
 
 libr::entry!(real_main);
 fn real_main(sp: u64) -> ! {
-    // Fase 37.1 (t52-argv): sonda argv post-exec — convenzione di TEST
-    // esplicita, solo testland la usa: se argv[0] == "ARGPROBE", niente flusso
-    // CFG; riporta T_DONE(argc, fnv(argv[1..])) e esce. La FNV e' calcolata
-    // come il parent (`image_hash` sul join NUL, trailing NUL incluso).
+    // Fase 37.1 (t52-argv, env in 43a): sonda argv+env post-exec —
+    // convenzione di TEST esplicita, solo testland la usa: se argv[0] ==
+    // "ARGPROBE", niente flusso CFG; riporta T_DONE(argc, fnv(argv[1..])) e
+    // esce. La FNV e' calcolata come il parent (`image_hash` sul join NUL,
+    // trailing NUL incluso). L'env atteso (`T52E=envok`, messo nel blocco
+    // dal ramo EXECDEMO sotto) e' verificato qui: assente/diverso →
+    // T_DONE(0, 0) + exit(1) (il parent se ne accorge dal report).
     if let Some(args) = libr::args_from_stack(sp) {
         if args.get(0) == Some(b"ARGPROBE".as_slice()) {
+            let env_ok = match libr::env_from_stack(sp) {
+                Some(env) => env.get("T52E") == Some(b"envok".as_slice()),
+                None => false,
+            };
+            if !env_ok {
+                let _ = libr::send(libr::CHANNEL_PARENT, T_DONE, 0, 0);
+                libr::exit(1);
+            }
             let mut joined = alloc::vec::Vec::new();
             let mut i = 1u64;
             while let Some(a) = args.get(i) {
@@ -325,12 +336,20 @@ fn real_main(sp: u64) -> ! {
                         libr::exit(0);
                     }
                 };
-                let mut buf = alloc::vec::Vec::new();
-                buf.extend_from_slice(&3u64.to_le_bytes());
-                for s in [b"ARGPROBE".as_slice(), b"hello".as_slice(), b"world".as_slice()] {
-                    buf.extend_from_slice(s);
-                    buf.push(0);
-                }
+                // Blocco argv+env via serialize (single source col kernel:
+                // formato `[argc][envc][payload]`, mai hand-rolled). L'env
+                // e' verificato dalla sonda ARGPROBE nella nuova immagine.
+                let buf = match libr::serialize_argv_redir_env(
+                    &["ARGPROBE", "hello", "world"],
+                    &[("T52E", "envok")],
+                    &[],
+                ) {
+                    Some(b) => b,
+                    None => {
+                        let _ = libr::send(parent, T_DONE, 0, 32);
+                        libr::exit(0);
+                    }
+                };
                 match libr::exec_image_args(&img, &buf) {
                     Ok(()) => libr::exit(1), // irraggiungibile
                     Err(_) => {

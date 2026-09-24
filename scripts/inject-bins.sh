@@ -36,7 +36,7 @@ mcopy -i "$IMG" testland/build/userbench.bin    ::/test/bench.bin    || exit 1
 # (il FAT non ha LFN: oltre 8+3 mcopy fallisce loud, mai nomi troncati in
 # silenzio). Tutti gli script di fase stanno in scripts/sh/.
 mmd -i "$IMG" ::/test/sh || exit 1
-for s in scripts/sh/*.txt; do
+for s in scripts/sh/*.txt scripts/sh/*.sh; do
     b="$(basename "$s")"
     mcopy -i "$IMG" "$s" "::/test/sh/$b" || exit 1
 done

@@ -120,9 +120,6 @@ pub(crate) fn run_one_line(
                 parser::ParseError::BadSubst => {
                     term::term_err("sostituzione errata");
                 }
-                parser::ParseError::EnvPrefix => {
-                    term::term_err("VAR=v comando non supportato (Fase 43)");
-                }
             }
             term::term_err("\n");
             return Some(LineOutcome::Continue(2));
@@ -233,10 +230,14 @@ fn exec_seq(seq: &parser::Seq, status: i64, script_mode: bool) -> Option<LineOut
 /// Esegue un comando parsato (redirect + dispatch + restore). `status` = `$?`
 /// in ingresso (serve a `source`: la prima riga dello script espande il `$?`
 /// esterno). In script_mode `exit` non uccide la shell ma termina lo script.
+/// I prefissi `VAR=v` (43a): senza comando = set persistenti; con builtin =
+/// save/set/restore; con esterni = blocco envp (mai nell'ambiente shell).
 fn exec_single(cmd: &parser::Command, status: i64, script_mode: bool) -> LineOutcome {
-    // Assegnazione persistente (senza comando): prima gli effetti dei
-    // redirect (bash), poi il set. A open fallita: niente set.
-    if let Some((name, val)) = &cmd.assign {
+    let args: Vec<&str> = cmd.argv.iter().map(|s| s.as_str()).collect();
+    if args.is_empty() {
+        // Solo env e/o redirect (`A=1`, `> /f`, `A=1 > /f`): prima gli effetti
+        // collaterali dei redirect (bash), poi i set persistenti. A open
+        // fallita: niente set.
         if !cmd.redirs.is_empty() {
             match redirect::open_all(&cmd.redirs) {
                 Ok(fds) => redirect::close_all(fds),
@@ -246,22 +247,8 @@ fn exec_single(cmd: &parser::Command, status: i64, script_mode: bool) -> LineOut
                 }
             }
         }
-        parser::vars_set(name, val);
-        return LineOutcome::Continue(0);
-    }
-    let args: Vec<&str> = cmd.argv.iter().map(|s| s.as_str()).collect();
-    if args.is_empty() {
-        // Solo redirect (`> /f`, `< /f`, ...): applica per gli effetti
-        // collaterali (crea/tronca, verifica leggibilita'), senza eseguire
-        // nulla. Errori su stderr.
-        if !cmd.redirs.is_empty() {
-            match redirect::open_all(&cmd.redirs) {
-                Ok(fds) => redirect::close_all(fds),
-                Err((t, e)) => {
-                    redirect::report_open_error(&t, e);
-                    return LineOutcome::Continue(1);
-                }
-            }
+        for (name, val) in cmd.env.iter() {
+            parser::vars_set(name, val);
         }
         return LineOutcome::Continue(0);
     }
@@ -281,9 +268,11 @@ fn exec_single(cmd: &parser::Command, status: i64, script_mode: bool) -> LineOut
     }
     // Apre TUTTI i target in ordine; a fallimento riporta su stderr e
     // salta il comando (mai nel file).
-    // `run` non passa di qui: apre+grant da se'.
+    // `run` e gli esterni (bare word via PATH) non passano di qui:
+    // aprono+grant da se' in `cmd_run`.
+    let external = args[0] != "run" && !is_builtin(args[0]);
     let mut fds = [-1i64; 3];
-    if !cmd.redirs.is_empty() && args[0] != "run" {
+    if !cmd.redirs.is_empty() && !external && args[0] != "run" {
         match redirect::open_all(&cmd.redirs) {
             Ok(f) => fds = f,
             Err((t, e)) => {
@@ -294,9 +283,35 @@ fn exec_single(cmd: &parser::Command, status: i64, script_mode: bool) -> LineOut
         libr::set_stdio(fds);
     }
     let code = match args[0] {
-        "run" => cmd_run::cmd_run(&args, &cmd.redirs, cmd.bg),
-        "source" => cmd_source::cmd_source(&args, status),
-        _ => dispatch_builtin(&args),
+        "run" => cmd_run::cmd_run(&args, &cmd.redirs, cmd.bg, &cmd.env),
+        _ if external => {
+            // Bare word (43a): ricerca PATH + run implicito. Con `/` e'
+            // path diretto (come bash), senza e' cercato in PATH.
+            match cmd_run::resolve_prog(args[0]) {
+                Some(path) => {
+                    let mut v: Vec<&str> = Vec::new();
+                    v.push("run");
+                    v.push(path.as_str());
+                    for a in args.iter().skip(1) {
+                        v.push(a);
+                    }
+                    cmd_run::cmd_run(&v, &cmd.redirs, cmd.bg, &cmd.env)
+                }
+                None => {
+                    term::term_err("unknown command: ");
+                    term::term_err(args[0]);
+                    term::term_err("\n");
+                    127
+                }
+            }
+        }
+        _ => with_env(&cmd.env, | | {
+            if args[0] == "source" {
+                cmd_source::cmd_source(&args, status)
+            } else {
+                dispatch_builtin(&args)
+            }
+        }),
     };
     // Restore: output/errori giá instradati (hook B1 / term_err); le write
     // restano best-effort (mirror seriale gia' emesso).
@@ -305,6 +320,58 @@ fn exec_single(cmd: &parser::Command, status: i64, script_mode: bool) -> LineOut
         redirect::close_all(fds);
     }
     LineOutcome::Continue(code)
+}
+
+/// Applica `env` alle VARS, esegue `f`, ripristina (builtin mono-comando,
+/// 43a). Ultimo vince tra duplicati (bash `A=1 A=2 cmd` → A=2).
+fn with_env(env: &[(String, String)], f: impl FnOnce() -> i64) -> i64 {
+    let mut saved: Vec<(String, Option<String>)> = Vec::new();
+    for (k, _) in env.iter() {
+        if !saved.iter().any(|(sk, _)| sk == k) {
+            saved.push((k.clone(), parser::vars_get(k)));
+        }
+    }
+    for (k, v) in env.iter() {
+        parser::vars_set(k, v);
+    }
+    let code = f();
+    for (k, old) in saved.iter() {
+        match old {
+            Some(v) => parser::vars_set(k, v),
+            None => parser::vars_unset(k),
+        }
+    }
+    code
+}
+
+/// Nomi gestiti da `dispatch_builtin` (builtin prima di PATH/bare-word).
+pub(crate) fn is_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "ls" | "cat"
+            | "touch"
+            | "mkdir"
+            | "mount"
+            | "umount"
+            | "echo"
+            | "clear"
+            | "wc"
+            | "hexdump"
+            | "kill"
+            | "cd"
+            | "pwd"
+            | "cp"
+            | "mv"
+            | "rm"
+            | "rmdir"
+            | "ps"
+            | "export"
+            | "source"
+            | "jobs"
+            | "wait"
+            | "exit"
+            | "help"
+    )
 }
 
 /// Dispatch dei builtin (Fase 42: condiviso tra esecuzione in-processo e

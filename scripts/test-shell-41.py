@@ -67,8 +67,10 @@ def main():
         c.check("41 export lista", found)
         found = b"bad name" in out
         c.check("41 export nome invalido", found)
-        found = b"non supportato" in out
-        c.check("41 VAR=v cmd rifiutato (Fase 43)", found)
+        # 43a: il prefisso mono-comando ora funziona (builtin: save/set/
+        # restore — "hi" stampato, F41X non persiste; il set e' provato in 43).
+        found = b"] hi\n" in out
+        c.check("41 VAR=v cmd mono-comando (43a)", found)
 
         # $$ e ~: assert di posizione, script dedicati.
         out = sh.run_source(SH + "/p41c3.txt")

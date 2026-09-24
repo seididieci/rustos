@@ -34,9 +34,11 @@ pub(crate) struct Command {
     pub(crate) argv: Vec<String>,
     pub(crate) redirs: Vec<redirect::Redir>,
     pub(crate) bg: bool,
-    /// Assegnazione persistente (`NAME=valore`, senza comando): applicata
-    /// dall'esecutore dopo gli effetti dei redirect.
-    pub(crate) assign: Option<(String, String)>,
+    /// Prefissi `NAME=valore` (Fase 43a): senza comando sono assegnazioni
+    /// persistenti (applicate dopo gli effetti dei redirect, come bash);
+    /// con comando sono ambiente mono-comando (builtin: save/set/restore;
+    /// esterni: blocco envp di `exec`).
+    pub(crate) env: Vec<(String, String)>,
 }
 
 pub(crate) struct Seq {
@@ -47,7 +49,6 @@ pub(crate) struct Seq {
 pub(crate) enum ParseError {
     MissingTarget(&'static str),
     BadSubst,
-    EnvPrefix,
 }
 
 // ── Variabili shell (solo client-side, mai nel kernel/FS) ─────────────
@@ -84,6 +85,14 @@ pub(crate) fn vars_get(name: &str) -> Option<String> {
 
 pub(crate) fn vars_list() -> Vec<(String, String)> {
     vars().clone()
+}
+
+/// Rimuove una variabile (restore dei prefissi `VAR=v cmd`, Fase 43a).
+pub(crate) fn vars_unset(name: &str) {
+    let v = vars();
+    if let Some(i) = v.iter().position(|(k, _)| k == name) {
+        v.remove(i);
+    }
 }
 
 // ── Tokenizer ─────────────────────────────────────────────────────────
@@ -529,21 +538,23 @@ struct RawRedir {
 }
 
 /// Chiude parole+redirect in un `Command` espanso (o None se vuoto).
-/// `NAME=val` come unica parola = assegnazione persistente; con comando
-/// appresso = prefisso d'ambiente mono-comando (Fase 43) = errore.
+/// I `NAME=val` iniziali sono prefissi d'ambiente (Fase 43a): senza comando
+/// diventano assegnazioni persistenti, con comando ambiente mono-comando.
+/// Solo i prefissi INIZIALI contano (`cmd A=1` passa `A=1` come argv, bash).
 fn finish(words: Vec<Vec<Ch>>, redirs: Vec<RawRedir>, status: i64, bg: bool) -> Result<Option<Command>, ParseError> {
-    let mut assign: Option<(String, String)> = None;
-    let mut argv_words: &[Vec<Ch>] = &words[..];
-    if words.len() == 1 {
-        if let Some((name, val)) = split_assign(&words[0]) {
-            let val = expand_word(&val, status, false)?;
-            argv_words = &[];
-            assign = Some((name, word_string(&val[0])));
+    let mut env: Vec<(String, String)> = Vec::new();
+    let mut k = 0usize;
+    while k < words.len() {
+        match split_assign(&words[k]) {
+            Some((name, val)) => {
+                let val = expand_word(&val, status, false)?;
+                env.push((name, word_string(&val[0])));
+                k += 1;
+            }
+            None => break,
         }
-    } else if !words.is_empty() && split_assign(&words[0]).is_some() {
-        // `NAME=val cmd...`: prefisso d'ambiente mono-comando (Fase 43).
-        return Err(ParseError::EnvPrefix);
     }
+    let argv_words: &[Vec<Ch>] = &words[k..];
     let mut argv: Vec<String> = Vec::new();
     for w in argv_words {
         for piece in expand_word(w, status, true)? {
@@ -577,13 +588,10 @@ fn finish(words: Vec<Vec<Ch>>, redirs: Vec<RawRedir>, status: i64, bg: bool) -> 
             heredoc_body: None,
         });
     }
-    if assign.is_some() && !argv.is_empty() {
-        return Err(ParseError::EnvPrefix);
-    }
-    if argv.is_empty() && rr.is_empty() && assign.is_none() {
+    if argv.is_empty() && rr.is_empty() && env.is_empty() {
         return Ok(None);
     }
-    Ok(Some(Command { argv, redirs: rr, bg, assign }))
+    Ok(Some(Command { argv, redirs: rr, bg, env }))
 }
 
 /// Parsa una riga in comandi sequenziati gia' espansi. `status` = `$?`.

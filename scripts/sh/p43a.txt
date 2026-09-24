@@ -1,0 +1,8 @@
+# 43a: export/assign persistenti ereditati + PWD automatico.
+export E43=hello
+FOO43=bar
+echo $FOO43
+run /fat/bin/runhello.bin
+cd /fat
+run /fat/bin/runhello.bin
+cd /

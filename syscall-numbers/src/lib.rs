@@ -140,9 +140,12 @@ pub const SYS_EXEC: u64 = 48;
 pub const SYS_DMA_ALLOC: u64 = 49;
 /// Cap pagine di `SYS_DMA_ALLOC` (38.1: 1 pagina = PRD + 7 settori bastano).
 pub const DMA_PAGES_MAX: usize = 4;
-/// Bound del blocco argv serializzato (Fase 37.1): `[argc:8][payload
-/// NUL-separated]` oltre cui `exec` rifiuta fail-loud. Single source
+/// Bound del payload argv+env serializzato (Fase 37.1, esteso in 43a):
+/// blocco `[argc:8][envc:8][argv NUL-separated][env NUL-separated
+/// "NAME=val"]` oltre cui `exec` rifiuta fail-loud. Single source
 /// kernel+user (`libr` lo riesporta): 8 KiB bastano a shell e test con margine.
+/// Il kernel tratta le stringhe come byte opachi (mai ispezione `=`: la
+/// convenzione `NAME=val` vive in `libr`/shell, il kernel resta neutro).
 pub const ARGS_MAX: u64 = 8 * 1024;
 /// Immagine massima spawabile/eseguibile (Fase 21: 64 frame = 256 KiB; i binari
 /// sono < 70 KiB — un singolo spawn non puo' svuotare il pool frame). Single

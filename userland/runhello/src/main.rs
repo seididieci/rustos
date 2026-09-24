@@ -38,6 +38,24 @@ fn real_main(sp: u64) -> ! {
         }
         None => println!("runhello: argv illeggibili"),
     }
+    // Dump env (Fase 43a): una riga `runhello: env:NAME=val` per voce grezza
+    // (byte opachi: nessuna interpretazione qui, serve ai test shell).
+    match libr::env_from_stack(sp) {
+        Some(env) => {
+            let mut i = 0u64;
+            while i < env.count() {
+                match env.get_raw(i) {
+                    Some(raw) => match core::str::from_utf8(raw) {
+                        Ok(s) => println!("runhello: env:{}", s),
+                        Err(_) => println!("runhello: env:<non utf8>"),
+                    },
+                    None => println!("runhello: env illeggibile"),
+                }
+                i += 1;
+            }
+        }
+        None => println!("runhello: env illeggibile"),
+    }
     // Drain stdin redirectato (Fase 40.4d): byte per byte fino a EOF; niente
     // retry (file, mai device-a-caratteri qui). Senza redirect il primo
     // stdin_byte e' gia' None: zero righe, zero effetti.

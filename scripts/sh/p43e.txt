@@ -1,0 +1,6 @@
+# 43a: env negli stadi (via blocco, niente espansione) + stadio esterno
+# bare-word + stadio ignoto. E43 di sessione resta base (no leak).
+E43=seven run /fat/bin/runhello.bin | cat
+runhello STAGE | cat
+nosuchst43 | cat
+echo $E43

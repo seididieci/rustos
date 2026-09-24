@@ -67,7 +67,7 @@ privati per istanza — due QEMU sullo stesso raw read-write si
 corromperebbero):
 
 ```bash
-./scripts/test-shell-all.sh            # seq: base run redirect 41 42 source
+./scripts/test-shell-all.sh            # seq: base run redirect 41 42 source 43
 ./scripts/test-shell-all.sh --jobs 5   # parallelo, un overlay per fase
 ./scripts/test-shell-all.sh source     # gate veloce: solo `source` (1 boot)
 ```
@@ -80,8 +80,9 @@ corromperebbero):
 | `test-shell-41.py` | 41 (quoting/escape, `$VAR/$?/~/$$`, `; && \|\|`, commenti, glob) | 37 |
 | `test-shell-42.py` | 42 (pipe N stadi, pipe+redirect, status ultimo, stadi run, bg rifiutata, heredoc, EOF, streaming >8192B) | 18 |
 | `test-shell-source.py` | `source` (smoke 1-riga, exit, nesting, errori, vuoto) | 22 |
+| `test-shell-43.py` | 43a (env ereditato, VAR=v, PWD, PATH/bare-word, shebang, env stadi) | 17 |
 
-Totale **134 check** verdi in seq e con `--jobs 5` (stesso kernel produzione
+Totale **151 check** verdi in seq e con `--jobs 5` (stesso kernel produzione
 del gate: il kernel embedda init/fs/disk, quindi va ricompilato DOPO
 `build-userland.sh` — ordine di `run.sh` — altrimenti il manifest Strato 2
 di init non matcha i binari su disco e il boot fallisce loud).
@@ -147,7 +148,7 @@ irrevocabili sul canale della suite)
 | t49 | fork COW (Fase 34): l'helper duplica se stesso; padre e figlio scrivono un globale COW e verificano l'isolamento; il figlio riporta valore+return sul canale di nascita (SYNC) ed esce 0; il padre verifica report + `EXIT_NOTIFY` con code 0 |
 | t50 | hardening (Fase 35, ADR-0026): un helper prova a killare un fratello (non suo figlio) e a registrare un servizio di sistema (`Init`) → entrambi rifiutati; usertests prova `map_physical` di RAM del kernel (0x100000) → rifiutato; prova a killare devfs (non suo figlio) → rifiutato (servizio vivo) |
 | t51 | identita' misurata (Fase 36, ADR-0027): `peer_info` su Console/Devfs == manifest generato; stabilita' hash tra istanze; same-image positivo (X2 rimpiazza X1 vivo non-init-child, il mount sopravvive al kill); squat con hash diverso rifiutato (mount purgato, open fallisce); `peer_info` a canale morto → Err (helper REG51 + ramo SQUAT di spin) |
-| t52 | exec in-place (Fase 37.0 nucleo + 37.1 argv): helper EXECDEMO diventa testspin su T_GO — stesso PID (T_ACK pre/post), hash rimisurato (diverso da prima, uguale a spin fresco), nuova immagine operativa (T_DONE); gamba argv (w1=1, exec ["ARGPROBE","hello","world"]) con report T_DONE(argc,fnv) dal fresh `_start`; reap via `poll_gone` (i `recv_done` consumano le EXIT_NOTIFY: `wait_exit` dopo sarebbe hang) |
+| t52 | exec in-place (Fase 37.0 nucleo + 37.1 argv, env in 43a): helper EXECDEMO diventa testspin su T_GO — stesso PID (T_ACK pre/post), hash rimisurato (diverso da prima, uguale a spin fresco), nuova immagine operativa (T_DONE); gamba argv+env (w1=1, exec ["ARGPROBE","hello","world"] + `T52E=envok`) con report T_DONE(argc,fnv) dal fresh `_start` (env verificato dalla sonda: assente = T_DONE(0,0)); reap via `poll_gone` (i `recv_done` consumano le EXIT_NOTIFY: `wait_exit` dopo sarebbe hang) |
 | t53 | fondamenta posix (Fase 39, ADR-0030; skeleton 40.3; pipe 42, ADR-0032): `Posix` registrato e supervisionato (lookup ok, pid figlio di init), tabella `to_errno` totale (17 varianti: 15 + `Empty`/`Closed`→EAGAIN/EPIPE), `R_PIPE_CREATE` 0x20, gate di registrazione sul nuovo slot 8 via helper HARDEN esteso (kill + register Init + register Posix rifiutati) |
 | t54 | fd virtuali + redirect a livello libr/server (Fase 40.5): `O_TRUNC` (size 0 + rewrite), `O_APPEND` (offset ignorato), `lseek` SET/CUR/END + oltre-EOF lecito + negativo/whence-ignota/remoto = `Invalid` con offset invariato, codici esatti (`NotFound`/`IsDir`/`Exists`/`Invalid`, grant remoto e claim ignoto), handoff DUP modello B (claim con offset copiato, single-use, cancel, attestazione parentela via sibling: helper DUPCLAIM/DUPGRANT/DUPSIBCLAIM), routing stdio diretto (println→file, stdin drain+EOF, restore), diniego SEEK via diritti (helper SEEKDENY → `Failed`); fixture `/t54*` con cleanup |
 | t34 | diritti per-canale lato server (Fase 17, per ultimo: drop irrevocabili): GET default ALL+root, drop WRITE (write -1/read ok), drop MOUNT+subtree /fat (mount/open-fuori -1, open-dentro+read+readdir-dentro ok, readdir-fuori -1), widen rifiutato + GET conferma |

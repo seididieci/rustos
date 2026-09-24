@@ -1,0 +1,5 @@
+# 43a: PATH + bare word + ignoto 127.
+runhello hello
+run runhello hello2
+nosuchprog43
+echo $?

@@ -99,10 +99,10 @@ pub fn exec_image(img: &[u8]) -> Result<(), Error> {
     exec_image_args(img, &[])
 }
 
-/// `exec_image_args(img, args)`: come `exec_image` ma con argv (Fase 37.1).
-/// `args` = blocco `[argc:8][payload NUL-separated]` entro `ARGS_MAX`
-/// (normalmente costruito da `exec`, non a mano); vuoto = argc=0.
-/// `Invalid` a validazione fallita (Fase 39).
+/// `exec_image_args(img, args)`: come `exec_image` ma con argv+env (37.1, env
+/// in 43a). `args` = blocco `[argc:8][envc:8][payload NUL-separated]` entro
+/// `ARGS_MAX` (normalmente costruito da `exec`/`serialize_argv*`, non a mano);
+/// vuoto = argc=0. `Invalid` a validazione fallita (Fase 39).
 #[inline]
 pub fn exec_image_args(img: &[u8], args: &[u8]) -> Result<(), Error> {
     let r = unsafe {
@@ -119,13 +119,13 @@ pub fn exec_image_args(img: &[u8], args: &[u8]) -> Result<(), Error> {
     Err(Error::Invalid)
 }
 
-/// Serializza gli argv nel blocco `[argc:8][payload NUL-separated]` per
-/// `exec_image_args`/`SYS_EXEC` (Fase 37.1/37.2): `None` se troppi (> 1024)
-/// o oltre `ARGS_MAX`. Usato da `exec` e da chi carica prima del fork (la
-/// shell: il figlio post-fork ha l'FS avvelenato e non puo' piu' allocare
-/// comodo — il parent prepara tutto, il figlio solo esegue).
+/// Serializza gli argv nel blocco `[argc:8][envc:8][payload NUL-separated]`
+/// per `exec_image_args`/`SYS_EXEC` (Fase 37.1/37.2, env in 43a): `None` se
+/// troppi (> 1024) o oltre `ARGS_MAX`. Usato da `exec` e da chi carica prima
+/// del fork (la shell: il figlio post-fork ha l'FS avvelenato e non puo' piu'
+/// allocare comodo — il parent prepara tutto, il figlio solo esegue).
 pub fn serialize_argv(argv: &[&str]) -> Option<alloc::vec::Vec<u8>> {
-    serialize_argv_redir(argv, &[])
+    serialize_argv_redir_env(argv, &[], &[])
 }
 
 /// Come `serialize_argv` ma con spec redirect contrabbandata come ultimo argv
@@ -138,9 +138,25 @@ pub fn serialize_argv_redir(
     argv: &[&str],
     spec: &[crate::stdio::RedirEntry],
 ) -> Option<alloc::vec::Vec<u8>> {
+    serialize_argv_redir_env(argv, &[], spec)
+}
+
+/// Come `serialize_argv_redir` con in piu' l'environment (Fase 43a): `env` =
+/// coppie (nome, valore) serializzate `NAME=val` dopo gli argv (e dopo il
+/// magic redirect, che resta l'ULTIMO argv: ordine argv/magic/env, letto
+/// cosi' dal kernel). La convenzione `NAME=val` vive qui (il kernel vede byte
+/// opachi): voci con nome vuoto o con `=`/NUL nel nome o NUL nel valore sono
+/// saltate (mai fail: l'env e' best-effort, gli argv no). `None` se argv/env
+/// troppi (> 1024 l'uno) o oltre `ARGS_MAX`.
+pub fn serialize_argv_redir_env(
+    argv: &[&str],
+    env: &[(&str, &str)],
+    spec: &[crate::stdio::RedirEntry],
+) -> Option<alloc::vec::Vec<u8>> {
     use crate::stdio::RedirEntry;
     if spec.len() > crate::stdio::REDIR_MAX_ENTRIES
         || argv.len() + if spec.is_empty() { 0 } else { 1 } > 1024
+        || env.len() > 1024
     {
         return None;
     }
@@ -155,11 +171,25 @@ pub fn serialize_argv_redir(
     }
     let mut buf = alloc::vec::Vec::new();
     let argc = argv.len() + if spec.is_empty() { 0 } else { 1 };
+    // Conta solo le voci env valide (stessa regola della scrittura sotto).
+    let mut envc = 0usize;
+    for (k, v) in env {
+        if !k.is_empty()
+            && !k.as_bytes().iter().any(|&b| b == b'=' || b == 0)
+            && !v.as_bytes().iter().any(|&b| b == 0)
+        {
+            envc += 1;
+        }
+    }
     buf.extend_from_slice(&(argc as u64).to_le_bytes());
+    buf.extend_from_slice(&(envc as u64).to_le_bytes());
     for a in argv {
         buf.extend_from_slice(a.as_bytes());
         buf.push(0);
     }
+    // La spec redirect e' l'ULTIMO argv (magic): va subito dopo gli argv,
+    // prima degli env (il kernel legge argc stringhe poi envc — l'ordine
+    // argv/magic/env e' il contratto).
     if !spec.is_empty() {
         buf.extend_from_slice(crate::stdio::REDIR_MAGIC);
         for (i, e) in spec.iter().enumerate() {
@@ -185,7 +215,18 @@ pub fn serialize_argv_redir(
         }
         buf.push(0);
     }
-    if buf.len() as u64 > ARGS_MAX + 8 {
+    for (k, v) in env {
+        if !k.is_empty()
+            && !k.as_bytes().iter().any(|&b| b == b'=' || b == 0)
+            && !v.as_bytes().iter().any(|&b| b == 0)
+        {
+            buf.extend_from_slice(k.as_bytes());
+            buf.push(b'=');
+            buf.extend_from_slice(v.as_bytes());
+            buf.push(0);
+        }
+    }
+    if buf.len() as u64 > ARGS_MAX + 16 {
         return None;
     }
     Some(buf)
@@ -198,11 +239,18 @@ pub fn serialize_argv_redir(
 /// `Invalid` a rifiuto del kernel; processo intatto).
 #[inline]
 pub fn exec(path: &str, argv: &[&str]) -> Result<(), Error> {
+    exec_env(path, argv, &[])
+}
+
+/// `exec_env(path, argv, env)`: come `exec` con in piu' l'environment (43a).
+/// `env` = coppie (nome, valore); stesse regole di `serialize_argv_redir_env`.
+#[inline]
+pub fn exec_env(path: &str, argv: &[&str], env: &[(&str, &str)]) -> Result<(), Error> {
     let img = match load_file(path) {
         Some(b) if !b.is_empty() => b,
         _ => return Err(Error::NotFound),
     };
-    let buf = match serialize_argv(argv) {
+    let buf = match serialize_argv_redir_env(argv, env, &[]) {
         Some(b) => b,
         None => return Err(Error::TooBig),
     };

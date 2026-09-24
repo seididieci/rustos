@@ -25,85 +25,107 @@ use super::ctx::SCHED;
 /// Pagina stack: lo stack user e' `USER_STACK_FRAMES` frame (16 KiB).
 const STACK_BYTES: u64 = 4 * 0x1000;
 
-/// Argomenti parsati dal blocco `[argc:8][payload]` (37.1.2): `strs` = coppie
-/// (offset, len) nel payload, senza NUL. Il blocco e' la copia owned del
-/// chiamante (heap kernel): sopravvive al teardown dello spazio user.
+/// Argomenti parsati dal blocco `[argc:8][envc:8][payload]` (37.1.2, env in
+/// 43a): `arg_strs`/`env_strs` = coppie (offset, len) nel payload, senza NUL
+/// (prima gli argv, poi gli env). Il blocco e' la copia owned del chiamante
+/// (heap kernel): sopravvive al teardown dello spazio user. Il kernel NON
+/// ispeziona il contenuto (niente `NAME=val`: byte opachi, neutralita'
+/// ADR-0025 — la convenzione vive in `libr`/shell).
 struct ParsedArgs<'a> {
     argc: u64,
+    envc: u64,
     payload: &'a [u8],
-    strs: alloc::vec::Vec<(usize, usize)>,
+    arg_strs: alloc::vec::Vec<(usize, usize)>,
+    env_strs: alloc::vec::Vec<(usize, usize)>,
 }
 
 /// Parsifica+valida il blocco args PRIMA di toccare qualunque stato: `None` =
-/// processo intatto. Formato: `[argc:8][esattamente argc stringhe
-/// NUL-terminate concatenate, niente coda]`; bound `ARGS_MAX` + fit nello
-/// stack (stringhe + array + argc + slack allineamento <= 16 KiB) — oltre =
-/// rifiuto atomico (mai teardown a meta': il layout dopo non puo' fallire).
+/// processo intatto. Formato: `[argc:8][envc:8][esattamente argc+envc
+/// stringhe NUL-terminate concatenate, niente coda]`; bound `ARGS_MAX` + fit
+/// nello stack (stringhe + array + argc + slack allineamento <= 16 KiB) —
+/// oltre = rifiuto atomico (mai teardown a meta': il layout dopo non puo'
+/// fallire).
 fn parse_args(block: &[u8]) -> Option<ParsedArgs<'_>> {
-    if block.len() < 8 || block.len() as u64 > syscall_numbers::ARGS_MAX + 8 {
+    if block.len() < 16 || block.len() as u64 > syscall_numbers::ARGS_MAX + 16 {
         return None;
     }
     let argc = u64::from_le_bytes(block[..8].try_into().ok()?);
-    if argc > 1024 {
+    let envc = u64::from_le_bytes(block[8..16].try_into().ok()?);
+    if argc > 1024 || envc > 1024 {
         return None;
     }
-    let payload = &block[8..];
-    let mut strs = alloc::vec::Vec::new();
+    let payload = &block[16..];
+    let mut arg_strs = alloc::vec::Vec::new();
+    let mut env_strs = alloc::vec::Vec::new();
     let mut off = 0usize;
     for _ in 0..argc {
         let end = payload.get(off..)?.iter().position(|&b| b == 0)?;
-        strs.push((off, end));
+        arg_strs.push((off, end));
+        off += end + 1;
+    }
+    for _ in 0..envc {
+        let end = payload.get(off..)?.iter().position(|&b| b == 0)?;
+        env_strs.push((off, end));
         off += end + 1;
     }
     if off != payload.len() {
         return None;
     }
-    let total = payload.len() as u64 + 8 * (argc + 2) + 8 + 16;
+    let total = payload.len() as u64 + 8 * (argc + 1) + 8 * (envc + 1) + 8 + 16;
     if total > STACK_BYTES {
         return None;
     }
-    Some(ParsedArgs { argc, payload, strs })
+    Some(ParsedArgs { argc, envc, payload, arg_strs, env_strs })
 }
 
-/// Stende lo stack argv in ordine Linux sotto `stack_top` (37.1.2): stringhe
-/// in alto, poi array `argv[]` + NULL + envp NULL, argc in basso; ritorna il
-/// nuovo rsp (punta ad argc, `rsp % 16 == 8`). `argc=0` = le sole 3 parole
-/// (stesso layout di `setup_user_stack`, che qui viene sovrascritto).
-/// Scrittura via VA user: CR3 proprio attivo in exec (mai altrove).
-/// Infallibile per costruzione (fit pre-verificato in `parse_args`).
-unsafe fn layout_argv(stack_top: u64, argc: u64, payload: &[u8], strs: &[(usize, usize)]) -> u64 {
+/// Stende lo stack argv+env in ordine Linux sotto `stack_top` (37.1.2, env in
+/// 43a): stringhe in alto, poi array `argv[]` + NULL + `envp[]` + NULL, argc
+/// in basso; ritorna il nuovo rsp (punta ad argc, `rsp % 16 == 8`).
+/// `argc=0, envc=0` = le sole 3 parole (stesso layout di `setup_user_stack`,
+/// che qui viene sovrascritto). Scrittura via VA user: CR3 proprio attivo in
+/// exec (mai altrove). Infallibile per costruzione (fit pre-verificato).
+unsafe fn layout_argv(stack_top: u64, parsed: &ParsedArgs<'_>) -> u64 {
     // Indirizzi VA delle stringhe (heap kernel, mai stack kernel: l'array
     // statico da 8 KiB rischierebbe l'overflow dei 16 KiB di stack).
-    let mut addrs = alloc::vec::Vec::new();
+    let mut arg_addrs = alloc::vec::Vec::new();
+    let mut env_addrs = alloc::vec::Vec::new();
     let mut sp_str = stack_top;
-    for &(off, len) in strs.iter() {
+    for &(off, len) in parsed.arg_strs.iter().chain(parsed.env_strs.iter()) {
         sp_str -= len as u64 + 1;
         unsafe {
             core::ptr::copy_nonoverlapping(
-                payload[off..].as_ptr(),
+                parsed.payload[off..].as_ptr(),
                 sp_str as *mut u8,
                 len + 1,
             );
         }
-        addrs.push(sp_str);
+        if arg_addrs.len() < parsed.argc as usize {
+            arg_addrs.push(sp_str);
+        } else {
+            env_addrs.push(sp_str);
+        }
     }
-    let arr = (sp_str & !15) - 8 * (argc + 2);
-    for (i, &a) in addrs.iter().enumerate() {
+    let arr = (sp_str & !15) - 8 * (parsed.argc + 1) - 8 * (parsed.envc + 1);
+    for (i, &a) in arg_addrs.iter().enumerate() {
         unsafe { core::ptr::write((arr + i as u64 * 8) as *mut u64, a) };
     }
     unsafe {
-        core::ptr::write((arr + argc * 8) as *mut u64, 0); // argv NULL
-        core::ptr::write((arr + (argc + 1) * 8) as *mut u64, 0); // envp NULL
+        core::ptr::write((arr + parsed.argc * 8) as *mut u64, 0); // argv NULL
+        let ebase = arr + (parsed.argc + 1) * 8;
+        for (i, &a) in env_addrs.iter().enumerate() {
+            core::ptr::write((ebase + i as u64 * 8) as *mut u64, a);
+        }
+        core::ptr::write((ebase + parsed.envc * 8) as *mut u64, 0); // envp NULL
         let rsp = arr - 8;
-        core::ptr::write(rsp as *mut u64, argc);
+        core::ptr::write(rsp as *mut u64, parsed.argc);
         rsp
     }
 }
 
 /// Sostituisce l'immagine del processo corrente con `bytes` (copia owned del
 /// chiamante, gia' validata come range user) e gli argomenti `args_block`
-/// (`None` = nessun argv → argc=0; `Some` = blocco `[argc:8][payload]`,
-/// copiato in heap kernel come i byte). SCHED lock trattenuto per tutta
+/// (`None` = nessun argv/env → argc=0; `Some` = blocco `[argc:8][envc:8]
+/// [payload]`, copiato in heap kernel come i byte). SCHED lock trattenuto per tutta
 /// l'operazione (come `fork_current`); IF=0 in syscall, niente preemption e
 /// niente blocking nel mezzo (mai context switch su spazio dimezzato).
 pub fn exec_current(bytes: &[u8], args_block: Option<&[u8]>) -> Result<(), ()> {
@@ -155,10 +177,13 @@ pub fn exec_current(bytes: &[u8], args_block: Option<&[u8]>) -> Result<(), ()> {
     let new_text = unsafe { crate::elf::load(cr3, bytes, &layout) };
     let _ = unsafe { crate::vmm_user::setup_user_stack(cr3) };
     let new_rsp = match &parsed {
-        Some(p) => unsafe {
-            layout_argv(crate::vmm_user::USER_STACK_TOP, p.argc, p.payload, &p.strs)
+        Some(p) => unsafe { layout_argv(crate::vmm_user::USER_STACK_TOP, p) },
+        None => unsafe {
+            layout_argv(
+                crate::vmm_user::USER_STACK_TOP,
+                &ParsedArgs { argc: 0, envc: 0, payload: &[], arg_strs: alloc::vec::Vec::new(), env_strs: alloc::vec::Vec::new() },
+            )
         },
-        None => unsafe { layout_argv(crate::vmm_user::USER_STACK_TOP, 0, &[], &[]) },
     };
 
     // 5. PCB: nuova identita' (text + hash), stessa persona (pid/parent/prio/

@@ -1,0 +1,7 @@
+# 43a: VAR=v mono-comando (bash: $E43 nella stessa riga vede il vecchio).
+export E43=base
+E43=one run /fat/bin/runhello.bin
+echo $E43
+E43=two echo hi-two
+echo $E43
+E43=three echo $E43

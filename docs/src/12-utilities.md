@@ -41,8 +41,10 @@ la mostra (`/prova$ `, `$ ` a root).
 | `rm <file>` | Cancella file (`R_DELETE`; su `/fat` rifiutato: niente unlink, fuori scope) |
 | `rmdir <dir>` | Cancella directory vuota (rifiutata se piena) |
 | `ps` | Tabella processi stile Linux: PID NAME PRIO STATE TIME PARENT (syscall 37, Fase 19.1) |
-| `export [NAME=val]` | Variabili shell (Fase 41): set persistente o lista; `NAME=valore` nudo equivale |
-| `run <path> [args...] [&]` | Lancia un programma via fork+exec (Fase 37.2): path esatto (niente ricerca: `/fat/bin/runhello.bin`, non `runhello`), argv[0] = path digitato; `&` = background (prompt subito), senza = foreground (attende; `[exit N]` se N != 0) |
+| `export [NAME=val]` | Variabili shell (Fase 41): set persistente o lista; `NAME=valore` nudo equivale; TUTTE passano ai figli via envp (43a, niente flag export) |
+| `VAR=v cmd` | Ambiente mono-comando (43a): builtin con save/set/restore, esterni via envp, stadi pipe scoped; `$VAR` nella stessa riga vede il vecchio (espansione al parse, come bash) |
+| `run <prog> [args...] [&]` | Lancia un programma via fork+exec (37.2, PATH in 43a: senza `/` cerca in `$PATH`, default `/fat/bin`, fallback `.bin`; `argv[0]` = path risolto); `&` = background (prompt subito), senza = foreground (attende; `[exit N]` se N != 0) |
+| `prog args...` | Bare word (43a): non-builtin cercato in PATH ed eseguito come `run` (ignoto = 127); con `/` è path diretto |
 | `source <file>` | Esegue uno script riga-per-riga (stesso parser della tastiera: `; && \|\|`, pipe, redirect, heredoc, `$VAR/$?`, glob, `run`). `$?` iniziale = esterno, exit dello script = ultimo comando; `exit` termina lo script (mai la shell); esecuzione silenziosa (niente eco). Anticipa la Fase 43 (script `.sh`); nato per velocizzare i test (1 riga digitata invece di N) |
 | `jobs` | Tabella job (`[id] pid P run\|done C cmd`; i finiti restano finche' `wait`) |
 | `wait [pid]` | Attende i job (tutti o uno) e li rimuove, stampa `pid P: exit C` |
@@ -102,7 +104,7 @@ Sintassi bash-like (subset), implementata in `userland/shell/src/parser.rs`
 | `export [N=v]` / `N=v` | Set persistente o lista (senza comando) |
 
 I builtin ritornano `i64` (0 ok, 1 errore, 127 ignoto, 2 parse) per `$?`/`&&`/`||`.
-Connettori consecutivi: vince l'ultimo. `VAR=v comando` rifiutato (Fase 43);
+Connettori consecutivi: vince l'ultimo. `VAR=v comando` = ambiente mono-comando (Fase 43a);
 virgolette non chiuse = resto riga letterale (niente continuazione).
 
 > **Nota tastiera**: `\` e `|` arrivano dal tasto ANSI `0x2B`, che
@@ -129,6 +131,26 @@ reservation al grant (stesso nonce COW di ADR-0031); `libr` riprova throttled
 su `Empty` (server mai bloccante); EOF vero solo a scrittori esauriti.
 Streaming oltre la capacità via intercalazione scheduler. `&` su pipeline
 rifiutato fino alla Fase 44; pipe trailing ignorata.
+
+### Env / PATH / shebang (Fase 43a)
+
+Ogni programma lanciato riceve `argv` + `envp` (blocco
+`[argc][envc][argv][magic?][env]`, budget unico `ARGS_MAX`; il kernel stende
+byte opachi — neutralità verificabile, ADR-0033). La shell passa tutte le
+VARS + `PWD=cwd` (se assente); i programmi leggono con `libr::{Env,
+env_from_stack}` (`runhello` dumpa l'env con `runhello: env:K=v`).
+
+| Sintassi | Effetto |
+|----------|---------|
+| `export FOO=bar` / `FOO=bar` | Persistente + ereditato dai figli |
+| `A=1 cmd` | Solo per quel comando (anche `run` e stadi pipe) |
+| `runhello` / `run prog` | Ricerca in `$PATH` (default `/fat/bin`) |
+| `run ./x.sh` | Shebang `#!interp [arg]` → `argv=[interp, script, args...]` (bound 4) |
+
+Limiti onesti: `argv[0]` delle bare word = path risolto (non digitato);
+shebang solo shell-side (il kernel resta ELF-puro); redirect esterno +
+interni annidati non si combinano (limite noto); doppio messaggio
+(`cannot load` + `unknown command`) per stadi pipe ignoti senza `/`.
 
 ### Script con `source`
 

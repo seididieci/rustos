@@ -114,7 +114,7 @@ La numerazione e' definita nel dispatch di `syscall_handler` in `kernel/src/sysc
 | 45 | `fork()` | duplica il chiamante in COW (Fase 34, nessun argomento): padre `(pid_figlio, canale)` (rax + rdi multi-registro), figlio `(0, canale)`; -1 su PID/canali/OOM esauriti |
 | 46 | `peer_pid(chan)` | pid del peer del canale `chan` (0 = nascita), o -1 (Fase 35, hardening: i server attribuiscono le richieste; abilita la policy `FS_REGISTER`) |
 | 47 | `peer_info(chan)` | hash dell'immagine del peer del canale `chan` (0 = nascita): 0 + hash in rdi, o -1 (Fase 36, identita' misurata: policy su identita' in init/userfs) |
-| 48 | `exec_image(img, len, args, argslen)` | sostituisce l'immagine del chiamante (Fase 37, exec in-place): stesso PID/canali, nuovo address space + stack argv stile Linux (`args` = blocco `[argc:8][payload]` entro `ARGS_MAX`, 0/0 = argc=0), hash rimisurato; mai ritorno (salta all'entry), -1 a validazione fallita (processo intatto) |
+| 48 | `exec_image(img, len, args, argslen)` | sostituisce l'immagine del chiamante (Fase 37, exec in-place): stesso PID/canali, nuovo address space + stack argv+env stile Linux (`args` = blocco `[argc:8][envc:8][argv][magic?][env]` entro `ARGS_MAX`, 0/0 = argc=0; env = byte opachi, kernel neutro — ADR-0033), hash rimisurato; mai ritorno (salta all'entry), -1 a validazione fallita (processo intatto) |
 | 49 | `dma_alloc(pages)` | alloca `pages` (1..=`DMA_PAGES_MAX`) frame contigui azzerati per DMA Bus-Master (Fase 38.1): mappa RW/NX a `USER_DMA_VA`, ritorna il fisico base (il device vuole phys per PRD/BMIBA); single-slot (seconda alloc = -1), free a teardown/exec, mai ereditata dal fork |
 
 > **Fase 29 (protezioni)**: `PROT_NONE`/`PROT_READ`/`PROT_READ|PROT_WRITE` sono
@@ -229,7 +229,9 @@ extern "C" fn syscall_handler() -> i64 {
 | `peer_pid` | 46 | Pid del peer di un canale (Fase 35) → pid o `Err` |
 | `peer_info` | 47 | Hash immagine del peer di un canale (Fase 36) → hash o `Err` |
 | `exec_image` | 48 | Exec in-place senza argv (Fase 37.0) → mai ritorno, `Err` a validazione fallita |
-| `exec_image_args` | 48 | Come sopra con blocco argv grezzo (Fase 37.1) |
+| `exec_image_args` | 48 | Come sopra con blocco argv+env grezzo (37.1, env in 43a) |
+| `serialize_argv_redir_env` | — | Blocco `[argc][envc][argv][magic?][env NAME=val]` (43a; wrapper `serialize_argv[_redir]` a env vuoto) |
+| `env_from_stack` / `Env` | — | Vista envp dallo stack iniziale: `count/get_raw/get(NAME)` (43a) |
 | `exec` | 48 | `exec(path, argv)` = load_file + serialize + exec_args (Fase 37.1; il kernel non tocca il FS) |
 | `dma_alloc` | 49 | Alloca frame contigui per DMA (Fase 38.1, single-slot) → fisico base |
 | `text_stats` | 44 | Contatori shared text (Fase 32): hits/misses/live (+ Fase 33: fault COW in rdx) |
