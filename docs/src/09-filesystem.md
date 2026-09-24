@@ -211,6 +211,7 @@ usertests 17/17, shell 3/3.
 19.2 Metadati senza open (R_STAT 0x1B, risposta self-written `[size:8][kind:8]`: ramfs size reale, FAT mai readonly dalla Fase 20, device size 0, check RIGHTS_READDIR+subtree, `libr::stat`, t38) [x]
 20   FAT32 scrivibile ([ADR-0016](../adr/0016-fat-writable.md): DISK_WRITE + write PIO + overwrite/grow/alloc/O_CREAT write-through, `testfat` 7/7, fsck pulito) [x]
 21   Servizi da disco: userfs con cache FileInfo per-fd + generazione (bump a ogni mutazione FAT; stat sempre fresca) e `IpcDisk` con OPEN-once per connessione (re-OPEN solo a canale caduto) — dimezza i round-trip DISK dei load da disco [x]
+46   Provider trait (`LocalFs` + `LocalFsDyn` + `DynHandle<T>`, enum `MountedFs::Local`) — scaffolding, nessun handler instrada ancora via `Local` (zero runtime change, gate 5/5+7/7+57/57 invariato) [x]
 ```
 
 ## File coinvolti
@@ -223,6 +224,7 @@ usertests 17/17, shell 3/3.
 | `libs/libr/src/lib.rs` | Wrappers FS su ring + `fs_init` lazy + chunking read/write + `map_in` + `ring_alloc_raw` (coppia senza handshake, Fase 16) |
 | `userland/fs/src/main.rs` | userfs: finestra ring, registro `chan→(req,resp)` + `ftable`/`next_fd` per canale, map_in per device remoti |
 | `userland/fs/src/ipc_disk.rs` | client `DISK_*` verso userdisk (`BlockSource`, riconnessione lazy, Fase 16; resolve nome→handle + map di entrambi i ring, Fase 16c; OPEN-once per connessione, Fase 21) |
+| `userland/fs/src/provider.rs` | Trait `LocalFs` (presentazione POSIX), `LocalFsDyn` object-safe con handles erasure (`*const ()`), `DynHandle<T>`, enum `MountedFs` esteso — scaffolding Fase 46, nessun handler instrada ancora via `Local` |
 | `userland/disk/src/main.rs` | userdisk: detect+part, `/dev/sdX`, protocolli `DISK_*`+`DEV_*` (Fase 16; `DISK_RESOLVE` single-source-of-truth, Fase 16c) |
 | `userland/devfs/src/main.rs` | devfs: `/dev/null`, `/dev/zero` |
 | `userland/console/src/main.rs` | console: rendering `/dev/console` su VGA (tastiera in `userkbd`/`usertty` dalla Fase 15) |

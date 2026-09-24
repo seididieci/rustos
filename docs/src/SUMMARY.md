@@ -64,3 +64,4 @@
 - [ADR-0035: job control (disegno Fase 44a)](./adr/0035-job-control.md)
 - [ADR-0036: segnali nativi cooperativi (disegno Fase 44b)](./adr/0036-signals.md)
 - [ADR-0037: policy su identita' + sandbox build (Fase 45)](./adr/0037-policy-identity-sandbox.md)
+- [ADR-0038: Provider trait per filesystem (Fase 46)](./adr/0038-provider-trait.md)
