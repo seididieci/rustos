@@ -7,7 +7,7 @@ script via `source`. Verifica sul log seriale. Autonomo: prepara le immagini
 """
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
-from shell_harness import Shell, Checker, prep_images, parse_shell_args
+from shell_harness import Shell, Checker, prep_images, parse_shell_args, has_line
 
 SH = "/fat/test/sh"
 
@@ -38,7 +38,7 @@ def main():
         c.check("43 VAR=v su run", found)
         found = b"hi-two" in out
         c.check("43 VAR=v su builtin", found)
-        found = b"] base\n" in out
+        found = has_line(out, b"base")
         c.check("43 mono non persiste", found)
 
         # PATH + bare word + ignoto.
@@ -49,7 +49,7 @@ def main():
         c.check("43 run cerca in PATH", found)
         found = b"unknown command: nosuchprog43" in out
         c.check("43 ignoto resta 127", found)
-        found = b"] 127\n" in out
+        found = has_line(out, b"127")
         c.check("43 $? dopo ignoto", found)
 
         # Shebang (kernel mai coinvolto: solo shell+libr).
@@ -67,7 +67,7 @@ def main():
         c.check("43 stadio bare-word", found)
         found = b"unknown command: nosuchst43" in out
         c.check("43 stadio ignoto", found)
-        found = b"] base\n" in out
+        found = has_line(out, b"base")
         c.check("43 env stadio non leak", found)
         return 0 if c.ok else 1
     except RuntimeError as e:

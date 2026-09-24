@@ -97,6 +97,54 @@ unsafe fn vga_scroll(vga: *mut Buffer) {
     unsafe { vga_clear_row(vga, VGA_ROWS - 1) };
 }
 
+/// Alimenta UN byte del flusso terminale (Fase 43b, editing di linea della
+/// shell): mini-parser ESC con stato `esc` (0 = normale, 1 = visto ESC,
+/// 2 = visto ESC-`[`). I comandi supportati sono `ESC[D` (cursore sinistra
+/// SENZA cancellare: il vecchio `\x08` cancella e non basta per l'editing
+/// mid-line), `ESC[C` (destra), `ESC[K` (spazi da cursore a fine riga,
+/// cursore fermo). Sequenze ignote = ignorate. Lo stato persiste tra le
+/// DEV_WRITE (una sequenza puo' spezzarsi tra due write).
+unsafe fn feed_byte(vga: *mut Buffer, byte: u8, cursor: &mut usize, esc: &mut u8) {
+    match *esc {
+        0 => {
+            if byte == 0x1b {
+                *esc = 1;
+            } else {
+                unsafe { vga_write_char(vga, byte, cursor) };
+            }
+        }
+        1 => {
+            *esc = if byte == b'[' { 2 } else { 0 };
+        }
+        _ => {
+            *esc = 0;
+            match byte {
+                b'D' => {
+                    if *cursor > 0 {
+                        *cursor -= 1;
+                        unsafe { move_hw_cursor(VGA_ROWS - 1, *cursor) };
+                    }
+                }
+                b'C' => {
+                    if *cursor < VGA_COLS - 1 {
+                        *cursor += 1;
+                        unsafe { move_hw_cursor(VGA_ROWS - 1, *cursor) };
+                    }
+                }
+                b'K' => {
+                    let mut col = *cursor;
+                    while col < VGA_COLS {
+                        unsafe { vga_write_byte(vga, VGA_ROWS - 1, col, b' ') };
+                        col += 1;
+                    }
+                    unsafe { move_hw_cursor(VGA_ROWS - 1, *cursor) };
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Scrive un carattere ASCII sul VGA (ultima riga) con scroll automatico.
 /// Aggiorna il cursore software e sposta il cursore hardware a seguire.
 unsafe fn vga_write_char(vga: *mut Buffer, byte: u8, cursor: &mut usize) {
@@ -167,6 +215,8 @@ fn real_main(_sp: u64) -> ! {
     // 3. Stampa banner (il terminale parte in fondo, come un prompt).
     let msg = b"Velordor console server";
     let mut cursor = 0usize;
+    // Stato parser ESC (Fase 43b): persiste tra le DEV_WRITE.
+    let mut esc: u8 = 0;
     for &b in msg {
         unsafe { vga_write_char(vga, b, &mut cursor) };
     }
@@ -223,7 +273,7 @@ fn real_main(_sp: u64) -> ! {
                             data.resize(count, 0);
                             unsafe { req_frame_read(REQ_RING_VA, &mut data, count); }
                             for b in &data {
-                                unsafe { vga_write_char(vga, *b, &mut cursor) };
+                                unsafe { feed_byte(vga, *b, &mut cursor, &mut esc) };
                             }
                         }
                         let _ = libr::reply(msg.tag, msg.w1, 0);

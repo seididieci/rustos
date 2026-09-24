@@ -187,8 +187,15 @@ seriale ed esce 0; con argomento `fail` esce 3 (dopo aver stampato). Con
 stdin redirectato stampa anche `runhello: stdin:<byte>` (Fase 40.4d). Serve ai
 test shell (`scripts/test-shell-*.py`) come target fg/bg con exit code osservabile.
 
-Line editing: il backspace a riga vuota non mangia il prompt (disciplina di
-linea in `usertty`: conta i digitati, ingoia il resto — Fase 18.0).
+Line editing (Fase 43b, readline nella shell su tty raw): Up/Down history
+comandi (Enter accoda: non vuota, no duplicato consecutivo; heredoc esclusi),
+Left/Right/Home/End cursore, Delete sotto cursore, Esc ignorato. L'editor
+possiede buffer+cursore+echo console-only (mai seriale); redraw senza
+conoscere il prompt (`ESC[D`×screen + `ESC[K` + buffer + riposiziona).
+La console capisce `ESC[D/C` (cursore senza erase) ed `ESC[K` (erase-to-EOL).
+Il backspace a riga vuota non mangia il prompt (floor migrato da `usertty`
+nella shell — Fase 18.0 superata). Solo ASCII; righe oltre 80 colonne non
+editabili (wrap VGA).
 
 ### Limiti onesti
 

@@ -96,6 +96,29 @@ class Checker:
         return bool(cond)
 
 
+def has_line(out: bytes, text: bytes) -> bool:
+    """Vero se `text` appare come RIGA INTERA nello slice seriale, in una
+    qualunque delle tre forme in cui l'output puo' presentarsi (dipende solo
+    da cosa precede sul seriale, mai dal contenuto):
+    - `] text` (dopo timestamp: output a inizio riga, tipico `source`),
+    - `$ text` (incollato al prompt senza newline, tipico digitato),
+    - a inizio slice (prompt stampato prima del mark).
+    Senza, gli assert posizionali dipendono dagli interleave kernel/timing
+    (osservato: burst [blkdbg]/[irq1] ai bordi spostano gli anchor)."""
+    return (b"] " + text + b"\n" in out
+            or b"$ " + text + b"\n" in out
+            or out.startswith(text + b"\n"))
+
+
+def count_lines(out: bytes, text: bytes) -> int:
+    """Conta le righe intere `text` in qualunque forma (vedi `has_line`):
+    per i prima/dopo sui replay da history."""
+    n = out.count(b"] " + text + b"\n") + out.count(b"$ " + text + b"\n")
+    if out.startswith(text + b"\n"):
+        n += 1
+    return n
+
+
 class Shell:
     """Una istanza QEMU + shell Velordor. I path distinguono le istanze
     parallele (il runner li assegna per fase)."""
@@ -227,6 +250,12 @@ class Shell:
         if dt > 10:
             print("info slow run_source %.1fs: %s" % (dt, path), flush=True)
         return self.read_log()[mark:]
+
+    def press(self, key: str, sleep=0.5):
+        """Un tasto speciale via sendkey (43b: up/down/left/right/home/end/
+        delete/esc/backspace). Niente Enter: lo manda il chiamante."""
+        self.send_mon("sendkey %s" % key)
+        time.sleep(sleep)
 
     def run_heredoc(self, first: str, lines, delim: str, sleep=None):
         """Heredoc Fase 42: prima riga, corpo riga per riga (prompt secondario

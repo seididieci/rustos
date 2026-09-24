@@ -12,7 +12,9 @@ pub(crate) struct TtySrc;
 
 impl LineSrc for TtySrc {
     fn next_line(&mut self, prompt: &str) -> Option<String> {
-        Some(term::read_line(prompt))
+        // Il prompt secondario `> ` e' dell'heredoc (corpo letterale, mai in
+        // history — 43b); il prompt comando registra.
+        Some(term::read_line_rec(prompt, prompt != "> "))
     }
 }
 

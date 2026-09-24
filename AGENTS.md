@@ -1589,8 +1589,18 @@ velordor/
         (stesso `T_DONE`); `test-shell-43.py` 17 check. Bug vero: magic dopo
         gli env invece che ultimo argv (incrocio solo magic+env) — contratto
         d'ordine argv/magic/env. Shell 29/8/20/37/18/22/17 (151 check).
-  - [ ] Fase 43b (P4, history/editing base: frecce oggi scartate in usertty,
-        serve cooperazione tty+shell). Vittoria: Up/Down history, Left/Right.
+  - [x] Fase 43b (P4, history/editing base; ADR-0034): readline nella shell
+        su tty raw (M2: editor+history+echo console-only in shell; tty
+        decodifica frecce/Home/End/Delete→ESC e non fa piu' echo, via
+        `line_len`/floor 18.0; console con `ESC[D/C/K`). Up/Down (+stash,
+        heredoc esclusi), Left/Right/Home/End/Delete, Esc ignorato con attesa
+        bounded; redraw senza conoscere il prompt. `test-shell-43b.py` 9 check
+        (digitazione reale, assert sull'effetto). Bug veri: Delete mappato a
+        `Unicode(0x7f)` da `Us104Key` (mai `RawKey`: override in `Us104Fix`,
+        classe fix Oem7); anchor posizionali `] X` fragili agli interleave
+        kernel → helper `has_line`/`count_lines` (applicati a 7 assert di
+        41/42/43). Shell 160 check (29/8/20/37/18/22/17/9); gate invariato
+        5/5+7/7+54/54 (zero kernel).
   - [ ] Fase 44 (P5, job control + segnali): `SIGINT/SIGTSTP` catturabili,
         `fg/bg`, Ctrl-C/Z solo foreground, causa morte. Vittoria: `&`, `fg`,
         Ctrl-C selettivo.

@@ -334,10 +334,12 @@ esteso cosi' (dettagli in `AGENTS.md` e ADR):
 - **Fase 15 — Keyboard + Terminal server in userspace** (implementata,
   [ADR-0011](./adr/0011-userspace-keyboard-terminal.md)): `userkbd` (driver PS/2
   in ring 3, `io_ranges 0x60-0x64`, `/dev/kbd`, servizio `Kbd` svegliato da
-  IRQ1) + `usertty` (decode, echo, `/dev/input/keyboard`, servizio `Tty`,
-  client FS puramente async ed event-driven); console ridotto a rendering
-  (`/dev/console`). Regole: mai IPC sincrone servendo, mai spinner, boot
-  async senza attese di wake, handshake per canale.
+  IRQ1) + `usertty` (decode raw in 43b — frecce→ESC, niente echo —,
+  `/dev/input/keyboard`, servizio `Tty`, client FS puramente async ed
+  event-driven); console ridotto a rendering (`/dev/console`) + `ESC[D/C/K`
+  (43b); echo ed editing nella readline della shell. Regole: mai IPC
+  sincrone servendo, mai spinner, boot async senza attese di wake,
+  handshake per canale.
 - **Fase 16 — Disk/ATA server in userspace** (implementata,
   [ADR-0012](./adr/0012-userspace-disk-driver.md)): `userdisk` (driver ATA in
   ring 3, canale primario via `io_ranges` — il secondario e' probato ma non

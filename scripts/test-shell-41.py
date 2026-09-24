@@ -8,7 +8,7 @@ scripts/shell_harness.py.
 """
 import sys, os, re
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
-from shell_harness import Shell, Checker, prep_images, parse_shell_args
+from shell_harness import Shell, Checker, prep_images, parse_shell_args, has_line
 
 SH = "/fat/test/sh"
 
@@ -57,7 +57,7 @@ def main():
         out = sh.run_source(SH + "/p41c1.txt")
         # Riga intera "] pre" (non prima-riga dello slice: i burst [blkdbg]/
         # [irq1] del kernel si intercalano ai bordi — ancoraggio al formato).
-        found = b"UNSET41X" not in out and b"] pre\n" in out
+        found = b"UNSET41X" not in out and has_line(out, b"pre")
         c.check("41 $UNSET sparisce", found)
         found = b"zzz" in out
         c.check("41 bare NAME=valore", found)
@@ -69,7 +69,7 @@ def main():
         c.check("41 export nome invalido", found)
         # 43a: il prefisso mono-comando ora funziona (builtin: save/set/
         # restore — "hi" stampato, F41X non persiste; il set e' provato in 43).
-        found = b"] hi\n" in out
+        found = has_line(out, b"hi")
         c.check("41 VAR=v cmd mono-comando (43a)", found)
 
         # $$ e ~: assert di posizione, script dedicati.
@@ -77,7 +77,7 @@ def main():
         found = re.search(rb"\d+", out) is not None and b"$$" not in out
         c.check("41 $$ numerico", found)
         out = sh.run_source(SH + "/p41c2.txt")
-        found = b"] /\n" in out
+        found = has_line(out, b"/")
         c.check("41 tilde -> /", found)
 
         # Field-split: una variabile con spazio diventa DUE argv (osservabile
@@ -104,11 +104,11 @@ def main():
         found = b"deep41" in out
         c.check("41 catena || profonda", found)
         out = sh.run_source(SH + "/p41f2.txt")
-        found = b"] 1\n" in out
+        found = has_line(out, b"1")
         c.check("41 $? dopo errore", found)
         found = b"unknown command" in out
         c.check("41 comando ignoto", found)
-        found = b"] 127\n" in out
+        found = has_line(out, b"127")
         c.check("41 $? dopo ignoto (=127)", found)
         found = b"comb41" in out
         c.check("41 redirect + &&", found)

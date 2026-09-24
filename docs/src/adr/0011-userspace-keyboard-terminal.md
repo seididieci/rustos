@@ -25,6 +25,9 @@ Split in tre processi userspace, tutti a priorita' Normal:
   `/dev/console`, byte cotti su `/dev/input/keyboard` con protocollo
   byte-identico a prima (la shell NON cambia). Servizio `Tty` (solo per la
   supervisione init; i client usano il FS).
+- **Fase 43b (emendamento)**: tty e' raw — decodifica frecce/Home/End/Delete
+  in sequenze ESC e NON fa piu' echo (lo fa il lettore: la readline della
+  shell, echo console-only). Il floor backspace 18.0 migra nella shell.
 - **`userconsole`** (solo rendering): VGA + cursore, device di output
   `/dev/console` (`DEV_CONSOLE=3`, nuovo `dev_type` in userfs).
 

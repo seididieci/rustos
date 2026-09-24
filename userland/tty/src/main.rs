@@ -1,10 +1,11 @@
-//! usertty — Terminal server in userspace (Fase 15).
+//! usertty — Terminal server in userspace (Fase 15, raw in 43b).
 //!
 //! Legge scancode raw (Set 1) da `/dev/kbd` (driver `userkbd`), li decodifica
-//! con `pc_keyboard` (layout US), fa echo su `/dev/console` e serve i byte
-//! cotti ai client sul device `/dev/input/keyboard` con protocollo
-//! byte-identico a prima: la shell non cambia una riga (char-by-char,
-//! `Enter→\n`, `Backspace→0x08`, resto filtrato).
+//! con `pc_keyboard` (layout US) e serve i byte ai client sul device
+//! `/dev/input/keyboard` SENZA echo (Fase 43b: l'echo lo fa il lettore, la
+//! shell con la sua readline — tty resta un trasporto raw). Mappa tasti:
+//! char-by-char, `Enter→\n`, `Backspace→0x08`, frecce→`ESC[A/B/C/D`,
+//! `Home/End→ESC[H/F`, `Delete→ESC[3~`, `Esc→ESC`, resto filtrato.
 //!
 //! REGOLA ANTI-DEADLOCK (Fase 15, ciclo userfs<->tty): un driver che SERVE
 //! richieste sincrone non deve MAI emettere IPC FS sincrone. userfs gli
@@ -54,13 +55,16 @@ use libr::{req_frame_read, resp_frame_write};
 
 // ── Stato ───────────────────────────────────────────────────────────
 
-/// Layout US-ANSI corretto (Fase 41): `pc-keyboard 0.7` mappa lo scancode
-/// `0x2B` (backslash ANSI, quello che QEMU `sendkey backslash` invia) su
-/// `KeyCode::Oem7`, ma `Us104Key` non gestisce `Oem7` (cade in `RawKey`, che
-/// `decode_bytes` scarta) — solo `0x56` (tasto ISO, assente sulle ANSI) dava
-/// `\`/`|`. Risultato: `\` e `|` non arrivavano mai al guest (nomi QEMU validi
-/// ma byte mai consegnati). Si delega tutto a `Us104Key` tranne `Oem7`, mappato
-/// come la posizione ANSI US vuole (`\` / `|` con shift).
+/// Layout US-ANSI corretto (Fase 41 + 43b): `pc-keyboard 0.7` mappa lo
+/// scancode `0x2B` (backslash ANSI, quello che QEMU `sendkey backslash`
+/// invia) su `KeyCode::Oem7`, ma `Us104Key` non gestisce `Oem7` (cade in
+/// `RawKey`, che `decode_bytes` scarta) — solo `0x56` (tasto ISO, assente
+/// sulle ANSI) dava `\`/`|`. Risultato: `\` e `|` non arrivavano mai al guest
+/// (nomi QEMU validi ma byte mai consegnati). Stesso buco per Delete (43b):
+/// `Us104Key` lo mappa a `Unicode(0x7f)`, mai a `RawKey`, quindi l'arm
+/// `KeyCode::Delete→ESC[3~` non scatterebbe mai (Delete muto mid-line,
+/// osservato). Si delega tutto a `Us104Key` tranne `Oem7` (posizione ANSI US:
+/// `\` / `|` con shift) e `Delete` (RawKey, editing della shell).
 struct Us104Fix;
 
 impl KeyboardLayout for Us104Fix {
@@ -76,6 +80,8 @@ impl KeyboardLayout for Us104Fix {
             } else {
                 DecodedKey::Unicode('\\')
             }
+        } else if keycode == KeyCode::Delete {
+            DecodedKey::RawKey(KeyCode::Delete)
         } else {
             layouts::Us104Key.map_keycode(keycode, modifiers, handle_ctrl)
         }
@@ -127,11 +133,6 @@ struct Tty {
     pump_now: bool,
     /// Backoff dopo un pump fallito (vedi retry in collect PumpRead).
     pump_wait_until: i64,
-    /// Byte digitati sulla riga corrente (disciplina di linea, Fase 18.0):
-    /// l'output della shell (prompt incluso) NON passa da `emit`, quindi il
-    /// contatore misura solo l'eco digitato — il backspace puo' cancellare
-    /// solo quello che l'utente ha scritto.
-    line_len: usize,
 }
 
 impl Tty {
@@ -153,7 +154,6 @@ impl Tty {
             flush_wait_until: 0,
             pump_now: false,
             pump_wait_until: 0,
-            line_len: 0,
         }
     }
 
@@ -169,7 +169,6 @@ impl Tty {
         self.con_fd = -1;
         self.input.clear();
         self.out.clear();
-        self.line_len = 0;
         self.err_streak = 0;
     }
 
@@ -376,8 +375,8 @@ impl Tty {
         true
     }
 
-    /// Decodifica scancode: echo in coda output + push byte cotti in input.
-    /// Identico al vecchio comportamento console (char-by-char immediato).
+    /// Decodifica scancode in byte per il client (Fase 43b, raw): SOLO coda
+    /// input, mai eco (lo fa il lettore, la shell). Char-by-char immediato.
     fn decode_bytes(&mut self, scancodes: &[u8]) {
         for &sc in scancodes {
             if let Ok(Some(event)) = self.decoder.add_byte(sc) {
@@ -391,6 +390,14 @@ impl Tty {
                         DecodedKey::RawKey(code) => match code {
                             KeyCode::Return | KeyCode::NumpadEnter => self.emit(b"\n"),
                             KeyCode::Backspace => self.emit(b"\x08"),
+                            KeyCode::ArrowUp => self.emit(b"\x1b[A"),
+                            KeyCode::ArrowDown => self.emit(b"\x1b[B"),
+                            KeyCode::ArrowRight => self.emit(b"\x1b[C"),
+                            KeyCode::ArrowLeft => self.emit(b"\x1b[D"),
+                            KeyCode::Home => self.emit(b"\x1b[H"),
+                            KeyCode::End => self.emit(b"\x1b[F"),
+                            KeyCode::Delete => self.emit(b"\x1b[3~"),
+                            KeyCode::Escape => self.emit(b"\x1b"),
                             _ => {}
                         },
                     }
@@ -399,30 +406,13 @@ impl Tty {
         }
     }
 
-    /// Unico punto che genera sia il byte cotto in input sia l'eco su
-    /// console. Conta i digitati sulla riga (`line_len`, reset a `\n`): un
-    /// backspace a riga vuota viene ingoiato (niente in input, niente eco) —
-    /// la shell fa pop no-op su String vuota, ma l'eco cancellerebbe il
-    /// prompt su VGA (la console cancella incondizionatamente).
+    /// Accoda byte in input (client). L'eco su console NON passa di qui
+    /// (43b): lo fa il lettore con le sue write (la coda `out` resta per il
+    /// DEV_WRITE dei client, recapitata dal flush come prima).
     fn emit(&mut self, bytes: &[u8]) {
         for &b in bytes {
-            match b {
-                // \n e \x0c (clear, Fase 18.1) riavviano la riga visiva:
-                // il contatore riparte da zero in entrambi i casi.
-                b'\n' | b'\x0c' => self.line_len = 0,
-                0x08 => {
-                    if self.line_len == 0 {
-                        continue;
-                    }
-                    self.line_len -= 1;
-                }
-                _ => self.line_len += 1,
-            }
             if self.input.len() < INPUT_CAPACITY {
                 self.input.push_back(b);
-            }
-            if self.out.len() < OUT_CAPACITY {
-                self.out.push(b);
             }
         }
     }

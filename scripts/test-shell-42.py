@@ -7,7 +7,7 @@ boota, testa, pulisce le sue fixture. Vedi scripts/shell_harness.py.
 """
 import sys, os, re
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
-from shell_harness import Shell, Checker, prep_images, parse_shell_args
+from shell_harness import Shell, Checker, prep_images, parse_shell_args, has_line
 
 SH = "/fat/test/sh"
 
@@ -45,12 +45,12 @@ def main():
         # waitpid con status: status del gruppo = ultimo stadio (bash).
         # Riga intera "] N" (non ultima-riga: burst kernel ai bordi).
         out = sh.run_source(SH + "/p42d.txt")
-        found = b"] 0\n" in out
+        found = has_line(out, b"0")
         c.check("42 status = ultimo stadio (0)", found)
         out = sh.run_source(SH + "/p42e.txt")
         found = b"[exit 1]" in out
         c.check("42 status ultimo fallito ([exit 1])", found)
-        found = b"] 1\n" in out
+        found = has_line(out, b"1")
         c.check("42 $? dopo pipe fallita (=1)", found)
 
         # Stadio run (fork+exec con grant, non builtin).

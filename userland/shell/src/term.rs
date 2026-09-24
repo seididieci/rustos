@@ -99,24 +99,211 @@ fn kbd_read_byte() -> Option<u8> {
         spin_brief();
     }
 }
-// ── Line editing ────────────────────────────────────────────────────
+// ── Line editing (Fase 43b, readline nella shell) ────────────────────
+// Il tty e' raw: decodifica i tasti (frecce→ESC[D/C/A/B, Home/End→ESC[H/F,
+// Delete→ESC[3~, Esc→ESC) e NON fa echo. L'editor qui possiede buffer,
+// cursore ed echo (console-only, mai seriale: il log seriale dei test non
+// deve vedere i digitati). History a livello shell (comandi, non righe
+// terminale). Solo ASCII (0x20..=0x7e) come prima; righe oltre 80 colonne
+// (wrap VGA) non editabili: documentato in 12-utilities.
 
-/// Legge una riga. Il console server fa gia' l'echo: qui costruiamo solo la
-/// stringa logica (backspace = pop, Enter = fine riga).
-pub(crate) fn read_line(prompt: &str) -> String {
-    term_print(prompt);
-    let mut line = String::new();
-    loop {
-        let Some(b) = kbd_read_byte() else { continue; };
+/// History comandi (persistente per sessione shell, mai su disco).
+static mut HISTORY: Vec<String> = Vec::new();
+
+fn history() -> &'static mut Vec<String> {
+    // Come cwd.rs/VARS: raw pointer, single-threaded.
+    unsafe { &mut *core::ptr::addr_of_mut!(HISTORY) }
+}
+
+/// Scrive byte sul terminale SENZA mirror seriale (eco dei digitati):
+/// va solo sulla VGA via tty→console. Separato da `term_write_bytes`
+/// (che specchia su seriale per debug/test) apposta.
+fn term_echo(data: &[u8]) {
+    unsafe {
+        let _ = libr::write_fs(TERM_FD, data, data.len());
+    }
+}
+
+/// Legge un byte con attesa bounded (continuazioni ESC): i byte della
+/// sequenza sono gia' in coda (il tty li spinge insieme), quindi basta un
+/// bound corto in spin puri IF=1 (mai `get_ticks` in loop). `None` = Esc
+/// solitario (ignorato, mai hang).
+fn read_byte_bounded() -> Option<u8> {
+    let mut buf = [0u8; 1];
+    for _ in 0..50 {
+        let n = unsafe { libr::read_fs(TERM_FD, &mut buf, 1).unwrap_or(0) };
+        if n > 0 {
+            return Some(buf[0]);
+        }
+        spin_brief();
+    }
+    None
+}
+
+/// Stato editor di una riga: `screen` = offset fisico del cursore dopo il
+/// prompt (dove la VGA lo mostra davvero).
+struct Editor {
+    buf: Vec<u8>,
+    cur: usize,
+    screen: usize,
+    hist_pos: usize,
+    stash: Option<Vec<u8>>,
+    record: bool,
+}
+
+impl Editor {
+    /// Ridisegna la riga senza conoscere la lunghezza del prompt: torna a
+    /// inizio riga (dopo il prompt) di `screen` celle, cancella fino a EOL,
+    /// riscrive il buffer, riposiziona a `cur`.
+    fn redraw(&mut self) {
+        let mut out = Vec::new();
+        for _ in 0..self.screen {
+            out.extend_from_slice(b"\x1b[D");
+        }
+        out.extend_from_slice(b"\x1b[K");
+        out.extend_from_slice(&self.buf);
+        for _ in 0..self.buf.len() - self.cur {
+            out.extend_from_slice(b"\x1b[D");
+        }
+        term_echo(&out);
+        self.screen = self.cur;
+    }
+
+    /// Registra la riga in history (Enter): non vuota, no duplicato
+    /// consecutivo. Solo se `record` (gli heredoc non sporcano la history).
+    fn commit(&mut self) {
+        if !self.record || self.buf.is_empty() {
+            return;
+        }
+        let h = history();
+        let line = String::from_utf8(self.buf.clone()).unwrap_or_default();
+        if h.last().map(|s| s.as_str()) != Some(line.as_str()) {
+            h.push(line);
+        }
+    }
+
+    /// Tasto normale: `Some(riga)` = Enter (finito), `None` = continua.
+    fn key(&mut self, b: u8) -> Option<String> {
         match b {
-            b'\n' | b'\r' => return line,
-            0x08 => {
-                line.pop();
+            b'\n' | b'\r' => {
+                term_echo(b"\n");
+                self.commit();
+                return Some(String::from_utf8(core::mem::take(&mut self.buf)).unwrap_or_default());
             }
+            0x08 => {
+                if self.cur > 0 {
+                    self.buf.remove(self.cur - 1);
+                    self.cur -= 1;
+                    self.redraw();
+                }
+            }
+            0x1b => self.esc_seq(),
             0x20..=0x7e => {
-                line.push(b as char);
+                self.buf.insert(self.cur, b);
+                self.cur += 1;
+                self.redraw();
             }
             _ => {}
+        }
+        None
+    }
+
+    /// Sequenza ESC (il primo 0x1b e' gia' consumato): frecce, Home/End,
+    /// Delete (`ESC[3~`). Esc solitario o sequenza ignota = ignorati.
+    fn esc_seq(&mut self) {
+        if read_byte_bounded() != Some(b'[') {
+            return;
+        }
+        match read_byte_bounded() {
+            Some(b'A') => self.hist_prev(),
+            Some(b'B') => self.hist_next(),
+            Some(b'C') => {
+                if self.cur < self.buf.len() {
+                    self.cur += 1;
+                    self.redraw();
+                }
+            }
+            Some(b'D') => {
+                if self.cur > 0 {
+                    self.cur -= 1;
+                    self.redraw();
+                }
+            }
+            Some(b'H') => {
+                self.cur = 0;
+                self.redraw();
+            }
+            Some(b'F') => {
+                self.cur = self.buf.len();
+                self.redraw();
+            }
+            Some(b'3') => {
+                if read_byte_bounded() == Some(b'~') && self.cur < self.buf.len() {
+                    self.buf.remove(self.cur);
+                    self.redraw();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// History Up: salva la riga in corso allo `stash` alla prima salita,
+    /// poi richiama a ritroso (cursore a fine).
+    fn hist_prev(&mut self) {
+        let h = history();
+        if h.is_empty() || self.hist_pos == 0 {
+            return;
+        }
+        if self.hist_pos == h.len() {
+            self.stash = Some(self.buf.clone());
+        }
+        self.hist_pos -= 1;
+        self.buf = h[self.hist_pos].clone().into_bytes();
+        self.cur = self.buf.len();
+        self.redraw();
+    }
+
+    /// History Down: avanza fino a oltre la piu' recente (ripristina `stash`).
+    fn hist_next(&mut self) {
+        let h = history();
+        if self.hist_pos >= h.len() {
+            return;
+        }
+        self.hist_pos += 1;
+        self.buf = if self.hist_pos == h.len() {
+            self.stash.take().unwrap_or_default()
+        } else {
+            h[self.hist_pos].clone().into_bytes()
+        };
+        self.cur = self.buf.len();
+        self.redraw();
+    }
+}
+
+/// Legge una riga con editing (prompt via `term_print`: resta su seriale per
+/// `wait_prompt`; l'eco dei digitati e' console-only). Registra in history.
+pub(crate) fn read_line(prompt: &str) -> String {
+    read_line_rec(prompt, true)
+}
+
+/// Come `read_line` ma con registrazione history opzionale (gli heredoc,
+/// prompt `> `, non sporcano la history dei comandi).
+pub(crate) fn read_line_rec(prompt: &str, record: bool) -> String {
+    term_print(prompt);
+    let mut ed = Editor {
+        buf: Vec::new(),
+        cur: 0,
+        screen: 0,
+        hist_pos: history().len(),
+        stash: None,
+        record,
+    };
+    // L'eco del PRIMO carattere digitato parte da riga vuota: niente redraw
+    // preventivo (il prompt e' gia' a video, il cursore dopo di lui).
+    loop {
+        let Some(b) = kbd_read_byte() else { continue; };
+        if let Some(line) = ed.key(b) {
+            return line;
         }
     }
 }

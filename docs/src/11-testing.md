@@ -67,7 +67,7 @@ privati per istanza — due QEMU sullo stesso raw read-write si
 corromperebbero):
 
 ```bash
-./scripts/test-shell-all.sh            # seq: base run redirect 41 42 source 43
+./scripts/test-shell-all.sh            # seq: base run redirect 41 42 source 43 43b
 ./scripts/test-shell-all.sh --jobs 5   # parallelo, un overlay per fase
 ./scripts/test-shell-all.sh source     # gate veloce: solo `source` (1 boot)
 ```
@@ -81,8 +81,9 @@ corromperebbero):
 | `test-shell-42.py` | 42 (pipe N stadi, pipe+redirect, status ultimo, stadi run, bg rifiutata, heredoc, EOF, streaming >8192B) | 18 |
 | `test-shell-source.py` | `source` (smoke 1-riga, exit, nesting, errori, vuoto) | 22 |
 | `test-shell-43.py` | 43a (env ereditato, VAR=v, PWD, PATH/bare-word, shebang, env stadi) | 17 |
+| `test-shell-43b.py` | 43b (history Up/Down, Left/Right/Home/End/Delete, Esc; digitazione reale) | 9 |
 
-Totale **151 check** verdi in seq e con `--jobs 5` (stesso kernel produzione
+Totale **160 check** verdi in seq e con `--jobs 5` (stesso kernel produzione
 del gate: il kernel embedda init/fs/disk, quindi va ricompilato DOPO
 `build-userland.sh` — ordine di `run.sh` — altrimenti il manifest Strato 2
 di init non matcha i binari su disco e il boot fallisce loud).
