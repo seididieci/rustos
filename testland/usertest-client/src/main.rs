@@ -142,6 +142,10 @@ const MODE_SEEKDENY: u64 = 29;
 // Fase 44a (t55): sonda suspend/resume ostili (target = pid non-figlio in
 // `rounds`): entrambi DEVONO essere rifiutati (parent-scoped, come kill).
 const MODE_SUSPENDENY: u64 = 30;
+// Fase 44b (t56): catcher cooperativo del cancel job control: bloccato in
+// recv, al messaggio `JOB_CANCEL` esce con code dedicato (prova di catch:
+// un kill non potrebbe produrre questo code).
+const MODE_SIGCATCH: u64 = 31;
 
 // Tag DEV_* + errore IPC (A1): single source in `libr` (prima letterali qui).
 use libr::{DEV_CLOSE, DEV_OPEN, ERR};
@@ -216,6 +220,22 @@ fn real_main(sp: u64) -> ! {
             // idle, killabile, osservabile via `ps`.
             loop {
                 let _ = libr::recv();
+            }
+        }
+        MODE_SIGCATCH => {
+            // Fase 44b (t56): catcher cooperativo — come KILLME (costo zero)
+            // ma al cancel job control esce con code dedicato (42, scelto per
+            // distinguersi dal 130 dell'escalation via kill: la prova del
+            // catch e' il code stesso).
+            loop {
+                match libr::recv() {
+                    Ok(m) if m.tag == libr::JOB_CANCEL => libr::exit(42),
+                    Ok(m) if libr::is_exit_notify(&m) => {}
+                    Ok(_) => {
+                        let _ = libr::reply(0, 0, 0);
+                    }
+                    Err(_) => libr::exit(1),
+                }
             }
         }
         MODE_ORPHAN => {

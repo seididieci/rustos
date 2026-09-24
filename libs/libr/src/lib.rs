@@ -35,6 +35,8 @@ pub use syscall_numbers::USER_DMA_VA;
 pub use syscall_numbers::Service;
 /// Tag della notifica kernel→parent della morte di un figlio (Fase 14).
 pub use syscall_numbers::EXIT_NOTIFY;
+/// Tag del cancel cooperativo parent→figlio (Fase 44b, job control: Ctrl-C).
+pub use syscall_numbers::JOB_CANCEL;
 /// Tag della notify kernel→userkbd su IRQ1 (Fase 15, bridge interrupt→IPC).
 pub use syscall_numbers::IRQ_NOTIFY_KBD;
 /// Tag della notify kernel→userdisk su IRQ14/15 (Fase 38, ATA DMA: stesso
@@ -82,6 +84,9 @@ pub use syscall_numbers::{
     FAULT_EXIT_CODE, MAP_COW, MMAP_FIXED, PROT_NONE, PROT_READ, PROT_WRITE, USER_CODE,
     USER_STACK_FRAMES, USER_STACK_GUARD, USER_STACK_TOP,
 };
+/// Fase 44b (job control): causa di morte per Ctrl-C su job non cooperante
+/// (128 + SIGINT, stessa convenzione di `FAULT_EXIT_CODE`).
+pub use syscall_numbers::EXIT_SIGINT;
 
 /// Tag IPC FS/boot/kbd (DocsB): single source in `syscall-numbers` (prima
 /// duplicati qui, in userfs/userdisk/init/tty/kbd e come letterali nei test).

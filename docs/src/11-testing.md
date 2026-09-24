@@ -2,7 +2,7 @@
 
 > I conteggi di suite citati negli ADR e nelle sotto-fasi del libro sono
 > **snapshot all'epoca** di ciascuna fase (es. 17/17, 21/21, 32/32). Il gate
-> corrente e' quello qui sotto (5/5 + 7/7 + 54/54 + shell) e in `AGENTS.md`.
+> corrente e' quello qui sotto (5/5 + 7/7 + 56/56 + shell) e in `AGENTS.md`.
 
 La regressione automatica del sistema gira **dentro QEMU** a ogni boot: i
 binari di test sono processi user reali, spawnati da `init` in sequenza prima
@@ -17,8 +17,8 @@ libs/libr   libreria di sistema condivisa (runtime + allocatore)
 testland/   test suite + repro + demo storiche
   testfs        usertestfs   — ramfs (read/write/mkdir/errori)   → PASS 5/5
   testfat       usertestfat  — FAT32 scrivibile (Fase 20) + /dev/null, /dev/zero → PASS 7/7
-  usertests     usertests    — suite completa (54 test)          → PASS 54/54
-  usertest-client usertestcli  — helper a modalita' (ECHO/ZEROREAD/NULLW/SRV/CHURN/KILLME/SRVDIE/SYNCWAIT/MNTDIE/OPENDIE/MAPHAMMER/FLOOD/NEST/FAULT_*/SHMDEMO/COWDEMO/FORKDEMO/ORPHAN/HARDEN/REG51/EXECDEMO/DUPCLAIM/DUPGRANT/DUPSIBCLAIM/SEEKDENY)
+  usertests     usertests    — suite completa (56 test)          → PASS 56/56
+  usertest-client usertestcli  — helper a modalita' (ECHO/ZEROREAD/NULLW/SRV/CHURN/KILLME/SRVDIE/SYNCWAIT/MNTDIE/OPENDIE/MAPHAMMER/FLOOD/NEST/FAULT_*/SHMDEMO/COWDEMO/FORKDEMO/ORPHAN/HARDEN/REG51/EXECDEMO/DUPCLAIM/DUPGRANT/DUPSIBCLAIM/SEEKDENY/SUSPENDENY/SIGCATCH)
   usertest-spin  usertestspin  — busy-loop a budget di tick (batch 512 spin puri, priorita' via SpawnMeta) + ramo SQUAT (sonda di squat FS_REGISTER, t51)
   utcbstest     utcbstest    — helper CBS: crea server e si attacha (Fase 11.5)
   hogheap / devreader         — stress/repro standalone
@@ -50,7 +50,7 @@ Righe di gate:
 ```
 [testfs] PASS 5/5
 [testfat] PASS 7/7
-[usertests] PASS 55/55
+[usertests] PASS 56/56
 ```
 
 ## Test shell interattivi (QEMU + sendkey, fuori dal gate kernel)
@@ -83,8 +83,9 @@ corromperebbero):
 | `test-shell-43.py` | 43a (env ereditato, VAR=v, PWD, PATH/bare-word, shebang, env stadi) | 17 |
 | `test-shell-43b.py` | 43b (history Up/Down, Left/Right/Home/End/Delete, Esc; digitazione reale) | 9 |
 | `test-shell-44.py` | 44a (fg/bg, Ctrl-Z su run singolo, jobs/ps stopped, selettivita', cleanup) | 14 |
+| `test-shell-44b.py` | 44b (Ctrl-C → 130 su fg non cooperante, selettivita', cleanup) | 5 |
 
-Totale **174 check** verdi in seq e con `--jobs 5` (stesso kernel produzione
+Totale **179 check** verdi in seq e con `--jobs 5` (stesso kernel produzione
 del gate: il kernel embedda init/fs/disk, quindi va ricompilato DOPO
 `build-userland.sh` — ordine di `run.sh` — altrimenti il manifest Strato 2
 di init non matcha i binari su disco e il boot fallisce loud).
@@ -95,7 +96,7 @@ di init non matcha i binari su disco e il boot fallisce loud).
 > passati dai test restano rispettati; il boot aggiunge `-cpu host` come
 > `bench.sh`.
 
-## Cosa copre `usertests` (54 test; t34 per ultimo: i drop dei diritti sono
+## Cosa copre `usertests` (56 test; t34 per ultimo: i drop dei diritti sono
 irrevocabili sul canale della suite)
 
 | Test | Cosa verifica |
@@ -154,6 +155,7 @@ irrevocabili sul canale della suite)
 | t53 | fondamenta posix (Fase 39, ADR-0030; skeleton 40.3; pipe 42, ADR-0032): `Posix` registrato e supervisionato (lookup ok, pid figlio di init), tabella `to_errno` totale (17 varianti: 15 + `Empty`/`Closed`→EAGAIN/EPIPE), `R_PIPE_CREATE` 0x20, gate di registrazione sul nuovo slot 8 via helper HARDEN esteso (kill + register Init + register Posix rifiutati) |
 | t54 | fd virtuali + redirect a livello libr/server (Fase 40.5): `O_TRUNC` (size 0 + rewrite), `O_APPEND` (offset ignorato), `lseek` SET/CUR/END + oltre-EOF lecito + negativo/whence-ignota/remoto = `Invalid` con offset invariato, codici esatti (`NotFound`/`IsDir`/`Exists`/`Invalid`, grant remoto e claim ignoto), handoff DUP modello B (claim con offset copiato, single-use, cancel, attestazione parentela via sibling: helper DUPCLAIM/DUPGRANT/DUPSIBCLAIM), routing stdio diretto (println→file, stdin drain+EOF, restore), diniego SEEK via diritti (helper SEEKDENY → `Failed`); fixture `/t54*` con cleanup |
 | t55 | suspend/resume (Fase 44a, ADR-0035): gate (self/morto rifiutati, idempotenza, resume no-op), figlio running con TIME congelato su ~40 tick + resume→T_DONE/exit 0, figlio bloccato con `send_async` accodata senza sveglia + reply su resume, hardening non-parent (helper SUSPENDENY) |
+| t56 | cancel cooperativo + escalation (Fase 44b, ADR-0036): catcher esce 42 al `JOB_CANCEL` senza kill; KILLME vivo oltre il grace poi esce 130 via `kill(EXIT_SIGINT)` |
 | t34 | diritti per-canale lato server (Fase 17, per ultimo: drop irrevocabili): GET default ALL+root, drop WRITE (write -1/read ok), drop MOUNT+subtree /fat (mount/open-fuori -1, open-dentro+read+readdir-dentro ok, readdir-fuori -1), widen rifiutato + GET conferma |
 
 > Il CBS e' sempre attivo (lo scheduler RT e' l'unico): t18/t19 sono test

@@ -135,10 +135,10 @@ velordor/
 | 38 | ATA DMA + IRQ (ADR-0029) | ✅ Completata |
 | 39 | Fondamenta posix: registry 8→16 + `Service::Posix`, `libr::posix`, harness t53 (ADR-0030) | ✅ Completata |
 | 40 | fd virtuali + redirect file (`> >> < 2> 2>&1`, `R_LSEEK`, `O_TRUNC`/`O_APPEND`, `R_DUP_*` modello B, errori tipati, t54) | ✅ Completata |
-| 41 | Parser shell (quoting, `$VAR`, `; && \|\|`, glob) | 🟡 Pianificata |
-| 42 | Pipe + waitpid | 🟡 Pianificata |
-| 43 | Env/PATH/script (shebang, history) | 🟡 Pianificata |
-| 44 | Job control + segnali | 🟡 Pianificata |
+| 41 | Parser shell (quoting, `$VAR`, `; && \|\|`, glob) | ✅ Completata |
+| 42 | Pipe + waitpid | ✅ Completata |
+| 43 | Env/PATH/script (shebang, history; 43a ADR-0033 + 43b ADR-0034) | ✅ Completata |
+| 44 | Job control + segnali (44a suspend/resume + fg/bg/Ctrl-Z, ADR-0035; 44b Ctrl-C selettivo + catch, ADR-0036) | ✅ Completata |
 | 45 | Indurimento + chiusura posix | 🟡 Pianificata |
 
 ## Risorse

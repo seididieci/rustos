@@ -6,9 +6,9 @@ use super::*;
 // legge solo i byte COW-condivisi e chiama `exec_image_args`, mai il FS).
 // Job = figlio diretto (non-detached: muore con la shell); l'uscita si
 // osserva via EXIT_NOTIFY sul canale di nascita (nessun `wait` kernel in 37:
-// la notifica unificata basta). Niente job control interattivo (foreground,
-// segnali → posix-server futuro): un job foreground senza scampo blocca il
-// prompt — i programmi longevi vanno lanciati con `&`.
+// la notifica unificata basta). Job control interattivo in 44a/44b (fg/bg,
+// Ctrl-Z su `run` singolo, Ctrl-C selettivo con cancel+escalation): durante
+// un fg la shell alterna recv e tastiera (`wait_fg`), mai bloccata in `recv`.
 
 /// Stato di un job (Fase 44a, job control): in esecuzione (bg o fg),
 /// sospeso via Ctrl-Z/`suspend` (riprende con `fg`/`bg`), finito (code).
@@ -87,22 +87,74 @@ fn poll_reap() {
     }
 }
 
-/// Esito dell'attesa foreground (44a): uscito (code) o risospeso (Ctrl-Z).
+/// Esito dell'attesa foreground (44a/44b): uscito (code) o risospeso (Ctrl-Z).
 enum FgDone {
     Exited(i64),
     Stopped,
 }
 
+/// Ctrl-C su un fg (44b): prima un cancel cooperativo sul canale di nascita
+/// (il programma puo' gestirlo: cleanup + exit a sua scelta), poi — se dopo
+/// un grace di ~20 tick e' ancora vivo — escalation a `kill(EXIT_SIGINT)`
+/// (130 = 128+SIGINT, convenzione POSIX al bordo). Ritorna `Some(code)`
+/// quando il job e' uscito (per qualunque via); la morte e' sempre osservata
+/// via EXIT_NOTIFY, mai presunta. Durante il grace si continua a drenare
+/// (reply altrui, tastiera scartata: un secondo Ctrl-C non riavvia il grace).
+/// Throttle come gli altri poll (get_ticks 1 volta per batch, igiene
+/// scheduler).
+fn cancel_job(chan: u64, pid: i64) -> Option<i64> {
+    let _ = libr::send_async(chan, libr::JOB_CANCEL, 2, 0);
+    let t0 = libr::get_ticks();
+    loop {
+        while let Some(m) = libr::recv_poll() {
+            if m.channel == chan && libr::is_exit_notify(&m) {
+                return Some(m.w0 as i64);
+            } else if libr::is_exit_notify(&m) {
+                note_exit(&m);
+            } else {
+                let _ = libr::reply(0, 0, 0);
+            }
+        }
+        while term::kbd_try_read().is_some() {}
+        if libr::get_ticks() - t0 > 20 {
+            break;
+        }
+        for _ in 0..512 {
+            core::hint::spin_loop();
+        }
+    }
+    // Escalation: kill con causa 130. Se il job usciva proprio ora, l'ultimo
+    // drain decide (Exited vince, come per Ctrl-Z); il kill su morto e'
+    // innocuo (rifiutato, l'EXIT e' gia' in coda).
+    let _ = libr::kill(pid, libr::EXIT_SIGINT);
+    loop {
+        while let Some(m) = libr::recv_poll() {
+            if m.channel == chan && libr::is_exit_notify(&m) {
+                return Some(m.w0 as i64);
+            } else if libr::is_exit_notify(&m) {
+                note_exit(&m);
+            } else {
+                let _ = libr::reply(0, 0, 0);
+            }
+        }
+        while term::kbd_try_read().is_some() {}
+        for _ in 0..200_000 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
 /// Attende il job fg sul canale `chan` (pid `pid`) intercettando Ctrl-Z
-/// (0x1a). A differenza di `wait_job` non si blocca in `recv`, ma alterna
-/// `recv_poll` (drena EXIT/notify come sopra) e lettura tastiera non
-/// bloccante, con budget di spin puri IF=1 tra i giri (anti-dilution,
-/// lezione Fase 21: mai busy su syscall). Solo Ctrl-Z interessa in 44a
-/// (Ctrl-C e' Fase 44b): gli altri tasti durante il fg si scartano (la shell
-/// possiede il device, nessun fg lo legge — documentato in 12-utilities).
+/// (0x1a) e Ctrl-C (0x03, 44b). A differenza di `wait_job` non si blocca in
+/// `recv`, ma alterna `recv_poll` (drena EXIT/notify come sopra) e lettura
+/// tastiera non bloccante, con budget di spin puri IF=1 tra i giri
+/// (anti-dilution, lezione Fase 21: mai busy su syscall). Gli altri tasti
+/// durante il fg si scartano (la shell possiede il device, nessun fg lo
+/// legge — documentato in 12-utilities).
 /// A Ctrl-Z sospende il figlio (parent-scoped, sempre consentito qui) e
-/// ritorna Stopped; se il figlio moriva proprio in quel momento, un ultimo
-/// drain decide ed Exited vince sulla sospensione (mai morte mascherata).
+/// ritorna Stopped; a Ctrl-C cancel cooperativo + escalation 130; se il
+/// figlio moriva proprio in quel momento, un ultimo drain decide ed Exited
+/// vince sempre (mai morte mascherata).
 fn wait_fg(chan: u64, pid: i64) -> FgDone {
     loop {
         while let Some(m) = libr::recv_poll() {
@@ -129,7 +181,12 @@ fn wait_fg(chan: u64, pid: i64) -> FgDone {
                 }
                 return FgDone::Stopped;
             }
-            // Altri tasti durante il fg: scartati (44a).
+            if b == 0x03 {
+                if let Some(code) = cancel_job(chan, pid) {
+                    return FgDone::Exited(code);
+                }
+            }
+            // Altri tasti durante il fg: scartati.
         }
         for _ in 0..200_000 {
             core::hint::spin_loop();

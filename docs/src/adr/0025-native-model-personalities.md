@@ -58,6 +58,14 @@ a fronte di software che vuole il metallo; costo/modello inaccettabile
 - argv/envp in stile Linux dentro `SYS_EXEC` sono convenzioni di dati,
   non identità POSIX: il formato è documentato come interfaccia versionabile
   (stessa regola del protocollo FS, ADR-0015 §2).
+- Nota Fase 44 (emendamento): il job control vive nella shell (non nel
+  posix-server, ancora skeleton) con meccanismo kernel volutamente neutro
+  (`suspended` + `SYS_SUSPEND`/`RESUME`: fuori/dentro le ready queue, niente
+  segnali numerati — passa il test di revisione punto 4: serve anche a un
+  debugger/freezer, non solo a POSIX). La semantica POSIX (`%N`, SIGTSTP/
+  SIGCONT, Ctrl-C/Z, 128+sig) resta fuori dal kernel (shell/`libr`); gli
+  handler asincroni veri restano al posix-server futuro. Dettagli in
+  ADR-0035/0036.
 
 ## Alternatives Considered
 

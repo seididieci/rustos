@@ -61,6 +61,8 @@ pub const M_DUPSIBCLAIM: u64 = 28;
 pub const M_SEEKDENY: u64 = 29;
 // Fase 44a (t55): sonda suspend/resume ostili (w1 = pid target non-figlio).
 pub const M_SUSPENDENY: u64 = 30;
+// Fase 44b (t56): catcher cooperativo del cancel (esce 42 al JOB_CANCEL).
+pub const M_SIGCATCH: u64 = 31;
 // Fase 36 (t51): w0 magico per la sonda di squat di usertest-spin (binario
 // diverso da testcli → hash diverso per il negativo). Speculare a
 // SQUAT_MAGIC in usertest-spin (come i tag T_* speculari al client).

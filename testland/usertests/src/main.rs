@@ -100,6 +100,7 @@ fn real_main(_sp: u64) -> ! {
     helpers::report(&mut total, &mut ok, "t53 fondamenta posix (lookup/errno/gate)", t_posix::t_posix_foundation());
     helpers::report(&mut total, &mut ok, "t54 fd virtuali + redirect (trunc/append/lseek/dup/stdio)", t_fdredir::t_fd_virtual_redirect());
     helpers::report(&mut total, &mut ok, "t55 suspend/resume + TIME congelato + gate", t_jobctl::t_suspend_resume());
+    helpers::report(&mut total, &mut ok, "t56 cancel cooperativo + escalation 130", t_jobctl::t_sigcatch_cancel());
     // t34 per ULTIMO: i drop sono irrevocabili sul canale di usertests.
     helpers::report(&mut total, &mut ok, "t34 diritti per-canale lato server", t_fs::t_rights());
 

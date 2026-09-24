@@ -2,7 +2,7 @@ use super::*;
 
 pub(crate) fn cmd_help() -> i64 {
     term::term_print("Commands: ls [-l] [path], cat <file>, touch <file>, mkdir <dir>, mount <src> <tgt>, umount <tgt>, echo [args], clear, wc <file>, hexdump <file>, kill <pid|service>, cd [dir], pwd, cp <src> <dst>, mv <src> <dst>, rm <file>, rmdir <dir>, ps, export [NAME=val], source <file>, run <prog> [args...] [&], jobs, wait [pid], fg [%N|pid], bg [%N|pid], exit [code], help\n");
-    term::term_print("Job control (Fase 44a): Ctrl-Z sospende il fg (`run` singolo), `fg`/`bg` riprendono, `jobs` mostra run/stopped/done; Ctrl-C e' Fase 44b\n");
+    term::term_print("Job control (Fase 44a/44b): Ctrl-Z sospende il fg (`run` singolo), `fg`/`bg` riprendono, `jobs` mostra run/stopped/done; Ctrl-C = cancel cooperativo + kill(130) se non cooperante\n");
     term::term_print("Env (Fase 43a): VAR=v (persistente), VAR=v cmd (solo comando, anche run/stadi), tutto l'env ai figli + PWD; PATH (default /fat/bin), bare word = run implicito, #! script eseguibili\n");
     term::term_print("Redirect (Fase 40.4, bash-like): > >> < 2> 2>> 2>&1 — ultimo vince per slot; cat/wc/hexdump senza file leggono stdin\n");
     term::term_print("Parser (Fase 41): '...' \"...\" \\ # ; && || & $VAR ${VAR} $? $$ ~ glob * ?\n");

@@ -1614,9 +1614,15 @@ velordor/
         `job_line` matchava righe kernel (`pid N` non univoco) → regex
         `[N] pid P STATO`. `&` pipeline rimandato (job multi-pid). Gate
         5/5 + 7/7 + 55/55 + shell 174 check.
-  - [ ] Fase 44b (P5, segnali): Ctrl-C selettivo (cancel nativo cooperativo
-        sul canale di nascita + escalation `kill(130)`), causa morte 128+sig,
-        helper catchable. Vittoria: Ctrl-C selettivo con catch.
+  - [x] Fase 44b (P5, segnali; ADR-0036): Ctrl-C selettivo (cancel nativo
+        cooperativo `JOB_CANCEL` 0x43 sul canale di nascita + escalation
+        `kill(EXIT_SIGINT=130)` dopo grace ~20 tick; morte sempre via
+        EXIT_NOTIFY), causa morte 128+sig al bordo, helper catchable
+        (SIGCATCH esce 42). t56 (catch 42 + vivo-oltre-grace + escalation
+        130) + shell 5 check (`test-shell-44b.py`: `sendkey ctrl-c` → 0x03,
+        `[exit 130]`, selettivita'). Bug veri: nessuno nel kernel (zero
+        syscall nuove); solo harness (`run_until` per annunci lenti). Gate
+        5/5 + 7/7 + 56/56 + shell 179 check.
   - [ ] Fase 45 (P6, indurimento + chiusura): diritti Fase 17 sui vfd, policy
         same-identity, sandbox build, docs finali. Vittoria: suite + restart
         verdi con policy attive.
@@ -1814,9 +1820,9 @@ rg '\[bench\]' /tmp/bench-run1.log /tmp/bench-run2.log /tmp/bench-run3.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 7/7
-#   [usertests] PASS 55/55
+#   [usertests] PASS 56/56
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 55/55' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 56/56' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 

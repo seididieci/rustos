@@ -301,3 +301,83 @@ pub fn t_suspend_resume() -> bool {
     let _ = helpers::wait_exit(h_chan);
     true
 }
+
+/// t56 — cancel cooperativo + escalation (Fase 44b, segnali nativi). Stesso
+/// messaggio `JOB_CANCEL` che la shell manda a Ctrl-C. Verifica:
+///   1. catcher (SIGCATCH, bloccato in recv): al cancel esce DA SOLO con
+///      code 42 (prova di catch: un kill non produrrebbe mai questo code);
+///   2. non cooperante (KILLME, scarta tutto): al cancel resta vivo oltre il
+///      grace (~30 tick, niente kill immediata); poi `kill(EXIT_SIGINT)` →
+///      EXIT con code 130 (causa di morte 128+SIGINT).
+pub fn t_sigcatch_cancel() -> bool {
+    helpers::drain_stray();
+    // 1. Catcher: esce 42 al cancel, senza alcun kill.
+    let (c_chan, c_pid) = match helpers::spawn_cfg(
+        "/fat/test/testcli.bin", "utcli", 16, helpers::M_SIGCATCH, 0,
+    ) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t56: spawn catcher FAILED");
+            return false;
+        }
+    };
+    if libr::send_async(c_chan, libr::JOB_CANCEL, 2, 0).is_err() {
+        println!("[usertests] t56: send_async cancel FAILED");
+        let _ = libr::kill(c_pid as i64, 0);
+        let _ = helpers::wait_exit(c_chan);
+        return false;
+    }
+    match helpers::wait_exit(c_chan) {
+        Some((42, p)) if p == c_pid as i64 => {}
+        Some((c, _)) => {
+            println!("[usertests] t56: catcher uscito {} (atteso 42)", c);
+            return false;
+        }
+        None => {
+            println!("[usertests] t56: wait catcher FAILED");
+            let _ = libr::kill(c_pid as i64, 0);
+            let _ = helpers::wait_exit(c_chan);
+            return false;
+        }
+    }
+    // 2. Non cooperante: resta vivo oltre il grace, poi escalation 130.
+    let (k_chan, k_pid) = match helpers::spawn_cfg(
+        "/fat/test/testcli.bin", "utcli", 16, helpers::M_KILLME, 0,
+    ) {
+        Some(x) => x,
+        None => {
+            println!("[usertests] t56: spawn killme FAILED");
+            return false;
+        }
+    };
+    if libr::send_async(k_chan, libr::JOB_CANCEL, 2, 0).is_err() {
+        println!("[usertests] t56: send_async cancel2 FAILED");
+        let _ = libr::kill(k_pid as i64, 0);
+        let _ = helpers::wait_exit(k_chan);
+        return false;
+    }
+    // Grace: nessun kill immediato — dopo ~30 tick deve essere vivo.
+    libr::spin_ticks(30);
+    if libr::ps_info(k_pid as u32).is_none() {
+        println!("[usertests] t56: killme morto DURANTE il grace (kill immediata?)");
+        let _ = helpers::wait_exit(k_chan);
+        return false;
+    }
+    // Escalation con causa 130 (stesso numero che usa la shell a Ctrl-C).
+    if libr::kill(k_pid as i64, libr::EXIT_SIGINT).is_err() {
+        println!("[usertests] t56: kill escalation FAILED");
+        let _ = helpers::wait_exit(k_chan);
+        return false;
+    }
+    match helpers::wait_exit(k_chan) {
+        Some((c, p)) if c == libr::EXIT_SIGINT && p == k_pid as i64 => true,
+        Some((c, _)) => {
+            println!("[usertests] t56: exit escalation {} (atteso 130)", c);
+            false
+        }
+        None => {
+            println!("[usertests] t56: wait escalation FAILED");
+            false
+        }
+    }
+}

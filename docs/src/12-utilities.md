@@ -60,7 +60,11 @@ la mostra (`/prova$ `, `$ ` a root).
 > (`SYS_SUSPEND` neutro, `[N]+ Stopped`), `fg`/`bg` riprendono
 > (`SYS_RESUME`); durante il fg la shell intercetta solo Ctrl-Z (altri tasti
 > scartati, documentato); `&` su pipeline resta non supportato (job
-> multi-pid, fase futura). Ctrl-C e' Fase 44b.
+> multi-pid, fase futura).
+> **Fase 44b**: Ctrl-C selettivo sul fg — cancel cooperativo (`JOB_CANCEL`
+> sul canale di nascita: il programma puo' gestirlo) + escalation
+> `kill(130)` dopo ~20 tick se vivo (`[exit 130]`); causa di morte 128+SIGINT
+> al bordo, come `FAULT_EXIT_CODE`.
 
 ### Redirect (Fase 40.4)
 

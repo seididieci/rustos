@@ -144,6 +144,12 @@ kernel sa gia' tutto (canali, servizi, CBS) e nessuno fa wait/reap esplicito.
     validato: bit riservati rifiutati), `terminate` salta i detached nella
     cascata e li riparenta a init con log `[proc] ... detached`; `ps` mostra
     parent == 1. Test t40. Kill invariato: nessuna nuova syscall.
+  - Suspend/resume (Fase 44a, emendamento): flag `suspended` nel PCB
+    (ortogonale a `state`/`ipc_state`), unico choke point `set_ready` che
+    salta i sospesi (i wake lasciano i messaggi in coda); `SYS_SUSPEND` (50)
+    / `SYS_RESUME` (51) con gli stessi gate di `kill`; `terminate` azzera il
+    flag (il morto non torna); `ps` = Stopped (2). La cascata uccide anche i
+    sospesi (sono vivi). Test t55. Dettagli in ADR-0035.
 
 ## References
 

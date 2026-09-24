@@ -62,3 +62,4 @@
 - [ADR-0033: env/PATH/script (disegno Fase 43a)](./adr/0033-env-path-script.md)
 - [ADR-0034: history + editing di linea (disegno Fase 43b)](./adr/0034-line-editing.md)
 - [ADR-0035: job control (disegno Fase 44a)](./adr/0035-job-control.md)
+- [ADR-0036: segnali nativi cooperativi (disegno Fase 44b)](./adr/0036-signals.md)

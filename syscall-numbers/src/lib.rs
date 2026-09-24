@@ -188,6 +188,11 @@ pub const USER_STACK_GUARD: u64 = 0x0000_4000_0040_0000 - 5 * 0x1000;
 /// a PROT_NONE, stack overflow nella guard). Il parent lo osserva via
 /// EXIT_NOTIFY (w0). 139 = 128 + 11 (SIGSEGV, convenzione POSIX).
 pub const FAULT_EXIT_CODE: i64 = 139;
+/// Causa di morte per Ctrl-C (Fase 44b, job control): il parent che uccide
+/// un job non cooperante dopo il cancel usa questo code. 130 = 128 + 2
+/// (SIGINT, stessa convenzione POSIX di `FAULT_EXIT_CODE`). Solo convenzione
+/// al bordo (shell/libr): il kernel vede un banale exit code.
+pub const EXIT_SIGINT: i64 = 130;
 /// Base del codice user (link address del binario ELF, single source
 /// kernel+test): il loader ELF mappa i segmenti al `p_vaddr` di link e
 /// l'entry e' `e_entry`. Prima solo nel kernel (`layout.rs`).
@@ -214,6 +219,10 @@ pub const FS_NOTIFY: u64 = 0x32;
 // - FS_BUF_REG (0x31): handshake register-only "i miei ring sono req=w0,
 //   resp=w1" (client e driver verso userfs).
 // - KBD_NOTIFY (0x40): userkbd → usertty, scancode in coda (w0 = count).
+// - JOB_CANCEL (0x43): parent → figlio, cancel cooperativo job control
+//   (Fase 44b: Ctrl-C della shell; w0 = 2/SIGINT, informativo). Il figlio
+//   puo' gestirlo (cleanup + exit a sua scelta) o ignorarlo (il parent
+//   scala a `kill(EXIT_SIGINT)` dopo un grace).
 // - SVC_READY (0x7D): servizio → init, "sono su" (fire-and-forget a boot).
 // - TEST_DONE (0x7E): test suite → init, fine sequenza (w0 = ok count).
 // - INIT_BOUNCE (0x7F): figlio → init, "uccidi+riavvia il servizio `w0`"
@@ -223,6 +232,7 @@ pub const FS_NOTIFY: u64 = 0x32;
 pub const FS_REGISTER: u64 = 0x30;
 pub const FS_BUF_REG: u64 = 0x31;
 pub const KBD_NOTIFY: u64 = 0x40;
+pub const JOB_CANCEL: u64 = 0x43;
 pub const SVC_READY: u64 = 0x7D;
 pub const TEST_DONE: u64 = 0x7E;
 pub const INIT_BOUNCE: u64 = 0x7F;
