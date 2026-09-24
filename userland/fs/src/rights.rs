@@ -6,9 +6,10 @@ use super::*;
 // dal canale): tabella `chan → {ops bitmask, subtree prefix}`, SOLO in
 // riduzione (DROP fa AND, mai widen, nessuna auth: nessuno puo' darsi
 // diritti, solo toglierseli — nessun GRANT, i canali non sono trasferibili).
-// Default (entry assente): {ALL, root} = tutto verde, zero alloc, suite
-// invariata. Purge su EXIT_NOTIFY come rings/ftable. Effimeri: restart
-// userfs = re-handshake full (limite dichiarato).
+// Default (entry assente): {tetto policy, root} — ALL per i canali noti/TCB
+// (suite invariata), restrittivo per gli ignoti (Fase 45). Zero alloc.
+// Purge su EXIT_NOTIFY come rings/ftable. Effimeri: restart userfs =
+// re-handshake full (limite dichiarato).
 //
 // Check su DUE livelli nel dispatch FS_NOTIFY:
 // - ops bit: CENTRALE, prima di qualunque contatto handler/driver;
@@ -60,8 +61,8 @@ pub fn within_subtree(sub: &str, p: &str) -> bool {
 }
 
 /// Bit ops richiesto dall'op_tag. None = sempre consentito (CLOSE, DROP, GET,
-/// DUP_* — gestire i propri fd/grant non si nega; GRANT/CLAIM/CANCEL non
-/// toccano path e operano solo su fd propri o nonce propri).
+/// CLAIM/CANCEL — gestire i propri fd/grant pendenti non si nega; CLAIM e
+/// CANCEL non toccano path e operano solo su nonce propri o del parent).
 pub fn op_bit(op_tag: u32) -> Option<u32> {
     match op_tag {
         R_OPEN => Some(libr::RIGHTS_OPEN),
@@ -75,6 +76,10 @@ pub fn op_bit(op_tag: u32) -> Option<u32> {
         R_LSEEK => Some(libr::RIGHTS_SEEK),
         // R_STAT e' metadato di listing: stesso bit di READDIR (Fase 19.2).
         R_STAT => Some(libr::RIGHTS_READDIR),
+        // Handoff fd e pipe (Fase 45): GRANT crea capability per altri
+        // (negabile), PIPE crea stato condiviso nel server (negabile).
+        R_DUP_GRANT => Some(libr::RIGHTS_GRANT),
+        R_PIPE_CREATE => Some(libr::RIGHTS_PIPE),
         _ => None,
     }
 }
@@ -82,12 +87,14 @@ pub fn op_bit(op_tag: u32) -> Option<u32> {
 /// R_RIGHTS_DROP: w0 = mask da tenere, payload = subtree (vuoto = solo-ops).
 /// Solo shrink (ops &= mask&ALL); subtree sostituito solo se dentro il
 /// corrente, altrimenti widen = None senza NESSUN cambio (prima valida, poi
-/// applica). Crea l'entry da default se assente. Ritorna Some(0) o None.
+/// applica). Crea l'entry partendo dal tetto policy (Fase 45: mai drop
+/// verso l'alto da un canale restrittivo). Ritorna Some(0) o None.
 pub fn handle_rights_drop(
     rights: &mut BTreeMap<u64, ChanRights>,
     chan: u64,
     keep: u32,
     payload: &[u8],
+    ceiling: u32,
 ) -> Option<u64> {
     let sub = match core::str::from_utf8(payload) {
         Ok(s) => s,
@@ -95,7 +102,7 @@ pub fn handle_rights_drop(
     };
     let (cur_ops, cur_sub) = match rights.get(&chan) {
         Some(r) => (r.ops, r.subtree.clone()),
-        None => (libr::RIGHTS_ALL, String::new()),
+        None => (ceiling, String::new()),
     };
     // Subtree richiesto (raw non-vuoto: "/" esplicita conta come richiesta di
     // root, NON come no-op — da "/fat" sarebbe widen e va rifiutata).
@@ -109,10 +116,10 @@ pub fn handle_rights_drop(
         Some(n)
     };
     let entry = rights.entry(chan).or_insert(ChanRights {
-        ops: libr::RIGHTS_ALL,
+        ops: ceiling,
         subtree: String::new(),
     });
-    entry.ops = cur_ops & (keep & libr::RIGHTS_ALL);
+    entry.ops = cur_ops & (keep & libr::RIGHTS_ALL) & ceiling;
     if let Some(n) = norm {
         entry.subtree = n;
     }
@@ -121,15 +128,17 @@ pub fn handle_rights_drop(
 
 /// R_RIGHTS_GET: scrive il response frame `[ops:8][sublen:8][subtree]`
 /// (self-written come read/readdir: il dispatch generico NON riscrive) e
-/// ritorna Some(ops). Sempre consentito.
+/// ritorna Some(ops). Sempre consentito. Senza entry riporta il tetto
+/// policy (Fase 45: il default visibile e' quello effettivo).
 pub fn handle_rights_get(
     rights: &BTreeMap<u64, ChanRights>,
     rings: &BTreeMap<u64, (u64, u64)>,
     chan: u64,
+    ceiling: u32,
 ) -> Option<u64> {
     let (ops, sub) = match rights.get(&chan) {
         Some(r) => (r.ops, r.subtree.as_str()),
-        None => (libr::RIGHTS_ALL, ""),
+        None => (ceiling, ""),
     };
     if rings.contains_key(&chan) {
         rings::map_client_resp_ring(rings, chan);

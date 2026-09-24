@@ -139,7 +139,7 @@ velordor/
 | 42 | Pipe + waitpid | ✅ Completata |
 | 43 | Env/PATH/script (shebang, history; 43a ADR-0033 + 43b ADR-0034) | ✅ Completata |
 | 44 | Job control + segnali (44a suspend/resume + fg/bg/Ctrl-Z, ADR-0035; 44b Ctrl-C selettivo + catch, ADR-0036) | ✅ Completata |
-| 45 | Indurimento + chiusura posix | 🟡 Pianificata |
+| 45 | Indurimento + chiusura posix | ✅ Completata |
 
 ## Risorse
 

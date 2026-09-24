@@ -14,6 +14,15 @@
 # via `inject-bins.sh` (mcopy non tocca il contenuto): l'hash qui calcolato e'
 # quello dei byte effettivamente caricati dal loader ELF in entrambi i path.
 #
+# Oltre agli hash emette `build-meta/service_policy.rs` (Fase 45, sandbox
+# build): tabella `SERVICE_POLICY: &[(hash, ops_mask)]` con la mask dei
+# diritti FS consentiti a CIASCUN servizio noto (userfs la applica come
+# tetto via `peer_info`, vedi `userland/fs/src/policy.rs`). I servizi TCB
+# hanno ALL (fiducia per parentela+hash, Strato 1+2); i programmi di terzi
+# hanno righe restrittive esplicite (sotto: solo runhello oggi — il futuro
+# toolchain avra' le sue righe, zero redesign). Gli hash ignoti al manifest
+# cadono nel default restrittivo di userfs (niente MOUNT/UMOUNT/GRANT/PIPE).
+#
 # Fail-loud (set -euo + check espliciti): binari mancanti/vuoti o output non
 # scrivibile = build interrotta, mai manifest stale silenzioso. Lo script
 # rigenera SEMPRE da zero (niente append): rieseguire e' idempotente.
@@ -31,8 +40,10 @@ fi
 
 mkdir -p "$OUT_DIR"
 tmp="$OUT.tmp"
+POL_OUT="$OUT_DIR/service_policy.rs"
+poltmp="$POL_OUT.tmp"
 
-python3 - "$BUILD" "$tmp" <<'EOF'
+python3 - "$BUILD" "$tmp" "$poltmp" <<'EOF'
 import glob, os, sys
 
 def fnv1a(data: bytes) -> int:
@@ -78,10 +89,48 @@ for p in bins:
     const = "HASH_" + "".join(c.upper() if (c.isalnum()) else "_" for c in stem)
     lines.append("pub const %s: u64 = 0x%016X; // %s (%d B)" % (const, fnv1a(data), os.path.basename(p), len(data)))
 
+# Mask per-binario (Fase 45): nome stem -> mask ops (bit RIGHTS_* di
+# syscall-numbers: OPEN=0x1 READ=0x2 WRITE=0x4 READDIR=0x8 MKDIR=0x10
+# MOUNT=0x20 UMOUNT=0x40 DELETE=0x80 SEEK=0x100 GRANT=0x200 PIPE=0x400,
+# ALL=0x7FF). Default ALL (servizi TCB); programmi di terzi restrittivi.
+# NOTA: `run`+redirect scrive su fd concessi (il check WRITE scatta sul
+# canale del FIGLIO) e legge stdin ridiretta: runhello ha bisogno di
+# OPEN+READ+WRITE+READDIR (0x0F). Senza WRITE `run ./x > /o` si rompe (Fase
+# 40.4). Resta negato: MKDIR/DELETE/SEEK/MOUNT/UMOUNT/GRANT/PIPE.
+POLICY = {
+    "userrunhello": 0x00F,  # OPEN|READ|WRITE|READDIR (programma di terzi)
+}
+DEFAULT_MASK = 0x7FF  # ALL (servizi TCB)
+
+pol = [
+    "// Generato da scripts/gen-service-hashes.sh — MAI modificare a mano.",
+    "// Sandbox build (Fase 45): tetto ops per hash noto, applicato da userfs",
+    "// (`userland/fs/src/policy.rs`) come `drop_mask & policy_mask`. Le mask",
+    "// usano i bit RIGHTS_* di syscall-numbers (ALL=0x7FF con GRANT+PIPE).",
+    "// Consumato via `include!(env!(\"VELORDOR_SERVICE_POLICY\"))` SOLO da",
+    "// userfs (dopo service_hashes: referenzia le HASH_*). Rigenerato a build.",
+    "pub const SERVICE_POLICY: &[(u64, u32)] = &[",
+]
+for p in bins:
+    stem = os.path.splitext(os.path.basename(p))[0]
+    const = "HASH_" + "".join(c.upper() if (c.isalnum()) else "_" for c in stem)
+    mask = POLICY.get(stem, DEFAULT_MASK)
+    tag = "terzi" if stem in POLICY else "TCB"
+    pol.append("    (%s, 0x%03X), // %s" % (const, mask, tag))
+pol.append("];")
+
 with open(tmp, "w") as f:
     f.write("\n".join(lines) + "\n")
 print("[gen-hashes] %d binari -> %s" % (len(bins), tmp))
+
+poltmp = sys.argv[3] if len(sys.argv) > 3 else None
+if poltmp:
+    with open(poltmp, "w") as f:
+        f.write("\n".join(pol) + "\n")
+    print("[gen-hashes] policy %d righe -> %s" % (len(pol) - 6, poltmp))
 EOF
 
 mv "$tmp" "$OUT"
 echo "[gen-hashes] scritto $OUT"
+mv "$poltmp" "$POL_OUT"
+echo "[gen-hashes] scritta $POL_OUT"

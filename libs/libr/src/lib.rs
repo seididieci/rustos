@@ -62,10 +62,11 @@ pub use syscall_numbers::{
     R_DUP_CANCEL, R_PIPE_CREATE,
 };
 /// Bit dei diritti per-canale (Fase 17, self-restriction; DELETE in 18.2;
-/// SEEK in 40): mask per `rights_drop`, valore di ritorno di `rights_get`.
+/// SEEK in 40; GRANT/PIPE in 45): mask per `rights_drop`, valore di ritorno
+/// di `rights_get`.
 pub use syscall_numbers::{
-    RIGHTS_ALL, RIGHTS_DELETE, RIGHTS_MKDIR, RIGHTS_MOUNT, RIGHTS_OPEN, RIGHTS_READ,
-    RIGHTS_READDIR, RIGHTS_SEEK, RIGHTS_UMOUNT, RIGHTS_WRITE,
+    RIGHTS_ALL, RIGHTS_DELETE, RIGHTS_GRANT, RIGHTS_MKDIR, RIGHTS_MOUNT, RIGHTS_OPEN,
+    RIGHTS_PIPE, RIGHTS_READ, RIGHTS_READDIR, RIGHTS_SEEK, RIGHTS_UMOUNT, RIGHTS_WRITE,
 };
 /// `kind` per R_STAT (Fase 19.2): bit 0-1 tipo + bit 7 readonly.
 pub use syscall_numbers::{STAT_DEVICE, STAT_DIR, STAT_FILE, STAT_READONLY};

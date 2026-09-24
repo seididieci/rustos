@@ -1623,9 +1623,14 @@ velordor/
         `[exit 130]`, selettivita'). Bug veri: nessuno nel kernel (zero
         syscall nuove); solo harness (`run_until` per annunci lenti). Gate
         5/5 + 7/7 + 56/56 + shell 179 check.
-  - [ ] Fase 45 (P6, indurimento + chiusura): diritti Fase 17 sui vfd, policy
-        same-identity, sandbox build, docs finali. Vittoria: suite + restart
-        verdi con policy attive.
+  - [x] Fase 45 (P6, indurimento + chiusura): bit nuovi `RIGHTS_GRANT`/`RIGHTS_PIPE`
+        (`op_bit` in userfs), tabella policy a build-time (`SERVICE_POLICY` +
+        `TEST_POLICY` da `gen-service-hashes.sh`/`gen-test-policy.sh`,
+        fall-closed per hash ignoto 0x19F), enforcement in userfs al primo
+        handshake (ceiling → choke point, mai widen; DROP parte dal tetto,
+        GET lo riporta); carve-out init-child + `Service::Test`; crate
+        `foreign` (attore ignoto t57) + `M_GRANTDENY` helper; gate 5/5 +
+        7/7 + 57/57 + shell 179 check, zero FAIL/PANIC/FAULT. ADR-0037.
 - [ ] Parcheggiate (trigger, non date): audio AC97+CBS (primo client servizio
   PCI, chiude ADR-0007 davvero); server-run async userdisk (quando
   l'overlap DMA lo richiede); Strato 3 credenziali; ext2/ATAPI/write-back/
@@ -1820,9 +1825,9 @@ rg '\[bench\]' /tmp/bench-run1.log /tmp/bench-run2.log /tmp/bench-run3.log
 # Suite di regressione (boot): 3 righe PASS attese e ZERO FAIL/PANIC
 #   [testfs] PASS 5/5
 #   [testfat] PASS 7/7
-#   [usertests] PASS 56/56
+#   [usertests] PASS 57/57
 timeout 150 ./run-tests.sh > /tmp/boot.log
-rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 56/56' /tmp/boot.log
+rg '\[testfs\] PASS 5/5|\[testfat\] PASS 7/7|\[usertests\] PASS 57/57' /tmp/boot.log
 test "$(rg -c 'FAIL|PANIC|#.* FAULT' /tmp/boot.log)" = "0"
 ```
 

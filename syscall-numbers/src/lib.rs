@@ -378,7 +378,12 @@ pub const RIGHTS_DELETE: u32 = 0x80;
 /// Spostamento offset via R_LSEEK (Fase 40, P1): senza, lseek e' negato ma
 /// read/write sull'offset corrente restano (bit indipendenti).
 pub const RIGHTS_SEEK: u32 = 0x100;
-pub const RIGHTS_ALL: u32 = 0x1FF;
+/// Creazione grant per handoff fd (Fase 45, `R_DUP_GRANT`): senza, il grant
+/// e' negato (CLAIM/CANCEL restano liberi: consumano grant propri).
+pub const RIGHTS_GRANT: u32 = 0x200;
+/// Creazione pipe (Fase 45, `R_PIPE_CREATE`): senza, `pipe()` e' negato.
+pub const RIGHTS_PIPE: u32 = 0x400;
+pub const RIGHTS_ALL: u32 = 0x7FF;
 
 // ── Sentinelle di errore FS (Fase 40, P1) ─────────────────────────────
 // userfs distingue i rifiuti invece del generico ERR: il client li mappa

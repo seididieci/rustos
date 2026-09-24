@@ -35,3 +35,23 @@ build_one testland/usertest-client testland/usertest-client/src/client.ld userte
 build_one testland/usertest-spin testland/usertest-spin/src/spin.ld usertestspin.bin usertestspin
 build_one testland/utcbstest testland/utcbstest/src/utcbstest.ld utcbstest.bin utcbstest
 build_one testland/bench testland/bench/src/bench.ld userbench.bin userbench
+# Attore "ignoto" di t57 (Fase 45): binario testland ESCLUSO dalla tabella
+# policy (gen-test-policy.sh lo salta per nome) per provare il default
+# restrittivo fail-closed sugli hash fuori manifest.
+build_one testland/foreign testland/foreign/src/foreign.ld userforeign.bin userforeign
+
+# Tabella policy test (Fase 45, sandbox build): hash testland -> ALL, inclusa
+# SOLO da userfs (niente ciclo: i test non la includono). Segue il rebuild di
+# userfs (unico consumatore): userfs.bin in userland/build viene rigenerato
+# QUI (prima del kernel che lo embedda e di inject-bins.sh che lo copia su
+# /fat per i restart da disco). Fixpoint in un passaggio (userfs e' fuori da
+# entrambe le tabelle, i test non dipendono da questa).
+bash scripts/gen-test-policy.sh
+export VELORDOR_SERVICE_POLICY="$(pwd)/build-meta/service_policy.rs"
+export VELORDOR_TEST_POLICY="$(pwd)/build-meta/test_policy.rs"
+# Rebuild mirato in userland/build (BUILD override: build_one scrive in
+# $BUILD/$out e qui $BUILD e' testland/build — il kernel embedda e inject
+# copiano userland/build). Rimuove anche l'eventuale userfs.bin stale in
+# testland/build (artefatto di run precedenti: NON deve finire in tabella).
+rm -f testland/build/userfs.bin
+BUILD="userland/build" build_one userland/fs userland/fs/src/fs.ld userfs.bin userfs

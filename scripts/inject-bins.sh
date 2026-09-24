@@ -31,6 +31,9 @@ mcopy -i "$IMG" testland/build/userhogheap.bin  ::/test/hogheap.bin  || exit 1
 mcopy -i "$IMG" testland/build/userdevreader.bin ::/test/devreadr.bin || exit 1
 mcopy -i "$IMG" testland/build/userdemo.bin     ::/test/demo.bin     || exit 1
 mcopy -i "$IMG" testland/build/userbench.bin    ::/test/bench.bin    || exit 1
+# Attore "ignoto" di t57 (Fase 45): fuori da ogni tabella policy (il nome
+# 8.3 resta lungo: "foreign" sta in 8 caratteri, niente spelling).
+mcopy -i "$IMG" testland/build/userforeign.bin  ::/test/foreign.bin  || exit 1
 # Script shell per `source` (velocizzazione test: 1 riga digitata invece di N
 # comandi via sendkey) + pilota del builtin permanente. Nomi 8.3 come i .bin
 # (il FAT non ha LFN: oltre 8+3 mcopy fallisce loud, mai nomi troncati in

@@ -34,6 +34,7 @@ mod t_ipc_sched;
 mod t_jobctl;
 mod t_lifecycle;
 mod t_mapflap;
+mod t_policy;
 mod t_posix;
 mod t_stable;
 // ── main ─────────────────────────────────────────────────────────────
@@ -101,6 +102,9 @@ fn real_main(_sp: u64) -> ! {
     helpers::report(&mut total, &mut ok, "t54 fd virtuali + redirect (trunc/append/lseek/dup/stdio)", t_fdredir::t_fd_virtual_redirect());
     helpers::report(&mut total, &mut ok, "t55 suspend/resume + TIME congelato + gate", t_jobctl::t_suspend_resume());
     helpers::report(&mut total, &mut ok, "t56 cancel cooperativo + escalation 130", t_jobctl::t_sigcatch_cancel());
+    // t57 PRIMA di t34: nessun drop sul canale di usertests qui (t34 pretende
+    // il GET default ALL); i drop GRANT/PIPE avvengono sul canale dell'helper.
+    helpers::report(&mut total, &mut ok, "t57 policy identita' + dinieghi GRANT/PIPE", t_policy::t_policy());
     // t34 per ULTIMO: i drop sono irrevocabili sul canale di usertests.
     helpers::report(&mut total, &mut ok, "t34 diritti per-canale lato server", t_fs::t_rights());
 

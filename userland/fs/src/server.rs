@@ -66,6 +66,10 @@ fn real_main(_sp: u64) -> ! {
 
     // Diritti per-canale (Fase 17): entry assente = {ALL, root}.
     let mut rights: BTreeMap<u64, rights::ChanRights> = BTreeMap::new();
+    // Tetto policy su identita' (Fase 45): chan → mask massima, classificato
+    // UNA volta all'handshake (peer_info), purgato all'EXIT_NOTIFY come
+    // rings/rights. Effettivo = drop_mask & ceiling (mai widen).
+    let mut policy: BTreeMap<u64, u32> = BTreeMap::new();
 
     // Grant single-use per handoff fd (Fase 40, modello B): nonce → snapshot.
     let mut grants = dup::GrantTable::new();
@@ -114,7 +118,12 @@ fn real_main(_sp: u64) -> ! {
         // Handshake ring buffer: il client registra i propri indirizzi fisici.
         if tag == FS_BUF_REG {
             rings.insert(chan, (msg.w0, msg.w1));
-            println!("[userfs] client chan {} registered rings req={:#x} resp={:#x}", chan, msg.w0, msg.w1);
+            // Fase 45: classifica il peer ORA (tetto in cache, niente
+            // syscall per-op). L'handshake resta aperto a tutti: la policy
+            // nega op, mai la registrazione (libr ritenta comunque).
+            let ceil = policy::ceiling_for(chan);
+            policy.insert(chan, ceil);
+            println!("[userfs] client chan {} registered rings req={:#x} resp={:#x} ceiling={:#x}", chan, msg.w0, msg.w1, ceil);
             let _ = libr::reply(0, 0, 0);
             continue;
         }
@@ -235,6 +244,9 @@ fn real_main(_sp: u64) -> ! {
             // Diritti effimeri (Fase 17): col peer muore anche la sua riga —
             // al re-handshake riparte da default {ALL, root} (limite dichiarato).
             rights.remove(&chan);
+            // Tetto policy (Fase 45): stessa vita — al re-handshake il peer
+            // viene riclassificato (hash rimisurato allo spawn, mai stale).
+            policy.remove(&chan);
             // Grant orfani del morto (Fase 40): un pid riusato non deve poter
             // riscuotere grant altrui (la doppia attestazione al claim chiude
             // comunque la race, ma senza residui non c'e' race).
@@ -324,13 +336,17 @@ fn real_main(_sp: u64) -> ! {
             continue;
         }
 
-        // Diritti per-canale, check ops (Fase 17): CENTRALE, prima di
-        // qualunque contatto handler/driver. A diniego il frame va comunque
-        // consumato (20 + expect esatti) o il prossimo request del client
-        // legge spazzatura — vale anche per il WRITE remoto negato (mai
-        // map_in/send al driver in quel caso).
+        // Diritti per-canale, check ops (Fase 17 + tetto Fase 45): CENTRALE,
+        // prima di qualunque contatto handler/driver. A diniego il frame va
+        // comunque consumato (20 + expect esatti) o il prossimo request del
+        // client legge spazzatura — vale anche per il WRITE remoto negato
+        // (mai map_in/send al driver in quel caso). Fallback fail-closed a
+        // canale senza handshake-policy (non dovrebbe accadere: FS_NOTIFY
+        // richiede rings, che richiede handshake).
+        // Tetto policy in cache (Fase 45): niente syscall qui dentro.
+        let ceiling = policy.get(&chan).copied().unwrap_or(policy::DEFAULT_UNKNOWN_OPS);
         if let Some(bit) = rights::op_bit(op_tag) {
-            if rights::rights_ops(&rights, chan) & bit == 0 {
+            if rights::rights_ops(&rights, chan) & ceiling & bit == 0 {
                 rings::req_ring_consume(20 + expect);
                 rings::resp_ring_write(ERR, 0, &[]);
                 let _ = libr::reply(0, ERR, 0);
@@ -513,9 +529,11 @@ fn real_main(_sp: u64) -> ! {
                 continue;
             }
 
-            R_RIGHTS_DROP => rights::handle_rights_drop(&mut rights, chan, w0 as u32, &payload).ok_or(ERR),
+            // DROP/GET partono dal tetto policy (Fase 45), non da ALL: un
+            // canale restrittivo non puo' "droppare verso l'alto".
+            R_RIGHTS_DROP => rights::handle_rights_drop(&mut rights, chan, w0 as u32, &payload, ceiling).ok_or(ERR),
 
-            R_RIGHTS_GET => rights::handle_rights_get(&rights, &rings, chan).ok_or(ERR),
+            R_RIGHTS_GET => rights::handle_rights_get(&rights, &rings, chan, ceiling).ok_or(ERR),
 
             _ => {
                 // Tag sconosciuto: frame gia' consumato sopra, ritorna errore.

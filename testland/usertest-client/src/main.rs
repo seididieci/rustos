@@ -146,6 +146,10 @@ const MODE_SUSPENDENY: u64 = 30;
 // recv, al messaggio `JOB_CANCEL` esce con code dedicato (prova di catch:
 // un kill non potrebbe produrre questo code).
 const MODE_SIGCATCH: u64 = 31;
+// Fase 45 (t57): sonda diritti GRANT+PIPE sul proprio canale (testcli ha
+// riga test-policy ALL: il GET default lo prova). Drop GRANT → grant negato;
+// drop PIPE → pipe_create negata; read valida dopo (anti-wedge).
+const MODE_GRANTDENY: u64 = 32;
 
 // Tag DEV_* + errore IPC (A1): single source in `libr` (prima letterali qui).
 use libr::{DEV_CLOSE, DEV_OPEN, ERR};
@@ -510,6 +514,7 @@ fn real_main(sp: u64) -> ! {
                 MODE_DUPGRANT => run_dupgrant(),
                 MODE_DUPSIBCLAIM => run_dupsibclaim(rounds as u64),
                 MODE_SEEKDENY => run_seekdeny(),
+                MODE_GRANTDENY => run_grantdeny(),
                 MODE_SUSPENDENY => run_suspenddeny(rounds as i64),
                 _ => (false, 1),
             };
@@ -726,6 +731,55 @@ fn run_seekdeny() -> (bool, usize) {
         Err(libr::Error::Failed) => (true, 0),
         _ => (false, 2),
     }
+}
+
+/// Fase 45 (t57): diritti GRANT+PIPE sul proprio canale. Il GET default deve
+/// essere ALL (prova che la riga test-policy e' applicata: senza, il default
+/// ignoto negherebbe gia' qui). Poi drop GRANT → `dup_grant` negato, drop
+/// PIPE → `pipe()` negata, e una read valida dopo i rifiuti (anti-wedge).
+/// Detail = bitmask esiti (1=get, 2=grant-denied, 4=pipe-denied, 8=read-ok).
+fn run_grantdeny() -> (bool, usize) {
+    let mut detail = 0usize;
+    let mut sb = [0u8; 32];
+    if libr::rights_get(&mut sb) != Ok(libr::RIGHTS_ALL) {
+        return (false, detail);
+    }
+    detail |= 1;
+    let fd = match libr::open("/t57grant.txt", libr::O_CREAT) {
+        Ok(f) => f,
+        Err(_) => return (false, detail),
+    };
+    if libr::rights_drop(libr::RIGHTS_ALL & !libr::RIGHTS_GRANT, None).is_err() {
+        let _ = libr::close(fd);
+        return (false, detail);
+    }
+    if libr::dup_grant(fd).is_err() {
+        detail |= 2;
+    }
+    if libr::rights_drop(
+        libr::RIGHTS_ALL & !libr::RIGHTS_GRANT & !libr::RIGHTS_PIPE,
+        None,
+    )
+    .is_err()
+    {
+        let _ = libr::close(fd);
+        return (false, detail);
+    }
+    if libr::pipe().is_err() {
+        detail |= 4;
+    }
+    // Op valida DOPO i rifiuti (round trip veri, non count-0 vacuo): il bit
+    // WRITE e' intatto, quindi write+read-back devono funzionare.
+    let mut b = [0u8; 4];
+    if libr::write_fs(fd, b"qwer", 4) == Ok(4)
+        && libr::lseek(fd, 0, libr::SEEK_SET).is_ok()
+        && libr::read_fs(fd, &mut b, 4) == Ok(4)
+        && b == *b"qwer"
+    {
+        detail |= 8;
+    }
+    let _ = libr::close(fd);
+    (detail == 15, detail)
 }
 
 /// Fase 44a (t55): tentativi suspend/resume ostili che DEVONO essere rifiutati.
