@@ -1631,18 +1631,25 @@ velordor/
         GET lo riporta); carve-out init-child + `Service::Test`; crate
         `foreign` (attore ignoto t57) + `M_GRANTDENY` helper; gate 5/5 +
         7/7 + 57/57 + shell 179 check, zero FAIL/PANIC/FAULT. ADR-0037.
-  - [x] Fase 46 (provider trait): trait `LocalFs` con presentation POSIX
-        (`open/read/write/close/readdir/stat/mkdir/remove`), object-safe via
-        `LocalFsDyn` con handles erasure (`*const ()`), wrapper `DynHandle<T>`
-        che boxa gli handle su open e li libera su close, enum `MountedFs`
-        esteso con variande `Fat(Option<Fat32<IpcDisk>>)` +
-        `Local(Box<dyn LocalFsDyn>)`, implementazioni per RamFs e Fat32.
-        Scaffolding: nessun handler instrada ancora via `Local` (zero runtime
-        change, zero behavioral regression). Heap-per-op su open (contro la
-        regola Fase 24 "mai heap nel per-op") — accettabile come step 1, da
-        ottimizzare in U1 con allocator a slot. Gate 5/5 + 7/7 + 57/57, zero
-        FAIL/PANIC/FAULT. ADR-0038.
-  - [ ] Parcheggiate (trigger, non date): audio AC97+CBS (primo client servizio
+   - [x] Fase 46 (provider trait): trait `LocalFs` con presentation POSIX
+         (`open/read/write/close/readdir/stat/mkdir/remove`), object-safe via
+         `LocalFsDyn` con handles erasure (`*const ()`), wrapper `DynHandle<T>`
+         che boxa gli handle su open e li libera su close, enum `MountedFs`
+         esteso con variande `Fat(Option<Fat32<IpcDisk>>)` +
+         `Local(Box<dyn LocalFsDyn>)`, implementazioni per RamFs e Fat32.
+         Scaffolding: nessun handler instrada ancora via `Local` (zero runtime
+         change, zero behavioral regression). Heap-per-op su open (contro la
+         regola Fase 24 "mai heap nel per-op") — accettabile come step 1, da
+         ottimizzare in U1 con allocator a slot. Gate 5/5 + 7/7 + 57/57, zero
+         FAIL/PANIC/FAULT. ADR-0038.
+   - [x] Fase 47 (U1, wiring trait nei handler): sostituzione dispatch diretto
+         RamFs con trait `LocalFs` in tutti gli handler userfs (open, read,
+         write_local, readdir, stat, mkdir, delete) per ramfs; fix bug
+         `mkdir` esistente → `ERR_EXISTS` invece di `Ok(())`, fix `read` oltre
+         EOF → 0 invece di panic (slice out-of-bounds). `&mut fs` propagato ai
+         handler che ora chiamano `LocalFs::open/read/write`. Zero behavioral
+         regression. Gate 5/5 + 7/7 + 57/57, zero FAIL/PANIC/FAULT. ADR-0038 §U1.
+   - [ ] Parcheggiate (trigger, non date): audio AC97+CBS (primo client servizio
   PCI, chiude ADR-0007 davvero); server-run async userdisk (quando
   l'overlap DMA lo richiede); Strato 3 credenziali; ext2/ATAPI/write-back/
   read-ahead/`DISK_STATS`/generazioni PID/thread (solo su pressione reale);

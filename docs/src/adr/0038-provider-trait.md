@@ -1,6 +1,7 @@
 # ADR-0038: Provider trait per filesystem (Fase 46)
 
-**Status**: Implemented (Fase 46 — gate 5/5 + 7/7 + 57/57, zero FAIL/PANIC).
+**Status**: Implemented (Fase 46 — gate 5/5 + 7/7 + 57/57, zero FAIL/PANIC;
+Fase 47/U1 wiring handler via trait per ramfs, gate 5/5 + 7/7 + 57/57).
 
 ## Context
 
@@ -79,12 +80,19 @@ pub enum MountedFs {
 - `Fat32<B> implements LocalFs` — wrapper su `IpcDisk` (Fase 16/21);
   le operazioni delegano a `read_file`, `write_file`, `read_dir`, ecc.
 
-### 46.4 — Routing handler (U1, non implementato)
+### 46.4 — Routing handler (U1, Fase 47)
 
-Gli handler attuali usano ancora l'enum dispatch esplicito (`match` su
-`MountedFs`). Il prossimo passo (U1) e' instradare ramfs via `Local` +
-`dyn`, lasciando FAT32 sulla variande `Fat` (lazy reactivate, IPC disk
-client sono specifici).
+Implementato: gli handler userfs instradano ramfs via `LocalFs` trait:
+- `handle_open`: `LocalFs::open(fs, path, flags)` per ramfs
+- `handle_read`: `LocalFs::open` + `LocalFs::read` per ramfs
+- `handle_write_local`: `LocalFs::open` + `LocalFs::write` per ramfs
+- `handle_readdir`: `LocalFs::readdir` per ramfs
+- `handle_stat`: `LocalFs::stat` per ramfs
+- `handle_mkdir`: `LocalFs::mkdir` per ramfs (fix: esiste → ERR_EXISTS)
+- `handle_delete`: `LocalFs::remove` per ramfs
+
+FAT32 resta sulla variande `Fat` (lazy reactivate, IPC disk client specifici).
+Zero behavioral regression; gate 5/5 + 7/7 + 57/57.
 
 ## Consequences
 
@@ -100,9 +108,6 @@ client sono specifici).
 
 ### Negative
 
-- **Dead code warnings**: finche' gli handler non instradano via `Local`,
-  `DynHandle`, `Meta`, `EntrySink` e le impl `RamFs`/`Fat32` sono codice
-  morto (~20 warning). Va silenziato o risolto in U1.
 - **Heap per-op**: `DynHandle::open_dyn` boxa ogni handle (`Box::new(h)`).
   La regola Fase 24 dice "mai heap nel per-op dei server". Per un filesystem
   locale con handles piccoli (u32, usize) e lifecycle chiuso (open→use→close

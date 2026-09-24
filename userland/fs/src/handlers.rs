@@ -88,27 +88,17 @@ pub fn handle_open(
     match mount_legacy::resolve_local(mounts_fat, path).ok_or(ERR_NOTFOUND)? {
         mount_legacy::FsKind::Fat => Err(ERR), // mount inattivo: errore, mai shadow ramfs
         mount_legacy::FsKind::Ram => {
-            if creat {
-                let _ = fs.create_file(path);
-            }
-            match fs.find(path).ok_or(ERR_NOTFOUND)? {
-                ramfs::FsNode::File { .. } => {}
-                ramfs::FsNode::Dir { .. } => return Err(ERR_ISDIR),
-            }
-            // O_TRUNC su ramfs: svuota il vettore (in-memoria, infallibile a
-            // path esistente — appena verificato sopra).
-            if trunc {
-                if let Some(ramfs::FsNode::File { data, .. }) = fs.find_or_create(path) {
-                    data.clear();
-                }
-            }
+            // 47.1 — open via trait `LocalFs` (U1): la trait gestisce O_CREAT,
+            // validazione file/dir e O_TRUNC internamente; il RamHandle restituito
+            // non si memorizza in ftable (U1 mantiene path-based storage).
+            let _ = crate::provider::LocalFs::open(fs, path, flags as u32)?;
             Ok(ftable.open(chan, path, mount_legacy::FsKind::Ram, None, append))
         }
     }
 }
 
 pub fn handle_read(
-    fs: &ramfs::RamFs,
+    fs: &mut ramfs::RamFs,
     ftable: &mut ftable::FileTable,
     pipes: &mut pipes::PipeTable,
     mounts_fat: &mut Vec<mount::FsMount>,
@@ -156,19 +146,11 @@ pub fn handle_read(
     let mut buf_stack = [0u8; 4096];
     let data: &[u8] = match kind {
         mount_legacy::FsKind::Ram => {
-            let d = match fs.find(path).ok_or(ERR_NOTFOUND)? {
-                ramfs::FsNode::File { data: d, .. } => d,
-                // Dir aperta (solo via fd pre-40): leggere una dir e' IsDir.
-                _ => return Err(ERR_ISDIR),
-            };
-            if offset >= d.len() {
-                &[]
-            } else {
-                let end = (offset + count).min(d.len());
-                let n = end - offset;
-                buf_stack[..n].copy_from_slice(&d[offset..end]);
-                &buf_stack[..n]
-            }
+            // 47.2 — read via trait `LocalFs` (U1): open per ottenere handle,
+            // poi read attraverso la trait. Flags=0 = sola lettura (no create/truncate).
+            let handle = crate::provider::LocalFs::open(fs, path, 0)?;
+            let n = crate::provider::LocalFs::read(fs, handle, offset, &mut buf_stack[..count])?;
+            &buf_stack[..n]
         }
         mount_legacy::FsKind::Fat => {
             let mi = mnt.ok_or(ERR)?;
@@ -345,20 +327,12 @@ pub fn handle_write_local(
         return Ok(n as u64);
     }
 
-    match fs.find_or_create(path).ok_or(ERR_NOTFOUND)? {
-        ramfs::FsNode::File { data: file_data, .. } => {
-            // O_APPEND: accoda a len corrente invece dell'offset del fd.
-            let offset = if append { file_data.len() } else { offset };
-            if offset + count > file_data.len() {
-                file_data.resize(offset + count, 0);
-            }
-            file_data[offset..offset + count].copy_from_slice(&payload[..count]);
-            ftable.set_offset(chan, fd, offset + count);
-            Ok(count as u64)
-        }
-        // Dir aperta (solo via fd pre-40): scrivere una dir e' IsDir.
-        _ => Err(ERR_ISDIR),
-    }
+    // 47.3 — write via trait `LocalFs` (U1): open con O_CREAT per creare file
+    // inesistenti, poi write attraverso la trait (gestisce resize + copy).
+    let handle = crate::provider::LocalFs::open(fs, path, libr::O_CREAT)?;
+    let n = crate::provider::LocalFs::write(fs, handle, offset, payload, append)?;
+    ftable.set_offset(chan, fd, offset + n as usize);
+    Ok(n as u64)
 }
 
 pub fn handle_close(
@@ -382,7 +356,7 @@ pub fn handle_close(
 }
 
 pub fn handle_readdir(
-    fs: &ramfs::RamFs,
+    fs: &mut ramfs::RamFs,
     mounts_fat: &mut Vec<mount::FsMount>,
     mounts: &[mount_legacy::Mount],
     rings: &BTreeMap<u64, (u64, u64)>,
@@ -432,10 +406,17 @@ pub fn handle_readdir(
     // Directory esistente ma vuota resta OK (exists): solo "sconosciuto E
     // senza mount" e' errore.
     let (exists, base): (bool, Vec<String>) = match mount_legacy::resolve_local(mounts_fat, path) {
-        Some(mount_legacy::FsKind::Ram) => match fs.readdir(path) {
-            Some(e) => (true, e),
-            None => (false, Vec::new()),
-        },
+        Some(mount_legacy::FsKind::Ram) => {
+            // 47.4 — readdir via trait `LocalFs` (U1): sink inline per raccogliere entry.
+            // Ok(0) su dir vuota = esiste ma senza figli; Err = inesistente.
+            let mut entries: Vec<String> = Vec::new();
+            struct CollectSink<'a>(&'a mut Vec<String>);
+            impl crate::provider::EntrySink for CollectSink<'_> {
+                fn emit(&mut self, name: &str) { self.0.push(alloc::string::String::from(name)); }
+            }
+            let ok = crate::provider::LocalFs::readdir(fs, path, &mut CollectSink(&mut entries)).is_ok();
+            (ok, entries)
+        }
         // Mount noto ma inattivo: NotFound, mai shadow ramfs.
         Some(mount_legacy::FsKind::Fat) => return Err(ERR_NOTFOUND),
         None => (false, Vec::new()),
@@ -484,7 +465,7 @@ pub fn stat_reply(rings: &BTreeMap<u64, (u64, u64)>, chan: u64, size: u64, kind:
 /// Fase 20: mai readonly), device size 0 readonly 0 (sconosciuto senza
 /// interrogare il driver: i prefix registrati sono foglie, qui mai contattati).
 pub fn handle_stat(
-    fs: &ramfs::RamFs,
+    fs: &mut ramfs::RamFs,
     mounts_fat: &mut Vec<mount::FsMount>,
     mounts: &[mount_legacy::Mount],
     rings: &BTreeMap<u64, (u64, u64)>,
@@ -522,18 +503,11 @@ pub fn handle_stat(
     match mount_legacy::resolve_local(mounts_fat, path) {
         // Mount noto ma inattivo: errore, mai shadow ramfs.
         Some(mount_legacy::FsKind::Fat) => Err(ERR),
-        Some(mount_legacy::FsKind::Ram) => match fs.find(path) {
-            Some(ramfs::FsNode::File { data, .. }) => {
-                Ok(stat_reply(rings, chan, data.len() as u64, libr::STAT_FILE))
-            }
-            Some(ramfs::FsNode::Dir { .. }) => {
-                Ok(stat_reply(rings, chan, 0, libr::STAT_DIR))
-            }
-            // Non in ramfs: puo' essere un padre sintetizzato (sotto).
-            None => mount_legacy::synth_children(mounts, path)
-                .map(|_| stat_reply(rings, chan, 0, libr::STAT_DIR))
-                .ok_or(ERR_NOTFOUND),
-        },
+        Some(mount_legacy::FsKind::Ram) => {
+            // 47.4 — stat via trait `LocalFs` (U1): metadati diretti dalla trait.
+            let meta = crate::provider::LocalFs::stat(fs, path)?;
+            Ok(stat_reply(rings, chan, meta.size, if meta.kind == 1 { libr::STAT_DIR } else { libr::STAT_FILE }))
+        }
         // /dev/* senza prefix noto: solo sintesi (sotto).
         None => mount_legacy::synth_children(mounts, path)
             .map(|_| stat_reply(rings, chan, 0, libr::STAT_DIR))
@@ -548,12 +522,8 @@ pub fn handle_mkdir(fs: &mut ramfs::RamFs, mounts: &[mount::FsMount], path: &str
     // mkdir solo su ramfs (i mount FAT/remoti non hanno mkdir).
     match mount_legacy::resolve_local(mounts, path).ok_or(ERR_NOTFOUND)? {
         mount_legacy::FsKind::Ram => {
-            // Distingue "esiste gia'" (Exists) da "padre mancante" (NotFound):
-            // prima sonda, poi crea (single-thread: nessuna race tra i due).
-            if fs.find(path).is_some() {
-                return Err(ERR_EXISTS);
-            }
-            fs.mkdir(path).ok_or(ERR_NOTFOUND)?;
+            // 47.5 — mkdir via trait `LocalFs` (U1): la trait gestisce Exists vs NotFound.
+            crate::provider::LocalFs::mkdir(fs, path)?;
             Ok(0)
         }
         _ => Err(ERR),
@@ -581,7 +551,8 @@ pub fn handle_delete(
     // e' readonly): solo ramfs.
     match mount_legacy::resolve_local(mounts_fat, path).ok_or(ERR_NOTFOUND)? {
         mount_legacy::FsKind::Ram => {
-            fs.remove(path).ok_or(ERR_NOTFOUND)?;
+            // 47.5 — delete via trait `LocalFs` (U1): la trait gestisce NotFound vs EmptyDir.
+            crate::provider::LocalFs::remove(fs, path)?;
             Ok(0)
         }
         _ => Err(ERR_READONLY),

@@ -261,7 +261,11 @@ impl LocalFs for RamFs {
         let path = h.as_str();
         match self.find(path) {
             Some(FsNode::File { data, .. }) => {
-                let len = data.len().saturating_sub(off);
+                // Oltre EOF: ritorna 0 (mai panic per off >= len).
+                if off >= data.len() {
+                    return Ok(0);
+                }
+                let len = data.len() - off;
                 let n = len.min(buf.len());
                 buf[..n].copy_from_slice(&data[off..off + n]);
                 Ok(n)
@@ -338,7 +342,7 @@ impl LocalFs for RamFs {
         }
         // Crea la directory (e le intermedie).
         match self.find(path) {
-            Some(FsNode::Dir { .. }) => Ok(()), // gia' esistente.
+            Some(FsNode::Dir { .. }) => Err(crate::ERR_EXISTS), // gia' esistente.
             Some(FsNode::File { .. }) => Err(crate::ERR_NOTDIR),
             None => {
                 // Crea ricorsivamente.

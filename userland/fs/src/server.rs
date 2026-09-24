@@ -430,7 +430,7 @@ fn real_main(_sp: u64) -> ! {
             }
 
             R_READ => {
-                handlers::handle_read(&fs, &mut ftable, &mut pipes, &mut fat_mounts, &rings, chan, w0 as u32, w1 as usize, &mut fat_gen)
+                handlers::handle_read(&mut fs, &mut ftable, &mut pipes, &mut fat_mounts, &rings, chan, w0 as u32, w1 as usize, &mut fat_gen)
             }
 
             R_WRITE => {
@@ -443,8 +443,8 @@ fn real_main(_sp: u64) -> ! {
 
             R_READDIR => {
                 match core::str::from_utf8(&payload) {
-                    Ok("") | Ok("/") => handlers::handle_readdir(&fs, &mut fat_mounts, &mounts, &rings, chan, "/", &mut fat_gen),
-                    Ok(path) => handlers::handle_readdir(&fs, &mut fat_mounts, &mounts, &rings, chan, path, &mut fat_gen),
+                    Ok("") | Ok("/") => handlers::handle_readdir(&mut fs, &mut fat_mounts, &mounts, &rings, chan, "/", &mut fat_gen),
+                    Ok(path) => handlers::handle_readdir(&mut fs, &mut fat_mounts, &mounts, &rings, chan, path, &mut fat_gen),
                     Err(_) => Err(ERR_INVALID),
                 }
             }
@@ -479,8 +479,8 @@ fn real_main(_sp: u64) -> ! {
 
             R_STAT => {
                 match core::str::from_utf8(&payload) {
-                    Ok("") | Ok("/") => handlers::handle_stat(&fs, &mut fat_mounts, &mounts, &rings, chan, "/", &mut fat_gen),
-                    Ok(path) => handlers::handle_stat(&fs, &mut fat_mounts, &mounts, &rings, chan, path, &mut fat_gen),
+                    Ok("") | Ok("/") => handlers::handle_stat(&mut fs, &mut fat_mounts, &mounts, &rings, chan, "/", &mut fat_gen),
+                    Ok(path) => handlers::handle_stat(&mut fs, &mut fat_mounts, &mounts, &rings, chan, path, &mut fat_gen),
                     Err(_) => Err(ERR_INVALID),
                 }
             }
