@@ -74,9 +74,10 @@ Voci con scope e vittoria dichiarati (non date).
       btrfs/zfs — snapshot, niente partizionamento, layout adattivo per tipo
       di device (hdd/ssd/emmc), raid avanzato, monitoring (SMART), COW su
       disco; hook futuro per distribuzione nativa (ceph/glusterfs-like).
-      Prossimo passo: sessione guidata di analisi (modello dati, layout,
-      raid, monitoring, COW, hook distribuito) → `arcafs.md` + ADR, poi
-      implementazione. Vittoria: spec scritta + primo mount.
+      Sessione A0 completata: bozza in `arcafs.md` (modello, indice,
+      formato, API, mapping, diritti, quota, tool, multi-device, swap,
+      vector). Prossimo: stesura di dettaglio + ADR, poi A1.
+      Vittoria: spec scritta + primo mount.
 
 ## Parcheggiate
 
