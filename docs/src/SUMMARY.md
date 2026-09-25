@@ -22,6 +22,7 @@
 - [Test Suite](./11-testing.md) — Fase 9.5
 - [Utilities](./12-utilities.md) — Fase 18 (shell + utility utente)
 - [Performance](./13-performance.md) — Fasi 23/24/25 (baseline + throughput + cache)
+- [Cronologia di sviluppo](./14-cronologia-fasi.md) — log dettagliato per fase
 
 ---
 
