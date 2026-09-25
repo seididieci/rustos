@@ -7,6 +7,9 @@ use super::*;
 pub enum FsKind {
     Ram,
     Fat,
+    /// Mount `Local` (Fase 49, F4: ramfs montata, domani ArcaFS): dispatch
+    /// via `local_dyn` + handle `AnyHandle` in ftable, mai path-based reopen.
+    Local,
 }
 
 /// Un mount point registrato da un driver via FS_REGISTER.
@@ -197,16 +200,30 @@ pub fn union_mount_children(
 
 /// Risolve un path in FsKind (ramfs di default).
 /// Per i path remoti (/dev/*), ritorna None (usa resolve_mount).
-/// Per i path sotto un mount noto, ritorna Fat (usa resolve_fsmount per indice+rel).
+/// Per i path sotto un mount noto, ritorna Fat o Local a seconda della
+/// variante (usa resolve_fsmount per id+rel nel percorso fd).
 pub fn resolve_local(mounts_fat: &[mount::FsMount], path: &str) -> Option<FsKind> {
     let t = path.trim_start_matches('/');
     if t.starts_with("dev/") || t == "dev" {
         return None; // gestito da resolve_mount
     }
-    if mount::target_match(mounts_fat, path) {
-        return Some(FsKind::Fat);
+    // Longest-prefix come `resolve_fsmount`, ma senza attivazione (puro):
+    // la variante distingue Fat da Local.
+    let mut best: Option<&mount::FsMount> = None;
+    for m in mounts_fat {
+        let hit = t == m.target
+            || (t.len() > m.target.len()
+                && t.as_bytes().get(m.target.len()) == Some(&b'/')
+                && t.starts_with(m.target.as_str()));
+        if hit && best.map_or(true, |b| m.target.len() > b.target.len()) {
+            best = Some(m);
+        }
     }
-    Some(FsKind::Ram)
+    match best {
+        Some(m) if m.is_local() => Some(FsKind::Local),
+        Some(_) => Some(FsKind::Fat),
+        None => Some(FsKind::Ram),
+    }
 }
 
 /// Converte device name in tipo devfs (w0 di DEV_OPEN).

@@ -5,8 +5,9 @@ use super::*;
 #[derive(Clone)]
 pub enum FileEntry {
     /// File locale: `path` e' relativo al suo filesystem (ramfs: path assoluto
-    /// senza slash iniziale; FAT: relativo al mount). `mnt` = indice in
-    /// `mounts_fat` per i file FAT, None per ramfs (radice sempre locale).
+    /// senza slash iniziale; FAT: relativo al mount). `mnt` = mount-id in
+    /// `mounts_fat` (Fase 49, F2: stabile oltre `umount`/`remove` altrui, mai
+    /// un indice), None per ramfs (radice sempre locale).
     /// `fat_info`/`fat_gen`: FileInfo in cache per i file FAT (solo FAT: il
     /// find in ramfs e' in-memoria e costa zero). La cache evita il dir-walk
     /// (root + dir: ~4-10 round-trip DISK) a OGNI read/write su fd aperti: il
@@ -14,9 +15,13 @@ pub enum FileEntry {
     /// generazione globale `fat_gen` viene bumpata a OGNI mutazione FAT
     /// (write/create/mount/umount/remount/drop d'epoca); a mismatch si rifa
     /// `find` e si riaggiorna. Mai stale oltre l'op corrente (single-thread).
+    /// `any_info` (Fase 49, F4): handle `AnyHandle` per i mount `Local`
+    /// (ramfs montata, domani ArcaFS) — aperto una volta via `open_dyn`,
+    /// riusato a ogni read/write (mai reopen per-path, mai cache da
+    /// invalidare: il provider e' in-memoria o gestisce le epoche da se').
     /// `append` (Fase 40, O_APPEND): le write ignorano `offset` e accodano a
     /// fine file; le read usano `offset` normalmente.
-    Local { path: String, kind: mount_legacy::FsKind, offset: usize, mnt: Option<usize>, fat_info: Option<FileInfo>, fat_gen: u64, append: bool },
+    Local { path: String, kind: mount_legacy::FsKind, offset: usize, mnt: Option<u64>, fat_info: Option<FileInfo>, fat_gen: u64, any_info: Option<provider::AnyHandle>, append: bool },
     Remote { server_chan: u64, remote_fd: u32 },
     /// Estremita' di una pipe server-side (Fase 42): `pipe` = id in
     /// `PipeTable`, `write` = lato (false = lettura, true = scrittura).
@@ -46,7 +51,7 @@ impl FileTable {
         current
     }
 
-    pub fn open(&mut self, chan: u64, path: &str, kind: mount_legacy::FsKind, mnt: Option<usize>, append: bool) -> u64 {
+    pub fn open(&mut self, chan: u64, path: &str, kind: mount_legacy::FsKind, mnt: Option<u64>, append: bool) -> u64 {
         let fd = self.alloc_fd(chan);
         self.files.insert((chan, fd), FileEntry::Local {
             path: String::from(path),
@@ -55,6 +60,7 @@ impl FileTable {
             mnt,
             fat_info: None,
             fat_gen: 0,
+            any_info: None,
             append,
         });
         fd as u64
@@ -62,7 +68,7 @@ impl FileTable {
 
     /// Come `open` ma con FileInfo FAT gia' risolto (evita un find al primo
     /// uso): `gen` e' la generazione corrente (la cache nasce valida).
-    pub fn open_fat(&mut self, chan: u64, path: &str, mnt: usize, info: FileInfo, fgen: u64, append: bool) -> u64 {
+    pub fn open_fat(&mut self, chan: u64, path: &str, mnt: u64, info: FileInfo, fgen: u64, append: bool) -> u64 {
         let fd = self.alloc_fd(chan);
         self.files.insert((chan, fd), FileEntry::Local {
             path: String::from(path),
@@ -71,6 +77,31 @@ impl FileTable {
             mnt: Some(mnt),
             fat_info: Some(info),
             fat_gen: fgen,
+            any_info: None,
+            append,
+        });
+        fd as u64
+    }
+
+    /// Come `open_fat` ma per i mount `Local` (Fase 49, F4): l'handle
+    /// `AnyHandle` (da `open_dyn`) vive nell'fd e serve tutte le read/write.
+    pub fn open_local(
+        &mut self,
+        chan: u64,
+        path: &str,
+        mnt: u64,
+        handle: provider::AnyHandle,
+        append: bool,
+    ) -> u64 {
+        let fd = self.alloc_fd(chan);
+        self.files.insert((chan, fd), FileEntry::Local {
+            path: String::from(path),
+            kind: mount_legacy::FsKind::Local,
+            offset: 0,
+            mnt: Some(mnt),
+            fat_info: None,
+            fat_gen: 0,
+            any_info: Some(handle),
             append,
         });
         fd as u64
@@ -84,7 +115,7 @@ impl FileTable {
     /// Le pipe usano `open_cloned_pipe` (serve la PipeTable per il conteggio).
     pub fn open_cloned(&mut self, chan: u64, snap: &FileEntry) -> Option<u64> {
         match snap {
-            FileEntry::Local { path, kind, offset, mnt, append, .. } => {
+            FileEntry::Local { path, kind, offset, mnt, any_info, append, .. } => {
                 let fd = self.alloc_fd(chan);
                 self.files.insert((chan, fd), FileEntry::Local {
                     path: path.clone(),
@@ -93,6 +124,7 @@ impl FileTable {
                     mnt: *mnt,
                     fat_info: None,
                     fat_gen: 0,
+                    any_info: *any_info,
                     append: *append,
                 });
                 Some(fd as u64)
@@ -158,15 +190,16 @@ impl FileTable {
         self.next_fd.remove(&chan);
     }
 
-    /// true se qualche fd locale e' aperto su questo mount (EBUSY per umount).
-    pub fn has_mount_users(&self, mi: usize) -> bool {
+    /// true se qualche fd locale e' aperto su questo mount-id (EBUSY per
+    /// umount). Confronta id, mai indici (Fase 49, F2).
+    pub fn has_mount_users(&self, mi: u64) -> bool {
         self.files.values().any(|e| match e {
             FileEntry::Local { mnt: Some(m), .. } => *m == mi,
             _ => false,
         })
     }
 
-    pub fn get(&self, chan: u64, fd: u32) -> Option<(&str, mount_legacy::FsKind, usize, Option<usize>)> {
+    pub fn get(&self, chan: u64, fd: u32) -> Option<(&str, mount_legacy::FsKind, usize, Option<u64>)> {
         match self.files.get(&(chan, fd))? {
             FileEntry::Local { path, kind, offset, mnt, .. } => {
                 Some((path.as_str(), *kind, *offset, *mnt))
@@ -180,6 +213,16 @@ impl FileTable {
     pub fn get_remote(&self, chan: u64, fd: u32) -> Option<(u64, u32)> {
         match self.files.get(&(chan, fd))? {
             FileEntry::Remote { server_chan, remote_fd } => Some((*server_chan, *remote_fd)),
+            _ => None,
+        }
+    }
+
+    /// Handle `AnyHandle` dell'fd se aperto su un mount `Local` (Fase 49, F4),
+    /// altrimenti None. Come `get_remote`: gli accessor tornano Some solo per
+    /// il proprio tipo.
+    pub fn get_dyn_handle(&self, chan: u64, fd: u32) -> Option<provider::AnyHandle> {
+        match self.files.get(&(chan, fd))? {
+            FileEntry::Local { any_info: Some(h), .. } => Some(*h),
             _ => None,
         }
     }

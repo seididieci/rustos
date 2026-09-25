@@ -2,7 +2,10 @@
 
 **Status**: Implemented (Fase 46 — gate 5/5 + 7/7 + 57/57, zero FAIL/PANIC;
 Fase 47/U1 wiring handler via trait per ramfs, gate 5/5 + 7/7 + 57/57;
-Fase 48/U2 wiring FAT32 via `LocalFsDyn`, fix readonly stat, gate 5/5 + 7/7 + 57/57).
+Fase 48/U2 wiring FAT32 via `LocalFsDyn`, fix readonly stat, gate 5/5 + 7/7 + 57/57;
+Fase 49/T0 terreno pre-ArcaFS: handle unico `AnyHandle`, mount-id stabili,
+sorgente generica + fstype, `Local` esercitato, create/truncate assorbiti,
+gate 5/5 + 7/7 + 57/57).
 
 ## Context
 
@@ -114,12 +117,45 @@ Implementato: gli handler userfs instradano FAT32 via `LocalFsDyn` trait:
   `Meta.readonly` in `STAT_READONLY` (prima ignorato: `libr::stat` lo
   decodifica ma nessun handler lo scriveva)
 
-`Fat32<B>` implementa `LocalFsDyn` con handles boxati (`*const ()`). Operazioni
-FAT-specifiche (create_file, truncate) restano separate: non parte della trait
-perché sono FAT-specifiche (Fase 20). Fix `Fat32::LocalFs::write`: `write_grow`
-sempre (superset di `write_file`, gestisce anche il primo cluster dei file
-appena creati) e O_APPEND derivato dall'`append` (contratto ramfs). Zero
-behavioral regression; gate 5/5 + 7/7 + 57/57.
+`Fat32<B>` implementa `LocalFsDyn` con handle `AnyHandle::Fat` by-value
+(Fase 49: niente piu' handle boxati). `O_CREAT`/`O_TRUNC` assorbiti in
+`Fat32::open` (come `RamFs::open`); restano fuori trait solo cache per-fd
+e generazione (stato userfs, per disegno). Zero behavioral regression;
+gate 5/5 + 7/7 + 57/57.
+
+### 49.0 — Terreno pre-ArcaFS (Fase 49, un solo gate)
+
+Chiude i debiti 46-48 emersi dalla review pre-ArcaFS (object-store futuro):
+
+- **F0 dettagli**: `RamHandle::new` → `Option` (mai troncamento silenzioso
+  oltre 64 B); `Fat32::open` su single-source `libr::O_CREAT`/`O_TRUNC`
+  (mai `0x200` magico); niente dummy `FileInfo` cluster 0 (find fallito
+  dopo create = errore, mai handle invalido).
+- **F1 handle unico**: `AnyHandle { Ram(RamHandle), Fat(FileInfo) }`
+  by-value; `open_dyn` ritorna l'handle (niente `Box`, niente raw-pointer),
+  `close_dyn` rimossa con `DynHandle` (entrambe le `close` concrete no-op).
+  Chiude type-confusion, free-di-stack e double-free latenti; per-op
+  heap-free (regola Fase 24). `RamFs` implementa `LocalFsDyn` come `Fat32`
+  (match sul ramo sbagliato = `ERR_INVALID`).
+- **F2 mount-id stabili**: `FsMount.id: u64` monotonico (`next_mount_id` in
+  `server.rs`, mai riusato); gli fd tengono l'id (`by_id`/`by_id_mut`,
+  `reactivate_mount_by_id`); `umount` orfana gli fd (errore al prossimo
+  uso) invece di aliasare il vicino shiftato dal `remove`.
+- **F3 sorgente generica + fstype**: `enum Source::Block { key }` +
+  `negotiate()` (superblock, oggi solo vfat → `("vfat", Fat)`); campo
+  `fstype` per mount; rimosso `handle: u32` (scritto e mai letto).
+  `resolve_mount_source` resta per gli open raw by-path.
+- **F4 `Local` esercitato end-to-end**: `R_MOUNT "ramfs"` monta
+  un'istanza ramfs tmpfs-like (sempre attiva, no IPC, `reactivate` no-op,
+  `note_peer_death` no-op) + path fd completo per i mount `Local`:
+  `open_dyn` → `AnyHandle` in ftable (`open_local`, `FsKind::Local`,
+  `get_dyn_handle`), read/write via handle dell'fd, `lseek` END via
+  `stat_dyn`, mkdir/delete via trait; `resolve_local` distingue Fat da
+  Local sul match longest-prefix. La variante `Local` e' viva per davvero.
+- **F5 create/truncate assorbiti**: `handle_open` FAT = una `open` via
+  trait sul concreto (`fat_mut`); bump `fgen` solo a `O_CREAT`/`O_TRUNC`.
+  Restano fuori trait (per disegno): cache `FileInfo` per-fd, `fgen`,
+  `lseek` SEEK_END (serve l'fd, non il path).
 
 ## Consequences
 
@@ -133,21 +169,22 @@ behavioral regression; gate 5/5 + 7/7 + 57/57.
 - **Zero runtime change**: gli handler non usano ancora `Local`; nessun
   cambiamento di comportamento osservabile.
 
-### Negative
+### Negative (chiusi in Fase 49)
 
-- **Heap per-op**: `DynHandle::open_dyn` boxa ogni handle (`Box::new(h)`). La
-  regola Fase 24 dice "mai heap nel per-op dei server". Per un filesystem locale
-  con handles piccoli (u32, usize) e lifecycle chiuso (open→use→close nello stesso
-  IPC), l'overhead e' trascurabile; ma se il path diventa hot va sostituito con
-  un allocator a slot (o `LocalFs::Handle` inline). FAT32 usa lo stesso pattern.
+- **Heap per-op**: superato — niente piu' `Box` per-open (`AnyHandle`
+  by-value, entrambe le `close` concrete no-op). La regola Fase 24
+  ("mai heap nel per-op") vale di nuovo su tutti i path.
+- **Variante `Local` mai costruita**: superato — `R_MOUNT "ramfs"` la
+  esercita (F4); la prova di estensibilita' esiste davvero.
 
 ### Neutral
 
-- **Fat32 ora nel path Local**: U2 (Fase 48) ha instradato FAT32 via `LocalFsDyn`
-  in tutti gli handler. Le operazioni FAT-specifiche (create_file, truncate)
-  restano separate: non parte della trait perché sono FAT-specifiche (Fase 20).
-  Lazy reactivate (`IpcDisk` reconnect) e cache settoriale (Fase 25) restano
-  specifiche ma non impediscono l'unificazione del path principale.
+- **Fat32 nel path Local**: U2 (Fase 48) ha instradato FAT32 via `LocalFsDyn`
+  in tutti gli handler; la Fase 49 ha assorbito anche create/truncate in
+  `open`. Restano fuori trait per disegno (stato userfs, non del FS):
+  cache `FileInfo` per-fd + `fgen`, `lseek` SEEK_END. Lazy reactivate
+  (`IpcDisk` reconnect) e cache settoriale (Fase 25) restano specifiche
+  ma non impediscono l'unificazione del path principale.
 
 ## Alternatives Considered
 
@@ -165,12 +202,15 @@ slot (array fisso con bitmap) — zero alloc heap, handle = indice slot.
 Ma introduce complessita' (lifecycle, leak se manca close) e non giustifica
 il costo per U0.
 
-### Unified `MountedFs` per FAT32 + Local
+### Unified `MountedFs` per FAT32 + Local (storico: superato in Fase 49)
 
-Unificare FAT32 nel path `Local` eliminerebbe la variande `Fat`. Ma FAT32
-tiene `IpcDisk` (client IPC verso userdisk), cache settoriale (Fase 25),
-lazy reactivate: e' troppo specifico per un trait generico. Meglio tenere
-la separazione attuale e instradare solo ramfs via `Local` in U1.
+Unificare FAT32 nel path `Local` eliminerebbe la variande `Fat`. Al tempo
+di U0 si scelse la separazione (FAT32 con `IpcDisk`, cache settoriale,
+lazy reactivate: troppo specifico). U2/Fase 48 ha poi instradato FAT32 via
+`LocalFsDyn` comunque, e la Fase 49 ha unificato anche create/truncate:
+la separazione resta solo per lo stato userfs (cache per-fd, epoche),
+non per il dispatch. Tenere le due varianti e' ormai solo comodo per
+`reactivate`/`note_peer_death` (epoche disco), non un limite del trait.
 
 ## Riferimenti
 

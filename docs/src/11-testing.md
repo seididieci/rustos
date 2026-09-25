@@ -50,7 +50,7 @@ Righe di gate:
 ```
 [testfs] PASS 5/5
 [testfat] PASS 7/7
-[usertests] PASS 56/56
+[usertests] PASS 57/57
 ```
 
 ## Test shell interattivi (QEMU + sendkey, fuori dal gate kernel)

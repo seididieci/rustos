@@ -7,7 +7,6 @@
 //! mkdir/rm su FAT (solo overwrite/create/grow, Fase 20).
 
 extern crate alloc;
-use alloc::boxed::Box;
 
 use alloc::format;
 
@@ -29,24 +28,26 @@ impl<B: BlockSource> crate::provider::LocalFs for Fat32<B> {
         if path.is_empty() {
             return Err(crate::ERR_NOTFOUND);
         }
-        // O_CREAT (0x200): crea file vuoto se non esiste.
-        if flags & 0x200 != 0 {
-            if self.find(path).is_some() || self.create_file(path) {
-                return Ok(self.find(path).unwrap_or(FileInfo {
-                    first_cluster: 0,
-                    size: 0,
-                    is_dir: false,
-                    dir_cluster: self.root_cluster,
-                    entry_off: 0,
-                }));
-            }
+        // O_CREAT: crea il file se non esiste (single source `libr::O_*`,
+        // Fase 49: mai costanti magiche nel provider).
+        if flags & libr::O_CREAT != 0 && self.find(path).is_none() && !self.create_file(path) {
             return Err(crate::ERR_NOTFOUND);
         }
-        // Altrimenti: il file deve esistere.
-        match self.find(path) {
-            Some(info) => Ok(info),
-            None => Err(crate::ERR_NOTFOUND),
+        let info = self.find(path).ok_or(crate::ERR_NOTFOUND)?;
+        if info.is_dir {
+            return Err(crate::ERR_ISDIR);
         }
+        // O_TRUNC assorbito qui (Fase 49, come `RamFs::open`): niente piu'
+        // find+truncate fuori trait nell'handler. Fallimento = rifiuto, mai
+        // truncate parziale dichiarato riuscito (contratto `truncate`).
+        if flags & libr::O_TRUNC != 0 {
+            if !self.truncate(&info) {
+                return Err(crate::ERR);
+            }
+            // La truncate cambia size/first_cluster: rileggi fresco.
+            return self.find(path).ok_or(crate::ERR_NOTFOUND);
+        }
+        Ok(info)
     }
 
     fn read(&mut self, h: Self::Handle, off: usize, buf: &mut [u8]) -> Result<usize, u64> {
@@ -105,29 +106,36 @@ impl<B: BlockSource> crate::provider::LocalFs for Fat32<B> {
     }
 }
 
-// ── Implementazione LocalFsDyn per Fat32 (Fase 48: wiring handler) ───
-// Fat32 implementa gia' LocalFs; LocalFsDyn e' il wrapper object-safe con
-// handles erasure a *const (). Qui si boxa/unbox come DynHandle<T> ma per
-// Fat32<B> direttamente (nessun wrapper intermedio).
-
+// ── Implementazione LocalFsDyn per Fat32 (Fase 48 wiring, Fase 49 handle
+// unico): dispatch su `AnyHandle` discriminato — il ramo sbagliato e'
+// errore, mai reinterpretazione (niente piu' `*const ()` + Box).
 impl<B: BlockSource> crate::provider::LocalFsDyn for Fat32<B> {
-    fn open_dyn(&mut self, rel: &str, flags: u32) -> Result<*const (), u64> {
-        let h = <Self as crate::provider::LocalFs>::open(self, rel, flags)?;
-        Ok(Box::into_raw(Box::new(h)) as *const ())
+    fn open_dyn(&mut self, rel: &str, flags: u32) -> Result<crate::provider::AnyHandle, u64> {
+        <Self as crate::provider::LocalFs>::open(self, rel, flags).map(crate::provider::AnyHandle::Fat)
     }
 
-    fn read_dyn(&mut self, h: *const (), off: usize, buf: &mut [u8]) -> Result<usize, u64> {
-        let h = unsafe { &*(h as *const <Self as crate::provider::LocalFs>::Handle) };
-        <Self as crate::provider::LocalFs>::read(self, *h, off, buf)
+    fn read_dyn(&mut self, h: crate::provider::AnyHandle, off: usize, buf: &mut [u8]) -> Result<usize, u64> {
+        match h {
+            crate::provider::AnyHandle::Fat(info) => {
+                <Self as crate::provider::LocalFs>::read(self, info, off, buf)
+            }
+            _ => Err(crate::ERR_INVALID),
+        }
     }
 
-    fn write_dyn(&mut self, h: *const (), off: usize, buf: &[u8], append: bool) -> Result<usize, u64> {
-        let h = unsafe { &*(h as *const <Self as crate::provider::LocalFs>::Handle) };
-        <Self as crate::provider::LocalFs>::write(self, *h, off, buf, append)
-    }
-
-    fn close_dyn(&mut self, h: *const ()) {
-        unsafe { drop(Box::from_raw(h as *mut <Self as crate::provider::LocalFs>::Handle)) };
+    fn write_dyn(
+        &mut self,
+        h: crate::provider::AnyHandle,
+        off: usize,
+        buf: &[u8],
+        append: bool,
+    ) -> Result<usize, u64> {
+        match h {
+            crate::provider::AnyHandle::Fat(info) => {
+                <Self as crate::provider::LocalFs>::write(self, info, off, buf, append)
+            }
+            _ => Err(crate::ERR_INVALID),
+        }
     }
 
     fn readdir_dyn(&mut self, rel: &str, out: &mut dyn crate::provider::EntrySink) -> Result<usize, u64> {

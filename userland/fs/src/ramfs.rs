@@ -1,6 +1,5 @@
 use super::*;
-use alloc::boxed::Box;
-use crate::provider::{LocalFs, EntrySink, Meta};
+use crate::provider::{LocalFs, EntrySink, Meta, AnyHandle};
 
 // ── ramfs ──────────────────────────────────────────────────────────
 
@@ -12,12 +11,18 @@ pub struct RamHandle {
 }
 
 impl RamHandle {
-    fn new(path: &str) -> Self {
+    /// Costruisce un handle dal path; `None` se oltre capacita' (Fase 49:
+    /// mai troncamento silenzioso — due path con stesso prefisso 63B
+    /// aliaserebbero lo stesso handle).
+    fn new(path: &str) -> Option<Self> {
         let bytes = path.as_bytes();
-        let len = bytes.len().min(63);
+        if bytes.len() > 64 {
+            return None;
+        }
+        let len = bytes.len();
         let mut p = [0u8; 64];
         p[..len].copy_from_slice(&bytes[..len]);
-        Self { path: p, len }
+        Some(Self { path: p, len })
     }
 
     fn as_str(&self) -> &str {
@@ -251,7 +256,7 @@ impl LocalFs for RamFs {
 
         // Verifica che il nodo sia un file (non una directory).
         match self.find(path) {
-            Some(FsNode::File { .. }) => Ok(RamHandle::new(path)),
+            Some(FsNode::File { .. }) => Ok(RamHandle::new(path).ok_or(crate::ERR_INVALID)?),
             Some(FsNode::Dir { .. }) => Err(crate::ERR_ISDIR),
             None => Err(crate::ERR_NOTFOUND),
         }
@@ -382,5 +387,45 @@ impl LocalFs for RamFs {
         } else {
             Err(crate::ERR_NOTFOUND)
         }
+    }
+}
+
+// ── Implementazione LocalFsDyn per RamFs (Fase 49: `MountedFs::Local`
+// esercitato davvero) ─────────────────────────────────────────────
+// Dispatch su `AnyHandle` discriminato, speculare a `Fat32`: il ramo
+// sbagliato e' errore, mai reinterpretazione.
+impl crate::provider::LocalFsDyn for RamFs {
+    fn open_dyn(&mut self, rel: &str, flags: u32) -> Result<AnyHandle, u64> {
+        <Self as LocalFs>::open(self, rel, flags).map(AnyHandle::Ram)
+    }
+
+    fn read_dyn(&mut self, h: AnyHandle, off: usize, buf: &mut [u8]) -> Result<usize, u64> {
+        match h {
+            AnyHandle::Ram(rh) => <Self as LocalFs>::read(self, rh, off, buf),
+            _ => Err(crate::ERR_INVALID),
+        }
+    }
+
+    fn write_dyn(&mut self, h: AnyHandle, off: usize, buf: &[u8], append: bool) -> Result<usize, u64> {
+        match h {
+            AnyHandle::Ram(rh) => <Self as LocalFs>::write(self, rh, off, buf, append),
+            _ => Err(crate::ERR_INVALID),
+        }
+    }
+
+    fn readdir_dyn(&mut self, rel: &str, out: &mut dyn EntrySink) -> Result<usize, u64> {
+        <Self as LocalFs>::readdir(self, rel, out)
+    }
+
+    fn stat_dyn(&mut self, rel: &str) -> Result<Meta, u64> {
+        <Self as LocalFs>::stat(self, rel)
+    }
+
+    fn mkdir_dyn(&mut self, rel: &str) -> Result<(), u64> {
+        <Self as LocalFs>::mkdir(self, rel)
+    }
+
+    fn remove_dyn(&mut self, rel: &str) -> Result<(), u64> {
+        <Self as LocalFs>::remove(self, rel)
     }
 }

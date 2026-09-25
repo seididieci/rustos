@@ -42,8 +42,10 @@ fn real_main(_sp: u64) -> ! {
     // i mount sopravvivono alla morte del driver — t32). Spec inattive
     // (disco assente) restano in tabella e ritentano lazy al primo accesso.
     let mut fat_mounts: Vec<mount::FsMount> = Vec::new();
+    // Identita' stabili dei mount (Fase 49, F2): monotoniche, mai riusate.
+    let mut next_mount_id: u64 = 1;
     for (src, tgt) in mount::STATIC_MOUNTS {
-        if mount::apply_mount_spec(&mut fat_mounts, src, tgt, "") {
+        if mount::apply_mount_spec(&mut fat_mounts, src, tgt, "", &mut next_mount_id) {
             println!("[userfs] FAT32 montato a /{} (via userdisk)", tgt);
         } else {
             println!("[userfs] mount {} -> {} inattivo (disco assente?)", src, tgt);
@@ -451,14 +453,14 @@ fn real_main(_sp: u64) -> ! {
 
             R_MKDIR => {
                 match core::str::from_utf8(&payload) {
-                    Ok(path) => handlers::handle_mkdir(&mut fs, &fat_mounts, path),
+                    Ok(path) => handlers::handle_mkdir(&mut fs, &mut fat_mounts, path, &mut fat_gen),
                     Err(_) => Err(ERR_INVALID),
                 }
             }
 
             R_MOUNT => {
                 match core::str::from_utf8(&payload) {
-                    Ok(spec) => handlers::handle_mount(&mut fat_mounts, spec, &mut fat_gen),
+                    Ok(spec) => handlers::handle_mount(&mut fat_mounts, spec, &mut fat_gen, &mut next_mount_id),
                     Err(_) => Err(ERR_INVALID),
                 }
             }
@@ -472,7 +474,7 @@ fn real_main(_sp: u64) -> ! {
 
             R_DELETE => {
                 match core::str::from_utf8(&payload) {
-                    Ok(path) => handlers::handle_delete(&mut fs, &mut fat_mounts, &mounts, path),
+                    Ok(path) => handlers::handle_delete(&mut fs, &mut fat_mounts, &mounts, path, &mut fat_gen),
                     Err(_) => Err(ERR_INVALID),
                 }
             }

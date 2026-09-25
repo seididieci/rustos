@@ -1,4 +1,5 @@
 use super::*;
+use crate::provider::LocalFs;
 
 // ── Handler (Option<u64> internamente) ─────────────────────────────
 
@@ -58,60 +59,45 @@ pub fn handle_open(
         return Ok(ftable.open_remote(chan, driver_chan, remote_fd));
     }
 
-    // Filesystem locali: prima i mount FAT (con attivazione lazy), poi ramfs.
-    if let Some((mi, rel)) = mount::resolve_fsmount(mounts_fat, path, fgen) {
-        // 48.4 — open via trait `LocalFsDyn` (U1): la trait gestisce O_CREAT,
-        // validazione file/dir e O_TRUNC internamente; il FatHandle restituito
-        // non si memorizza in ftable (U1 mantiene path-based storage).
-        // FAT: create_file/truncate sono FAT-specifici (Fase 20), li teniamo
-        // separati per ora.
-        
-        // Crea file se necessario (O_CREAT): usa fat() diretto (create_file e'
-        // FAT-specifico, non parte della trait).
-        if creat {
-            let created = if let Some(f) = mounts_fat.get_mut(mi).and_then(|m| m.fat()) {
-                f.create_file(rel)
-            } else {
-                false
-            };
-            if created {
-                *fgen = fgen.wrapping_add(1);
-            }
+    // Filesystem locali: prima i mount (FAT con attivazione lazy, Local
+    // sempre attivi), poi ramfs radice.
+    if let Some((mid, rel)) = mount::resolve_fsmount(mounts_fat, path, fgen) {
+        // Mount `Local` (Fase 49, F4): open via `open_dyn`, handle AnyHandle
+        // nell'fd (mai reopen per-path, mai cache da invalidare). Sonda senza
+        // tenere borrow oltre l'op (le varianti sono esclusive).
+        let is_local = matches!(
+            mount::by_id(mounts_fat, mid).and_then(|i| mounts_fat.get(i)),
+            Some(m) if m.is_local()
+        );
+        if is_local {
+            let h = mount::by_id_mut(mounts_fat, mid)
+                .ok_or(ERR)?
+                .local_dyn()
+                .ok_or(ERR)?
+                .open_dyn(rel, flags)
+                .map_err(|_| ERR_NOTFOUND)?;
+            return Ok(ftable.open_local(chan, rel, mid, h, append));
         }
-        
-        // O_TRUNC su FAT: non parte della trait (FAT-specifico, Fase 20).
-        // Si fa un find+truncate sul fat() diretto prima di aprire con la trait.
-        if trunc {
-            let truncated = if let Some(f) = mounts_fat.get_mut(mi).and_then(|m| m.fat()) {
-                match f.find(rel) {
-                    Some(info) => f.truncate(&info),
-                    None => false,
-                }
-            } else {
-                false
-            };
-            if !truncated {
-                return Err(ERR);
-            }
+        // 49.5 — open FAT via trait `LocalFs` sul concreto (F5): `Fat32::open`
+        // assorbe O_CREAT (crea), O_TRUNC (tronca) e rifiuta le dir (ISDIR)
+        // come `RamFs::open` — niente piu' create_file/truncate/find fuori
+        // trait. La cache per-fd resta in ftable (path-based storage, come U1).
+        let info = mount::by_id_mut(mounts_fat, mid)
+            .ok_or(ERR)?
+            .fat_mut()
+            .ok_or(ERR)?
+            .open(rel, flags)
+            .map_err(|_| ERR_NOTFOUND)?;
+        // O_CREAT/O_TRUNC possono aver mutato il volume: invalida le cache.
+        if creat || trunc {
             *fgen = fgen.wrapping_add(1);
         }
-        
-        // Open: usa la trait per validazione (stat_dyn per verificare che non sia dir).
-        let fat = mounts_fat.get_mut(mi).ok_or(ERR)?.local_dyn().ok_or(ERR)?;
-        if matches!(fat.stat_dyn(rel), Ok(m) if m.kind == 1) {
-            return Err(ERR_ISDIR);
-        }
-        
-        // Open: usa open_fat per memorizzare FileInfo in ftable (cache per read/write).
-        let info = if let Some(f) = mounts_fat.get_mut(mi).and_then(|m| m.fat()) {
-            f.find(rel).ok_or(ERR_NOTFOUND)?
-        } else {
-            return Err(ERR_NOTFOUND);
-        };
-        return Ok(ftable.open_fat(chan, rel, mi, info, *fgen, append));
+        return Ok(ftable.open_fat(chan, rel, mid, info, *fgen, append));
     }
     match mount_legacy::resolve_local(mounts_fat, path).ok_or(ERR_NOTFOUND)? {
-        mount_legacy::FsKind::Fat => Err(ERR), // mount inattivo: errore, mai shadow ramfs
+        // Mount noto ma inattivo, o Local non risolto sopra (difensivo: i
+        // Local attivi passano sempre da resolve_fsmount): errore, mai shadow.
+        mount_legacy::FsKind::Fat | mount_legacy::FsKind::Local => Err(ERR),
         mount_legacy::FsKind::Ram => {
             // 47.1 — open via trait `LocalFs` (U1): la trait gestisce O_CREAT,
             // validazione file/dir e O_TRUNC internamente; il RamHandle restituito
@@ -177,28 +163,42 @@ pub fn handle_read(
             let n = crate::provider::LocalFs::read(fs, handle, offset, &mut buf_stack[..count])?;
             &buf_stack[..n]
         }
+        mount_legacy::FsKind::Local => {
+            // 49.4 — read via `AnyHandle` dell'fd (Fase 49, F4): aperto una
+            // volta con `open_dyn`, mai reopen per-path.
+            let h = ftable.get_dyn_handle(chan, fd).ok_or(ERR_INVALID)?;
+            let mid = mnt.ok_or(ERR)?;
+            let d = mount::by_id_mut(mounts_fat, mid).ok_or(ERR)?.local_dyn().ok_or(ERR)?;
+            let n = d.read_dyn(h, offset, &mut buf_stack[..count])?;
+            &buf_stack[..n]
+        }
         mount_legacy::FsKind::Fat => {
-            // 48.2 — read via trait `LocalFsDyn` (U1). La cache FileInfo per-fd
+            // 49.1 — read via trait `LocalFsDyn` con `AnyHandle` by-value
+            // (Fase 49, F1): niente piu' `*const ()`. La cache FileInfo per-fd
             // (Fase 21) resta la sorgente dell'handle: un reopen per path
             // farebbe un find a OGNI read (~8x sui load da disco, regressione
-            // misurata nei restart t27/t28/t32). L'handle FileInfo e' passato
-            // alla trait da qui (stack, niente heap per-op).
-            let mi = mnt.ok_or(ERR)?;
+            // misurata nei restart t27/t28/t32). L'handle e' copiato sullo
+            // stack (FileInfo: Copy, niente heap per-op, regola Fase 24).
+            let mid = mnt.ok_or(ERR)?;
             // Il mount puo' essere caduto inattivo alla morte di userdisk
-            // (drop d'epoca in `note_peer_death`): riattiva per nome qui, come
+            // (drop d'epoca in `note_peer_death`): riattiva per id qui, come
             // `resolve_fsmount` fa per open/readdir (fail-loud, mai shadow).
-            if !mount::reactivate_mount(mounts_fat, mi, fgen) {
+            if !mount::reactivate_mount_by_id(mounts_fat, mid, fgen) {
                 return Err(ERR);
             }
             let g = *fgen;
-            let fat_c = mounts_fat.get_mut(mi).ok_or(ERR)?.fat().ok_or(ERR)?;
+            let fat_c = mount::by_id_mut(mounts_fat, mid).ok_or(ERR)?.fat().ok_or(ERR)?;
             let info = ftable::fd_fat_info(ftable, fat_c, chan, fd, g).ok_or(ERR_NOTFOUND)?;
             if info.is_dir {
                 return Err(ERR_ISDIR);
             }
-            let fat = mounts_fat.get_mut(mi).ok_or(ERR)?.local_dyn().ok_or(ERR)?;
-            let handle = &info as *const fat32::FileInfo as *const ();
-            let n = crate::provider::LocalFsDyn::read_dyn(fat, handle, offset, &mut buf_stack[..count])?;
+            let fat = mount::by_id_mut(mounts_fat, mid).ok_or(ERR)?.local_dyn().ok_or(ERR)?;
+            let n = crate::provider::LocalFsDyn::read_dyn(
+                fat,
+                crate::provider::AnyHandle::Fat(info),
+                offset,
+                &mut buf_stack[..count],
+            )?;
             &buf_stack[..n]
         }
     };
@@ -325,6 +325,25 @@ pub fn handle_write_local(
     }
     let (path, kind, offset, mnt) = ftable.get(chan, fd).ok_or(ERR_INVALID)?;
     let append = ftable.is_append(chan, fd);
+    if kind == mount_legacy::FsKind::Local {
+        // Scrittura su mount `Local` (Fase 49, F4): handle dell'fd, mai
+        // reopen; niente generazioni (il provider e' authoritative).
+        let h = ftable.get_dyn_handle(chan, fd).ok_or(ERR_INVALID)?;
+        let mid = mnt.ok_or(ERR)?;
+        let d = mount::by_id_mut(mounts_fat, mid).ok_or(ERR)?.local_dyn().ok_or(ERR)?;
+        let n = d.write_dyn(h, offset, &payload[..count.min(payload.len())], append)?;
+        // O_APPEND non usa `offset`: il nuovo offset e' la size dopo la
+        // scrittura (via stat fresca, mai stale oltre l'op).
+        let new_off = if append {
+            let rel_owned: String = alloc::string::String::from(path);
+            let d = mount::by_id_mut(mounts_fat, mid).ok_or(ERR)?.local_dyn().ok_or(ERR)?;
+            d.stat_dyn(&rel_owned).map(|m| m.size as usize).unwrap_or(offset + n as usize)
+        } else {
+            offset + n as usize
+        };
+        ftable.set_offset(chan, fd, new_off);
+        return Ok(n as u64);
+    }
     if kind == mount_legacy::FsKind::Fat {
         // Scrittura FAT (Fase 20): overwrite + crescita con allocazione
         // (write-through, niente cache FileInfo: la scrittura puo' cambiare
@@ -332,7 +351,7 @@ pub fn handle_write_local(
         // riaggiorna la cache con un find fresco — un find per write, rumore
         // contro le centinaia di round-trip DISK della scrittura stessa).
         let mi = mnt.ok_or(ERR)?;
-        if !mount::reactivate_mount(mounts_fat, mi, fgen) {
+        if !mount::reactivate_mount_by_id(mounts_fat, mi, fgen) {
             return Err(ERR);
         }
         let g = *fgen;
@@ -340,20 +359,25 @@ pub fn handle_write_local(
         // per poter prendere ftable in mut per la cache FileInfo.
         let rel_path: String = alloc::string::String::from(path);
         // Cache FileInfo per-fd come la read (evita un find per write). L'handle
-        // passato alla trait e' il FileInfo cachato (stack, niente heap).
-        let fat_c = mounts_fat.get_mut(mi).ok_or(ERR)?.fat().ok_or(ERR)?;
+        // passato alla trait e' il FileInfo cachato (copia sullo stack, F1).
+        let fat_c = mount::by_id_mut(mounts_fat, mi).ok_or(ERR)?.fat().ok_or(ERR)?;
         let info = ftable::fd_fat_info(ftable, fat_c, chan, fd, g).ok_or(ERR_NOTFOUND)?;
         if info.is_dir {
             return Err(ERR_ISDIR);
         }
-        let fat = mounts_fat.get_mut(mi).ok_or(ERR)?.local_dyn().ok_or(ERR)?;
-        let handle = &info as *const fat32::FileInfo as *const ();
-        let n = crate::provider::LocalFsDyn::write_dyn(fat, handle, offset, &payload[..count.min(payload.len())], append)?;
+        let fat = mount::by_id_mut(mounts_fat, mi).ok_or(ERR)?.local_dyn().ok_or(ERR)?;
+        let n = crate::provider::LocalFsDyn::write_dyn(
+            fat,
+            crate::provider::AnyHandle::Fat(info),
+            offset,
+            &payload[..count.min(payload.len())],
+            append,
+        )?;
         *fgen = fgen.wrapping_add(1);
         let g2 = *fgen;
         // Rileggi l'entry dopo la mutazione (size/first_cluster possono aver
         // cambiato valore): la cache resta valida alla nuova generazione.
-        let fat_c = mounts_fat.get_mut(mi).ok_or(ERR)?.fat().ok_or(ERR)?;
+        let fat_c = mount::by_id_mut(mounts_fat, mi).ok_or(ERR)?.fat().ok_or(ERR)?;
         let fresh = fat_c.find(&rel_path);
         // O_APPEND non usa `offset` del fd: il nuovo offset e' la size dopo la
         // scrittura. Altrimenti offset + n (contratto ramfs).
@@ -414,11 +438,11 @@ pub fn handle_readdir(
         return Ok(reply.w0);
     }
 
-    if let Some((mi, rel)) = mount::resolve_fsmount(mounts_fat, path, fgen) {
-        // 48.5 — readdir via trait `LocalFsDyn` (U1): la trait gestisce il path relativo al mount.
+    if let Some((mid, rel)) = mount::resolve_fsmount(mounts_fat, path, fgen) {
+        // 48.5 — readdir via trait `LocalFsDyn`: la trait gestisce il path relativo al mount.
         let mut entries: Vec<String> = Vec::new();
         {
-            let fat = mounts_fat.get_mut(mi).ok_or(ERR)?.local_dyn().ok_or(ERR)?;
+            let fat = mount::by_id_mut(mounts_fat, mid).ok_or(ERR)?.local_dyn().ok_or(ERR)?;
             struct CollectSink<'a>(&'a mut Vec<String>);
             impl crate::provider::EntrySink for CollectSink<'_> {
                 fn emit(&mut self, name: &str) {
@@ -466,8 +490,11 @@ pub fn handle_readdir(
             let ok = crate::provider::LocalFs::readdir(fs, path, &mut CollectSink(&mut entries)).is_ok();
             (ok, entries)
         }
-        // Mount noto ma inattivo: NotFound, mai shadow ramfs.
-        Some(mount_legacy::FsKind::Fat) => return Err(ERR_NOTFOUND),
+        // Mount noto ma inattivo, o Local non risolto sopra (difensivo: i
+        // Local attivi passano sempre da resolve_fsmount): errore, mai shadow.
+        Some(mount_legacy::FsKind::Fat) | Some(mount_legacy::FsKind::Local) => {
+            return Err(ERR_NOTFOUND)
+        }
         None => (false, Vec::new()),
     };
     let entries = mount_legacy::union_mount_children(base, mounts, mounts_fat, path);
@@ -553,9 +580,9 @@ pub fn handle_stat(
     // FAT con attivazione lazy; mount noto ma inattivo = errore, mai shadow.
     // (find fresco a ogni stat: niente fd, niente cache — i metadati non
     // devono mai essere stale.)
-    if let Some((mi, rel)) = mount::resolve_fsmount(mounts_fat, path, fgen) {
-        // 48.5 — stat via trait `LocalFsDyn` (U1): la trait gestisce il path relativo al mount.
-        let fat = mounts_fat.get_mut(mi).ok_or(ERR)?.local_dyn().ok_or(ERR)?;
+    if let Some((mid, rel)) = mount::resolve_fsmount(mounts_fat, path, fgen) {
+        // 48.5 — stat via trait `LocalFsDyn`: la trait gestisce il path relativo al mount.
+        let fat = mount::by_id_mut(mounts_fat, mid).ok_or(ERR)?.local_dyn().ok_or(ERR)?;
         if rel.is_empty() {
             return Ok(stat_reply(rings, chan, 0, libr::STAT_DIR));
         }
@@ -563,8 +590,9 @@ pub fn handle_stat(
         return Ok(stat_reply(rings, chan, meta.size, stat_kind(&meta)));
     }
     match mount_legacy::resolve_local(mounts_fat, path) {
-        // Mount noto ma inattivo: errore, mai shadow ramfs.
-        Some(mount_legacy::FsKind::Fat) => Err(ERR),
+        // Mount noto ma inattivo, o Local non risolto sopra (difensivo):
+        // errore, mai shadow ramfs.
+        Some(mount_legacy::FsKind::Fat) | Some(mount_legacy::FsKind::Local) => Err(ERR),
         Some(mount_legacy::FsKind::Ram) => {
             // 47.4 — stat via trait `LocalFs` (U1): metadati diretti dalla trait.
             let meta = crate::provider::LocalFs::stat(fs, path)?;
@@ -577,12 +605,27 @@ pub fn handle_stat(
     }
 }
 
-pub fn handle_mkdir(fs: &mut ramfs::RamFs, mounts: &[mount::FsMount], path: &str) -> Result<u64, u64> {
+pub fn handle_mkdir(
+    fs: &mut ramfs::RamFs,
+    mounts_fat: &mut Vec<mount::FsMount>,
+    path: &str,
+    fgen: &mut u64,
+) -> Result<u64, u64> {
     if path.is_empty() || path.len() > MAX_PATH {
         return Err(ERR_INVALID);
     }
-    // mkdir solo su ramfs (i mount FAT/remoti non hanno mkdir).
-    match mount_legacy::resolve_local(mounts, path).ok_or(ERR_NOTFOUND)? {
+    // Mount `Local` (Fase 49, F4): mkdir via trait sul mount.
+    if let Some((mid, rel)) = mount::resolve_fsmount(mounts_fat, path, fgen) {
+        let m = mount::by_id_mut(mounts_fat, mid).ok_or(ERR_NOTFOUND)?;
+        if m.is_local() {
+            let d = m.local_dyn().ok_or(ERR)?;
+            d.mkdir_dyn(rel)?;
+            return Ok(0);
+        }
+        return Err(ERR); // FAT: niente mkdir.
+    }
+    // mkdir solo su ramfs radice (i mount FAT/remoti non hanno mkdir).
+    match mount_legacy::resolve_local(mounts_fat, path).ok_or(ERR_NOTFOUND)? {
         mount_legacy::FsKind::Ram => {
             // 47.5 — mkdir via trait `LocalFs` (U1): la trait gestisce Exists vs NotFound.
             crate::provider::LocalFs::mkdir(fs, path)?;
@@ -593,14 +636,16 @@ pub fn handle_mkdir(fs: &mut ramfs::RamFs, mounts: &[mount::FsMount], path: &str
 }
 
 /// Cancella un file o una directory VUOTA (Fase 18.2, `R_DELETE`).
-/// Solo ramfs: su FAT manca l'unlink (e' scrivibile dalla Fase 20, ma non
-/// cancellabile) e i device remoti non sono file cancellabili
-/// (e un mount point non si rimuove: si smonta). Ritorna Some(0) o None.
+/// Ramfs radice e mount `Local` (via trait); su FAT manca l'unlink (e'
+/// scrivibile dalla Fase 20, ma non cancellabile) e i device remoti non sono
+/// file cancellabili (e un mount point non si rimuove: si smonta).
+/// Ritorna Some(0) o None.
 pub fn handle_delete(
     fs: &mut ramfs::RamFs,
-    mounts_fat: &[mount::FsMount],
+    mounts_fat: &mut Vec<mount::FsMount>,
     mounts: &[mount_legacy::Mount],
     path: &str,
+    fgen: &mut u64,
 ) -> Result<u64, u64> {
     if path.is_empty() || path.len() > MAX_PATH {
         return Err(ERR_INVALID);
@@ -609,8 +654,17 @@ pub fn handle_delete(
     if mount_legacy::resolve_mount(path, mounts).is_some() {
         return Err(ERR_INVALID);
     }
-    // …e mai su mount FAT (unlink non implementato: per questa op il volume
-    // e' readonly): solo ramfs.
+    // …mount `Local` via trait (Fase 49, F4)…
+    if let Some((mid, rel)) = mount::resolve_fsmount(mounts_fat, path, fgen) {
+        let m = mount::by_id_mut(mounts_fat, mid).ok_or(ERR_NOTFOUND)?;
+        if m.is_local() {
+            let d = m.local_dyn().ok_or(ERR)?;
+            d.remove_dyn(rel)?;
+            return Ok(0);
+        }
+        return Err(ERR_READONLY); // FAT: unlink non implementato.
+    }
+    // …e mai su mount FAT inattivo: solo ramfs radice.
     match mount_legacy::resolve_local(mounts_fat, path).ok_or(ERR_NOTFOUND)? {
         mount_legacy::FsKind::Ram => {
             // 47.5 — delete via trait `LocalFs` (U1): la trait gestisce NotFound vs EmptyDir.
@@ -626,14 +680,19 @@ pub fn handle_delete(
 /// fallito (sorgente/target invalidi, nome ignoto, driver irraggiungibile)
 /// nessun cambio di stato; a BPB illeggibile la spec resta registrata
 /// INATTIVA e ritenta lazy (mai shadow ramfs).
-pub fn handle_mount(mounts: &mut Vec<mount::FsMount>, payload: &str, fgen: &mut u64) -> Result<u64, u64> {
+pub fn handle_mount(
+    mounts: &mut Vec<mount::FsMount>,
+    payload: &str,
+    fgen: &mut u64,
+    next_id: &mut u64,
+) -> Result<u64, u64> {
     let mut parts = payload.split('\0');
     let source = parts.next().ok_or(ERR_INVALID)?;
     let target = parts.next().ok_or(ERR_INVALID)?;
     if source.is_empty() || target.is_empty() {
         return Err(ERR_INVALID);
     }
-    if mount::apply_mount_spec(mounts, source, target, "") {
+    if mount::apply_mount_spec(mounts, source, target, "", next_id) {
         // La tabella e' cambiata (spec nuova/sostituita): invalida le cache.
         *fgen = fgen.wrapping_add(1);
         Ok(0)
@@ -648,8 +707,9 @@ pub fn handle_mount(mounts: &mut Vec<mount::FsMount>, payload: &str, fgen: &mut 
 
 /// Smonta un target (Fase 16b). Rifiutato se ci sono fd aperti sotto il mount
 /// (EBUSY); la radice ramfs non e' smontabile (non e' in tabella).
-/// A rimozione riuscita bumpa `gen` (gli indici mount degli fd restanti non
-/// cambiano per EBUSY, ma le istanze vanno comunque ricontrollate).
+/// A rimozione riuscita bumpa `gen`. Gli fd tengono mount-id (Fase 49, F2):
+/// orfani di un umount riuscito danno errore al prossimo uso invece di
+/// aliasare il vicino shiftato.
 pub fn handle_umount(
     mounts: &mut Vec<mount::FsMount>,
     ftable: &ftable::FileTable,
@@ -657,10 +717,11 @@ pub fn handle_umount(
     fgen: &mut u64,
 ) -> Result<u64, u64> {
     let norm = mount::normalize_target(target).ok_or(ERR_INVALID)?;
-    let idx = mounts.iter().position(|m| m.target == norm).ok_or(ERR_NOTFOUND)?;
-    if ftable.has_mount_users(idx) {
+    let mid = mounts.iter().find(|m| m.target == norm).map(|m| m.id).ok_or(ERR_NOTFOUND)?;
+    if ftable.has_mount_users(mid) {
         return Err(ERR_BUSY);
     }
+    let idx = mount::by_id(mounts, mid).ok_or(ERR_NOTFOUND)?;
     mounts.remove(idx);
     *fgen = fgen.wrapping_add(1);
     Ok(0)
@@ -695,13 +756,27 @@ pub fn handle_lseek(
                     // Dir: size 0 (lseek lecito, le read restano IsDir).
                     _ => 0,
                 },
+                mount_legacy::FsKind::Local => {
+                    // Size fresca via stat (Fase 49, F4): niente cache.
+                    let mid = mnt.ok_or(ERR)?;
+                    let d = mount::by_id_mut(mounts_fat, mid).ok_or(ERR)?.local_dyn().ok_or(ERR)?;
+                    let rel_owned: String = alloc::string::String::from(path);
+                    match d.stat_dyn(&rel_owned).map_err(|_| ERR_NOTFOUND)? {
+                        meta if meta.kind == 1 => 0,
+                        meta => meta.size as i64,
+                    }
+                }
                 mount_legacy::FsKind::Fat => {
-                    let mi = mnt.ok_or(ERR)?;
-                    if !mount::reactivate_mount(mounts_fat, mi, fgen) {
+                    let mid = mnt.ok_or(ERR)?;
+                    if !mount::reactivate_mount_by_id(mounts_fat, mid, fgen) {
                         return Err(ERR);
                     }
                     let g = *fgen;
-                    let fat = mounts_fat.get(mi).ok_or(ERR)?.fat().ok_or(ERR)?;
+                    let fat = mount::by_id(mounts_fat, mid)
+                        .and_then(|i| mounts_fat.get(i))
+                        .ok_or(ERR)?
+                        .fat()
+                        .ok_or(ERR)?;
                     match ftable::fd_fat_info(ftable, fat, chan, fd, g).ok_or(ERR_NOTFOUND)? {
                         info if info.is_dir => 0,
                         info => info.size as i64,
