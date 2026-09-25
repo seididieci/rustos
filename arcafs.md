@@ -2,13 +2,15 @@
 
 Filesystem nativo non-POSIX per Velordor: object store versionato con COW,
 snapshot, quota, ACL/ABAC. POSIX solo come vista (mapping sintetico).
-Filosofia ADR-0025: nativo dentro (userfs), personalita' al bordo (libr).
+Filosofia ADR-0025: nativo dentro (userfs), personalita' al bordo (libr);
+provider trait ADR-0038; policy/identita'/sandbox ADR-0037.
 
 Stato: sessione guidata A0 completata (decisioni T0–T10). Prossimo: stesura
 di dettaglio punto per punto, poi A1 (singolo-device locale).
 
 > Nota sui gate: i numeri citati altrove sono snapshot storici; il gate
-> corrente vive in `docs/src/11-testing.md` e in `ROADMAP.md`.
+> corrente vive in `docs/src/11-testing.md` e in `ROADMAP.md`
+> (attuale: `[testfs] 5/5` + `[testfat] 7/7` + `[usertests] 57/57`).
 
 ## 0. Vision e principi
 
@@ -21,6 +23,40 @@ di dettaglio punto per punto, poi A1 (singolo-device locale).
   (mai tabelle a dimensione fissa che diventano muri).
 - Dimensioni negoziate nel superblock, mai costanti cablate (`block_size`,
   soglie S1/S2, cap transient set).
+- `no_std` e' **temporaneo**: core `no_std`-first con feature `std`
+  opzionale, host tooling (`arca`) in std, verso una std minimale per il
+  self-hosting.
+- **Integrazione col provider** (ADR-0038): ArcaFS e' un
+  `LocalFs`/`LocalFsDyn` in `userfs`; l'API nativa `R_OBJ_*` e' additiva
+  (dettagli §4).
+
+### Posizionamento: cosa ArcaFS non vuole essere (anti-ZFS)
+
+- **Non un "ZFS/btrfs migliore".** Sul meccanismo di storage (COW, snapshot,
+  checksum, quota, RAID, TXG, volumi) ArcaFS e' ZFS-shaped: la meccanica e'
+  derivativa e **non e' il punto**. Rincorrere ZFS feature-per-feature
+  (send/receive, compressione, dedup, RAID oltre A6) e' la trappola: si
+  perde su terreno maturo con risorse hobbistiche.
+- **Cosa lo distingue, e va difeso**:
+  - object-native, non file-native: il fondamento e' `bucket`+`chiave`+
+    versione, POSIX e' una proiezione;
+  - identita' UUID con versioni esplicite (MVCC da database, non inode);
+  - capability/ABAC con soggetto = identita' misurata dell'app, non ACL
+    aggiunte a posteriori;
+  - motori (DB, VM/block, vector) **fuori** dal FS: il FS da' primitive, non
+    query;
+  - il FS come **updater atomico dell'OS** (volume `sys` immutabile +
+    overlay + rollback).
+- **Criterio di unicita' (e anti-deriva):** una feature entra in spec solo se
+  (a) serve a uno di questi assi, oppure (b) e' necessaria a POSIX/
+  self-hosting. "Lo fa anche ZFS" non e' una ragione per farla; "lo fa ZFS
+  meglio" e' una ragione per **non** farla.
+- **Il test che conta:** finche' l'unico consumatore reale e' il toolchain
+  POSIX, l'unicita' e' teorica. Il trigger di ADR-0025 (2+ app native senza
+  POSIX-ismi) va preso sul serio: almeno una app nativa che parli `R_OBJ_*`
+  va costruita prima di dire che il modello regge. Il primo consumatore e'
+  `init` (servizi per `object_id`, §13); la prima app nativa e' la Vault di
+  artefatti.
 
 ## 1. Modello dati (T1)
 
@@ -30,10 +66,19 @@ di dettaglio punto per punto, poi A1 (singolo-device locale).
 - Blob **versionati**: ogni put crea una versione, le vecchie restano per
   snapshot/GC. Put su chiave esistente = nuova versione (mai errore, mai
   sovrascrittura logica).
+- Eccezione **bucket `block`** (tipo di bucket, §12): il **head e' unico e
+  mutabile**, ogni put aggiorna il head senza creare versioni storiche; gli
+  snapshot restano l'unica retention. Vale solo per i bucket dichiarati
+  `block`; i bucket `object` (default) seguono la regola versionata.
 - Identita': `object_id: u64` monotonico per volume, immutabile, mai riusato
   (disciplina F2: niente ABA). La chiave e' rinominabile, l'UUID no.
 - Unicita' globale: `(volume_uuid, object_id)` — niente UUID-128, niente
   collisioni al merge (A8).
+- **Non content-addressed**: l'identita' e' `object_id`, non un hash del
+  contenuto; niente dedup automatico in v1. Trade-off dichiarato: identita'
+  e rename semplici e niente ABA, a costo di spazio duplicato. Un
+  content-hash opzionale (`sys.content_hash`, §8) potra' abilitare dedup come
+  ottimizzazione, mai come identita'.
 - Chiavi relative (mount+bucket strippati); soglia inline ≈ 200B: i path
   realistici restano inline, l'overflow e' per chiavi patologiche.
 - Bucket multipli come mount: `/`, `/home`, `/home/user` (annidato),
@@ -43,7 +88,9 @@ di dettaglio punto per punto, poi A1 (singolo-device locale).
 ## 2. Indicizzazione (T2)
 
 - **Primary B+tree per UUID** → `{versioni, quota, attributi}`: snapshot,
-  clone, GC e quota parlano UUID, mai nomi (POSIX e' solo flavour).
+  clone, GC e quota parlano UUID, mai nomi (POSIX e' solo flavour). Nei
+  bucket `block` (§12) il primary tiene `head + snapshot`, non una catena di
+  versioni; secondary e stat denormalizzata restano invariati.
 - **Secondary per `(bucket,key)`** → UUID + stat denormalizzata
   (size, mtime, version_head): listing in un range scan, `stat` senza
   toccare il primary.
@@ -53,6 +100,9 @@ di dettaglio punto per punto, poi A1 (singolo-device locale).
   corti), +1 read solo alla conferma.
 - Rename stesso volume = delete+insert solo sul secondary (atomico,
   zero copie); cross-subvolume = cp + tombstone (non atomico, dichiarato).
+- **Perche' B+tree e non un Merkle tree**: il namespace e' piatto
+  (`bucket`+`key`); snapshot/COW per-UUID non richiedono un albero di
+  directory, e il path Unix e' composizione di mount, non struttura.
 - Packing (implementazione A2, tipi riservati in A0): inline in foglia
   ≤ S1; pack sigillati ≤ S2 con mini-indice e **copy-out-on-write**
   (mai rewrite parziale); compattazione con la GC.
@@ -66,6 +116,13 @@ di dettaglio punto per punto, poi A1 (singolo-device locale).
 - Rilevabile con 1 read LBA0 + magic + bound (come `Fat32::mount`).
 - Commit: shadow + flip; crash = generazione vecchia + orphan-GC
   (journal rivalutato solo se gli snapshot multipli lo impongono).
+- Il volume possiede l'**intero device**: nessuna tabella partizioni (no
+  MBR/GPT). Superblocco a LBA0 + shadow LBA1; `device_table` (§10) e' per il
+  multi-device, non per partizioni.
+- **Niente log append-only**: il commit e' shadow superblock + flip, il resto
+  e' COW B+tree; recovery = generazione vecchia + orphan-GC. Il checksum
+  FNV-1a resta quello scelto per integrita' (non crittografico: rileva
+  corruzione accidentale, non un avversario).
 - Footer blocco 16B: `(type, device_idx, gen, checksum)` — blocchi
   self-describing, scrub indipendente dal tree.
 - Pool uniforme con **hint di placement** (zone veloci, co-location:
@@ -82,21 +139,36 @@ di dettaglio punto per punto, poi A1 (singolo-device locale).
 - Riservati: `R_SNAP_*` (A2), `R_ARCA_*` admin (A7).
 - Errori `Result` tipizzati (`NOTFOUND/EXISTS/BUSY/NOSPACE`), mai errno.
 - Pattern a 5 tocchi per ogni op: tag, expect, `op_bit`, wrapper libr, builtin.
+- **Integrazione provider** (Fase 46–49, ADR-0038): ArcaFS si monta come
+  `MountedFs::Local(Box<dyn LocalFsDyn>)`; `negotiate()` (`mount.rs`)
+  riconosce `magic="ACFS"` a LBA0 e ritorna `fstype="arcafs"`; nuovo
+  `AnyHandle::Arca(...)`. La vista POSIX passa da `LocalFs`; `R_OBJ_*` resta
+  l'API nativa additiva.
 
 ## 5. Vista POSIX / mapping sintetico (T5)
 
 - Oggetto = file, lista = readdir, dir **emergenti** (esistono ⟺ chiavi
   col prefisso; mai su disco).
-- `mkdir` = transient set server-side per mount (cap 1024 negoziato,
-  oltre `ERR_NOSPACE`) + asserzione bucket; assorbimento alla prima chiave;
-  `rmdir` su transient-only = successo; tutto sparisce a unmount/reboot.
-- Lettura + append + delete; write con offset = `ERR_INVALID`;
-  `O_APPEND` unico parziale ammesso (naturale per COW).
+- **Directory persistenti** (requisito self-hosting): `mkdir` crea un marker
+  reale, quindi la dir sopravvive a unmount/reboot; il transient set
+  server-side resta solo un'ottimizzazione, non l'unica semantica. Nessun cap
+  che faccia fallire `mkdir -p` su molte directory (es. `tar x`, build).
+- Lettura + append + delete + **write con offset ammesso** (nuova versione
+  COW con la range patchata, costo dichiarato); `O_APPEND` resta il caso
+  naturale. **`ftruncate` ammesso**: nuova versione con size ridotta e tail
+  liberato.
 - `stat`: size/kind/mtime dalla versione; `nlink` = versioni trattenute;
   `owner` = `creator_app` risolto (o hash corto); `group` = `-` (v1);
-  `mode` = **proiezione ABAC valutata** (non memorizzata);
-  `chmod` = `ERR_READONLY` (si usa il tool di policy).
+  `mode` = **proiezione ABAC valutata** (non memorizzata), calcolata dal
+  **server** in base al chiamante — `LocalFs::stat` resta subject-agnostica
+  (vedi §6); `chmod` = `ERR_READONLY` (si usa il tool di policy), ma non deve
+  far fallire hard i build che lo invocano.
 - `atime` non tracciato in v1.
+- Da verificare durante il porting del toolchain (non vincolo ora):
+  `symlink`/`link`, `utimes`, `chown`.
+- I bucket `block` **non passano da questa vista**: sono volumi, esposti dal
+  backend block device (§12), non file POSIX; `nlink`/versioni non si
+  applicano.
 
 ## 6. Diritti e ABAC (T6/T8)
 
@@ -114,12 +186,20 @@ di dettaglio punto per punto, poi A1 (singolo-device locale).
 - Estensioni future senza rework: bearer token per condivisione esterna,
   macaroon/delega attenuata con zecca-server, ABAC temporale per recenza
   versioni. Gli UID di Strato 3 saranno un attributo in piu'.
+- **Enforcement nel server, non nel provider**: `LocalFs::stat` non conosce
+  il chiamante; la proiezione `mode`/`owner` e l'enforcement ABAC avvengono in
+  `userfs` (Fase 17/37) attorno alla chiamata al provider. Se servisse
+  contesto dentro il provider, si estende la trait, non si sposta
+  l'enforcement.
 
 ## 7. Quota e subvolumi (T7)
 
 - Subvolume = mount con budget (`quota_blocks`, `used` senza doppio
   conteggio dei blocchi condivisi; contatori nell'object tree, scrub a
   verifica).
+- Nei bucket `block` la quota e' il budget del volume; durante il commit COW
+  c'e' doppio conteggio transitorio (extent vecchi + nuovi), da non
+  contabilizzare come `used` (§12).
 - Enforcement al put (`ERR_NOSPACE` prima di allocare, mai transazioni
   mezze scritte); snapshot contro il budget del subvolume che li trattiene.
 
@@ -130,6 +210,10 @@ di dettaglio punto per punto, poi A1 (singolo-device locale).
 - Per oggetto (mutabili, bump `ctime` senza nuova versione): xattr
   `user.*` liberi + `sys.*` riservati; chiavi ≤ 64B, valori ≤ 1KB,
   totale ≤ 2KB inline (oltre → blob attributi, pattern overflow).
+- `sys.content_hash` (riservato, opzionale): hash del contenuto per abilitare
+  dedup come **ottimizzazione futura** (piu' `object_id` → stesso extent,
+  tracciato da refcount/GC); non e' identita'. Algoritmo da decidere quando
+  serve.
 - `ctime` = ultima modifica metadati/ACL; gli xattr alimentano ABAC
   (filtri) e vector (filtri RAG).
 
@@ -142,13 +226,18 @@ di dettaglio punto per punto, poi A1 (singolo-device locale).
   inattivo + log).
 - Il tool non scavalca: valuta il canale originario; `grant` mai oltre il
   tetto del concedente.
+- **Transizione di boot**: due dischi; si avvia sempre da FAT finche' ArcaFS
+  non e' verificato (ArcaFS come volume secondario). `arca create` +
+  iniezione nel volume; `run.sh` esteso per scegliere il boot volume.
+  **Swap** solo a gate verde; FAT resta fallback.
 
 ## 10. Multi-device, rete, swap, vector (T10+)
 
 - RAID (A6): mirror prima (stesso extent, due `device_idx`), stripe dopo;
   commit client-side; device-id stabili da A0.
 - Rete (A8): su device-id + generazioni; `net_cookie` + replica_set futuro.
-- Swap: extent tipo `SWAP` + oggetto dimensionabile dal demone; sensori
+- Swap: extent tipo `SWAP` + oggetto dimensionabile dal demone (stessa
+  primitiva alla base dello storage VM/blocco, §12); sensori
   `SYS_MEMINFO`/`statvfs`/RSS; solo anonimo in v1 (text = scarta-ricarica,
   page-cache e shm = futuri); pager track separato dopo A2.
 - Vector: servizio userspace separato (track parallelo V1, mai nel FS);
@@ -186,19 +275,126 @@ le primitive di supporto — niente logica di indici, query o embedding:
   app in un viaggio), append COW senza journal metadati sul path caldo,
   placement che ascolta gli hint, zero-copy estendibile ai client FS.
 
-## 12. Fasi (A1–A8 + V1)
+## 12. Storage per VM / block device (supporto nel FS, backend fuori)
 
-- A1: singolo-device (format via `arca create`, negotiate, mount, R/W).
+Stesso pattern di §11: le primitive nel FS, la semantica di volume nel servizio.
+Obiettivo: oggetti grandi usabili come dischi VM (zvol-like) senza appesantire
+ArcaFS. Non serve al self-hosting: track parallelo, dopo A1–A8.
+
+- **Opzione C (scelta)**: ArcaFS fornisce le primitive; l'esposizione a blocchi
+  e la semantica zvol vivono in un servizio separato. Il FS resta nativo e
+  generico; il volume e' un consumatore.
+- **Tipo di bucket** (sostituisce la policy per-oggetto): `object`
+  (versionato, default) vs `block` (volume, head unico mutabile, nessuna
+  versione storica). Una VM = un bucket `block` = un volume: la policy si
+  dichiara una volta, non per oggetto (vedi §1).
+- **COW != versionamento**: il bucket `block` perde la *retention* delle
+  versioni, non il COW. Gli extent restano copy-on-write per due ragioni:
+  atomicita' del commit (scrivi nuovo, flip del root, libera i vecchi) e
+  snapshot (i blocchi pinnati non si sovrascrivono). Gli snapshot sono
+  l'unica retention del bucket `block`.
+- **Prerequisito — transaction group (TXG)**: buffer write-back + commit
+  periodico (e a richiesta). La testa dell'oggetto e' **mutabile**; versioni e
+  snapshot solo ai confini di commit. E' il concetto che riconcilia versioning
+  e block device (come le TXG di ZFS): senza, ogni write da 4K crea una
+  versione e il volume vivo non regge (§1).
+- **Primitive lato ArcaFS**:
+  - oggetto grande con **mappa offset→blocco** (non la lista chunk sequenziale
+    di §4), con buchi per lo sparso;
+  - **COW per-extent** a blocco fisso (512/4K, negoziato e **scollegato** da
+    `block_size` del nodo, §3);
+  - **head unico mutabile** (bucket `block`); gli snapshot creano un root
+    aggiuntivo ai confini di commit;
+  - **reserve/`fallocate` garantito** (mai `ENOSPC` a meta' write) e
+    **discard/punch-hole** per il TRIM del guest;
+  - **flush** a modi (§11 `R_SYNC` None/Group/PerWrite) e hint
+    `sequential`/`random`.
+- **Backend fuori dal FS**: servizio userspace che presenta l'oggetto come
+  **block device** (stile `userdisk`, canale dedicato), mappa settori→extent,
+  gestisce discard, resize e thin provisioning.
+- **I/O path**: bulk multi-frame/scatter-gather verso i ring del client
+  (chiude il limite ~4000B di §4 e l'aperto in §14), zero-copy dove possibile.
+- **Fuori scope v1**: mmap file-backed e `O_DIRECT` (gia' fuori spec §11);
+  compressione delle immagini; dedup di immagini (solo `sys.content_hash`
+  opzionale, §8).
+- **Da misurare prima di promettere**: IOPS/latenza 4K random, write
+  amplification, memoria cache, con TXG acceso/spento.
+
+## 13. Fasi (A1–A8 + V1 + B1 + N0)
+
+- A1: singolo-device (format via `arca create`, negotiate, mount, R/W);
+  monta come provider `LocalFs` (`negotiate` su `magic="ACFS"`) e parte
+  nella transizione a due dischi (boot da FAT, ArcaFS secondario).
 - A2: COW + snapshot/clone + GC (+ packing, + `R_OBJ_MGET`).
 - A3: quota + subvolumi.
 - A4: ACL/ABAC engine + tool policy.
 - A5: device-awareness (`DISK_INFO`, TRIM, policy allocator, hint).
 - A6: RAID. — A7: tool completo. — A8: rete.
 - V1 (parallelo, mai nel FS): servizio vettoriale sopra §11.
+- B1 (parallelo, mai nel FS): backend VM/block device sopra le primitive §12
+  (richiede TXG); non serve al self-hosting.
+- **Gate/testing**: `testsarca` (round-trip, dedup-check, snapshot/rollback,
+  recovery), anti-rot (`docs/src/11-testing.md`, `06-syscalls.md`,
+  `SUMMARY.md`, `run-tests.sh`, conteggi `AGENTS.md`). Gate corrente
+  5/5 + 7/7 + 57/57. Criteri di swap: suite verde con i servizi caricati da
+  ArcaFS e FAT di fallback funzionante.
+- N0 (primo consumatore, precoce): `init` carica i servizi da ArcaFS per
+  `object_id` (bucket `sys`), dual-mode con fallback FAT; vedi sotto.
 
-## 13. Punti aperti (stima, non vincoli)
+### Primo consumatore nativo: `init` per `object_id`
+
+`spawn_image` e' gia' **memory-based** (syscall 38): il kernel non tocca il
+FS, la path vive solo in `init::spawn_file` (`libr::load_file` → `open/read`).
+Caricare i servizi da ArcaFS e' quindi quasi tutto userspace.
+
+- **MVP**: in `libr` un `obj_get(bucket, key) -> Vec<u8>` su `R_OBJ_GET`
+  (chunking `RING_MAX_PAYLOAD`, bound 256 KiB); `SvcMeta.path` diventa
+  `bucket/key`; `spawn_image` invariato; `disk`/`fs` restano embedded
+  (storage-TCB: init non puo' caricarli per `object_id` prima che il FS
+  esista).
+- **Dual-mode (transizione)**: `init` prova il caricamento nativo da `sys`; a
+  fallimento ripiega sulla path FAT. Fail-loud invariato; il ramo FAT si
+  rimuove solo a gate verde.
+- **Identita'**: confronto con il content-hash dell'oggetto (`sys.content_hash`,
+  §8) o re-hash dei byte, al posto del solo manifest FNV; da allineare con
+  ADR-0027/0037.
+- **Payoff**: con `sys` come snapshot, caricare da `sys` **e'** l'update
+  atomico e il rollback: `init` nativo e' di fatto il primo pezzo del
+  sysimage manager.
+- **Validazione**: boot completo con tutti i servizi da `sys` e gate
+  5/5+7/7+57/57 verde; fallback FAT provato; nessuna regressione sul tempo di
+  boot; un servizio con hash manomesso viene rifiutato.
+- **Dipendenze**: A1 (format/mount/GET); il rollback vero arriva con A2.
+
+## 14. Punti aperti (stima, non vincoli)
 
 S1/S2 e extent minimo esatti; checksum footer (FNV vs CRC dedicato);
 orphan-scan vs journal con snapshot multipli; `DISK_LIST`; formato
 entitlement; threshold transient set; wall-clock oltre i tick; framing
 multi-frame per `R_OBJ_MGET` oltre 4000B.
+
+Aggiunti (dalle decisioni di integrazione):
+
+- Semantica esatta di `write` a offset e `ftruncate` (versioning, costo COW,
+  interazione con `nlink`/versioni trattenute).
+- Dove e con quale algoritmo calcolare `sys.content_hash` (dedup futura).
+- Minimo POSIX del toolchain da verificare nel porting: `symlink`/`link`,
+  `utimes`, `chown`.
+- Dove sta la proiezione `mode`/`owner` ABAC (confermato server; valutare se
+  il provider avra' mai bisogno di contesto).
+
+Storage VM/blocco (§12):
+
+- Granularita' del blocco COW (512 vs 4K) e sua negoziazione, scollegata da
+  `block_size`.
+- Policy TXG: dimensione del buffer, soglia/timer di commit, interazione con
+  `R_SYNC`.
+- Contabilita' di reserve e discard rispetto a quota (`used` senza doppio
+  conteggio) e allo scrub.
+- Forma della mappa offset→blocco (livelli, pagine, costo di aggiornamento).
+- Protocollo del backend block device (canale dedicato) e framing bulk
+  multi-frame oltre i ~4000B.
+- Compressione delle immagini: fuori v1, da rivalutare.
+- Conversione di un bucket `object` → `block` (GC delle versioni) e ritorno.
+- Retention dei blocchi pinnati dagli snapshot nei bucket `block` e doppio
+  conteggio quota durante il commit.
