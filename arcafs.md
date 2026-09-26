@@ -5,8 +5,9 @@ snapshot, quota, ACL/ABAC. POSIX solo come vista (mapping sintetico).
 Filosofia ADR-0025: nativo dentro (userfs), personalita' al bordo (libr);
 provider trait ADR-0038; policy/identita'/sandbox ADR-0037.
 
-Stato: sessione guidata A0 completata (decisioni T0–T10). Prossimo: stesura
-di dettaglio punto per punto, poi A1 (singolo-device locale).
+Stato: sessione guidata A0 completata (decisioni T0–T10) + piano OS-first
+P1–P5 concordato (§13). Prossimo: fasi preparatorie P1–P5, poi stesura di
+dettaglio punto per punto e A1+N0 (singolo-device locale + init nativo).
 
 > Nota sui gate: i numeri citati altrove sono snapshot storici; il gate
 > corrente vive in `docs/src/11-testing.md` e in `ROADMAP.md`
@@ -120,11 +121,21 @@ di dettaglio punto per punto, poi A1 (singolo-device locale).
   MBR/GPT). Superblocco a LBA0 + shadow LBA1; `device_table` (§10) e' per il
   multi-device, non per partizioni.
 - **Niente log append-only**: il commit e' shadow superblock + flip, il resto
-  e' COW B+tree; recovery = generazione vecchia + orphan-GC. Il checksum
-  FNV-1a resta quello scelto per integrita' (non crittografico: rileva
-  corruzione accidentale, non un avversario).
-- Footer blocco 16B: `(type, device_idx, gen, checksum)` — blocchi
-  self-describing, scrub indipendente dal tree.
+  e' COW B+tree; recovery = generazione vecchia + orphan-GC.
+- **Integrita' a due livelli**: (1) checksum veloce FNV-1a per lo scrub
+  rapido (rileva corruzione accidentale, non un avversario — vedi threat
+  model ADR-0026); (2) tag crittografico BLAKE2s (troncato a 128 bit nel
+  footer, 256 bit nel seal del superblock) per tamper-evidence e
+  `sys.content_hash` (§8). Libreria: standard da registry se supera i
+  cancelli in-place (build freestanding `no_std` senza alloc, size entro il
+  bound `SPAWN_IMAGE_MAX`, vettori RFC 7693, niente heap nel per-op),
+  altrimenti reimplementazione propria (~500 righe, solo u32, auditabile);
+  solo userspace (userfs + `arca` + test), mai kernel (ADR-0025). FNV-1a
+  resta per `peer_info`/manifest/ABI u64 (hint + confronto esatto, mai
+  sicurezza).
+- Footer blocco: `(type, device_idx, gen, tag128)` — blocchi
+  self-describing, scrub indipendente dal tree (dimensione esatta nel
+  dettaglio A1).
 - Pool uniforme con **hint di placement** (zone veloci, co-location:
   preferenze soft, mai vincoli); l'allocatore decide, A5 cambia politica.
 - `device_table[8]` inline + `overflow_ptr` + `device_count`;
@@ -149,10 +160,12 @@ di dettaglio punto per punto, poi A1 (singolo-device locale).
 
 - Oggetto = file, lista = readdir, dir **emergenti** (esistono ⟺ chiavi
   col prefisso; mai su disco).
-- **Directory persistenti** (requisito self-hosting): `mkdir` crea un marker
-  reale, quindi la dir sopravvive a unmount/reboot; il transient set
-  server-side resta solo un'ottimizzazione, non l'unica semantica. Nessun cap
+- **Directory persistenti** (requisito self-hosting, **rinviato ad A2**):
+  `mkdir` crea un marker reale, quindi la dir sopravvive a unmount/reboot;
+  in A1 vale il transient set server-side (ottimizzazione in futuro, unica
+  semantica in A1) con tag tipo riservato nel formato. Nessun cap
   che faccia fallire `mkdir -p` su molte directory (es. `tar x`, build).
+  Trigger: porting toolchain.
 - Lettura + append + delete + **write con offset ammesso** (nuova versione
   COW con la range patchata, costo dichiarato); `O_APPEND` resta il caso
   naturale. **`ftruncate` ammesso**: nuova versione con size ridotta e tail
@@ -210,10 +223,13 @@ di dettaglio punto per punto, poi A1 (singolo-device locale).
 - Per oggetto (mutabili, bump `ctime` senza nuova versione): xattr
   `user.*` liberi + `sys.*` riservati; chiavi ≤ 64B, valori ≤ 1KB,
   totale ≤ 2KB inline (oltre → blob attributi, pattern overflow).
-- `sys.content_hash` (riservato, opzionale): hash del contenuto per abilitare
-  dedup come **ottimizzazione futura** (piu' `object_id` → stesso extent,
-  tracciato da refcount/GC); non e' identita'. Algoritmo da decidere quando
-  serve.
+- `sys.content_hash` (riservato, BLAKE2s-256): hash del contenuto calcolato
+  dal writer (userfs) al seal e verificato al load da `init` (N0: confronto
+  con content-hash o re-hash dei byte, da allineare con ADR-0027/0037).
+  Abilita dedup come **ottimizzazione futura** (piu' `object_id` → stesso
+  extent, tracciato da refcount/GC); non e' identita' (quella resta
+  `(volume_uuid, object_id)`). FNV-64 esplicitamente scartato qui:
+  compleanno a 2^32 inaccettabile su binari TCB.
 - `ctime` = ultima modifica metadati/ACL; gli xattr alimentano ABAC
   (filtri) e vector (filtri RAG).
 
@@ -226,10 +242,11 @@ di dettaglio punto per punto, poi A1 (singolo-device locale).
   inattivo + log).
 - Il tool non scavalca: valuta il canale originario; `grant` mai oltre il
   tetto del concedente.
-- **Transizione di boot**: due dischi; si avvia sempre da FAT finche' ArcaFS
-  non e' verificato (ArcaFS come volume secondario). `arca create` +
-  iniezione nel volume; `run.sh` esteso per scegliere il boot volume.
-  **Swap** solo a gate verde; FAT resta fallback.
+- **Transizione di boot**: terzo drive `arca.img` opt-in (`ARCA_IMG=1`); si
+  avvia sempre da FAT finche' ArcaFS non e' verificato (ArcaFS come volume
+  secondario). `arca create` + iniezione nel volume; `run.sh` esteso per il
+  terzo drive e per scegliere il boot volume. **Swap** solo a gate verde;
+  FAT resta fallback.
 
 ## 10. Multi-device, rete, swap, vector (T10+)
 
@@ -320,11 +337,26 @@ ArcaFS. Non serve al self-hosting: track parallelo, dopo A1–A8.
 - **Da misurare prima di promettere**: IOPS/latenza 4K random, write
   amplification, memoria cache, con TXG acceso/spento.
 
-## 13. Fasi (A1–A8 + V1 + B1 + N0)
+## 13. Fasi (ROADMAP 50+: P1–P5 + A1–A8 + V1 + B1 + N0 + L0/L1)
 
-- A1: singolo-device (format via `arca create`, negotiate, mount, R/W);
-  monta come provider `LocalFs` (`negotiate` su `magic="ACFS"`) e parte
-  nella transizione a due dischi (boot da FAT, ArcaFS secondario).
+Numerazione ROADMAP (le lettere restano come alias di binario): 50–54 =
+P1–P5, 55 = A1+N0, 56 = A2, 57 = L0/L1, 58+ = A3–A8/V1/B1 (numeri assegnati
+all'avvio).
+
+- **P1–P5 preparatorie OS-first** (prima di A1, gate verde ciascuna):
+  P1 orologio (lettore CMOS `0x70/0x71` in userspace + endpoint `time` con
+  epoch+tick, `mtime` veri via trait); P2 vocabolario disco (`DISK_LIST`/
+  `DISK_INFO` + sonda TRIM capability-only); P3 durabilita' (`R_SYNC`
+  None/Group/PerWrite + contratto + sensori `statvfs`/`SYS_MEMINFO`); P4
+  misura bulk (bench round-trip-vs-dimensione, CAP single-source, zero cambi
+  di formato: la decisione si prende sui numeri); P5 integrita' + attrezzi
+  (BLAKE2s con cancelli in-place, `sys.content_hash`, `arca create`
+  skeleton, `testsarca`, `arca.img` come terzo drive opt-in `ARCA_IMG=1`,
+  boot default intoccato). Senza N0, A1 resta teoria (vedi §0).
+- A1 (+N0 in coppia, mai da solo): singolo-device (format via `arca create`,
+  negotiate, mount, R/W); monta come provider `LocalFs` (`negotiate` su
+  `magic="ACFS"`) e parte nella transizione multi-disco (boot da FAT,
+  ArcaFS su `arca.img` terzo drive opt-in, secondario fino allo swap).
 - A2: COW + snapshot/clone + GC (+ packing, + `R_OBJ_MGET`).
 - A3: quota + subvolumi.
 - A4: ACL/ABAC engine + tool policy.
@@ -355,9 +387,9 @@ Caricare i servizi da ArcaFS e' quindi quasi tutto userspace.
 - **Dual-mode (transizione)**: `init` prova il caricamento nativo da `sys`; a
   fallimento ripiega sulla path FAT. Fail-loud invariato; il ramo FAT si
   rimuove solo a gate verde.
-- **Identita'**: confronto con il content-hash dell'oggetto (`sys.content_hash`,
-  §8) o re-hash dei byte, al posto del solo manifest FNV; da allineare con
-  ADR-0027/0037.
+- **Identita'**: confronto con il content-hash BLAKE2s-256 dell'oggetto
+  (`sys.content_hash`, §8) o re-hash dei byte, al posto del solo manifest
+  FNV; da allineare con ADR-0027/0037.
 - **Payoff**: con `sys` come snapshot, caricare da `sys` **e'** l'update
   atomico e il rollback: `init` nativo e' di fatto il primo pezzo del
   sysimage manager.
@@ -368,10 +400,11 @@ Caricare i servizi da ArcaFS e' quindi quasi tutto userspace.
 
 ## 14. Punti aperti (stima, non vincoli)
 
-S1/S2 e extent minimo esatti; checksum footer (FNV vs CRC dedicato);
-orphan-scan vs journal con snapshot multipli; `DISK_LIST`; formato
-entitlement; threshold transient set; wall-clock oltre i tick; framing
-multi-frame per `R_OBJ_MGET` oltre 4000B.
+S1/S2 e extent minimo esatti (su dati P2, non a stima); dimensione esatta
+del footer col tag128; orphan-scan vs journal con snapshot multipli;
+formato entitlement; threshold transient set (solo fino ad A2, poi marker).
+Chiusi dalle P: `DISK_LIST` (P2), wall-clock oltre i tick (P1), framing
+multi-frame per `R_OBJ_MGET` oltre 4000B (P4 misura, decisione sui numeri).
 
 Aggiunti (dalle decisioni di integrazione):
 
@@ -398,3 +431,19 @@ Storage VM/blocco (§12):
 - Conversione di un bucket `object` → `block` (GC delle versioni) e ritorno.
 - Retention dei blocchi pinnati dagli snapshot nei bucket `block` e doppio
   conteggio quota durante il commit.
+
+## 15. Logging (specifica aggiuntiva, graduale)
+
+Il FS fornisce le primitive, un servizio userspace separato fa il log
+(stesso pattern di §11/§12: niente query nel FS, mai).
+
+- L0 (prima di A1, su FAT): convenzione `/var/log` + rotazione nel servizio;
+  early-boot sempre su seriale+dmesg (timestamp in tick, best-effort).
+- L1 (dopo A2, nativo): bucket `log` tipo `object`, chiavi
+  `<sorgente>/<giorno>/<seq>`; append con seal periodico (stile TXG Group
+  commit) + `R_SYNC` Group al seal; retention via snapshot+GC (richiede A2);
+  quota sul subvolume; niente query nel FS (il servizio indicizza fuori).
+- Prerequisiti: P1 (timestamp veri — senza wall-clock i log non sono log),
+  P3 (`R_SYNC` + contratto di stabilita'), A2 (retention senza GC e' solo
+  accumulo).
+- Formato record e policy di seal/retention: dettaglio in A2, non qui.

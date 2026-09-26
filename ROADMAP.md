@@ -76,8 +76,48 @@ Voci con scope e vittoria dichiarati (non date).
       disco; hook futuro per distribuzione nativa (ceph/glusterfs-like).
       Sessione A0 completata: bozza in `arcafs.md` (modello, indice,
       formato, API, mapping, diritti, quota, tool, multi-device, swap,
-      vector). Prossimo: stesura di dettaglio + ADR, poi A1.
+      vector, logging §15) + piano OS-first P1–P5 (§13). Prossimo: 50–54,
+      poi stesura di dettaglio + ADR, poi 55.
       Vittoria: spec scritta + primo mount.
+- [ ] **50 (P1) orologio** (nessuna dipendenza): lettore CMOS 0x70/0x71 in
+      userspace + endpoint `time` (epoch all'avvio + monotono PIT) + `mtime`
+      veri via trait (`Meta`, mai handler).
+      Vittoria: `stat` con timestamp plausibili su ramfs+FAT, suite verde.
+- [ ] **51 (P2) vocabolario disco** (dopo 50): `DISK_LIST`/`DISK_INFO` minimale
+      (settori, LBA48, modello/seriale, modo UDMA) + sonda TRIM
+      capability-only, mai uso.
+      Vittoria: `arca` stampa la topologia dei dischi; S1/S2 decidibili su dati.
+- [ ] **52 (P3) durabilita'** (dopo 51): `R_SYNC` None/Group/PerWrite
+      (Group = flush+barriera) + contratto scritto + sensori
+      `statvfs`/`SYS_MEMINFO`.
+      Vittoria: ogni op dichiara quando e' stabile; ganci pronti per quota/swap.
+- [ ] **53 (P4) misura bulk** (dopo 52): bench round-trip-vs-dimensione
+      (4K/16K/64K, ramfs + FAT caldo/freddo), CAP single-source verificata;
+      zero cambi di formato, zero pagine extra.
+      Vittoria: grafo costo-vs-dimensione misurato; decisione rinviata ai numeri.
+- [ ] **54 (P5) integrita' + attrezzi** (dopo 53): BLAKE2s con cancelli in-place
+      (standard da registry se: build freestanding no_std senza alloc, size
+      entro `SPAWN_IMAGE_MAX`, vettori RFC 7693, niente heap nel per-op;
+      altrimenti reimplementazione propria) + `sys.content_hash` riempito +
+      `arca create` skeleton + harness `testsarca` + `arca.img` come terzo
+      drive opt-in (`ARCA_IMG=1`, boot default intatto).
+      Vittoria: `arca create`, `negotiate()` → `arcafs`, suite verde.
+- [ ] **55 (A1+N0)** (dopo 54, mai A1 da solo): `R_OBJ_PUT/GET` via
+      `MountedFs::Local` + `init` dual-mode (nativo da bucket `sys` per
+      `object_id`, fallback FAT) + `SvcMeta.bucket/key`; hash manomesso
+      rifiutato (BLAKE2s).
+      Vittoria: boot con servizi da `sys`, fallback FAT provato, gate verde.
+- [ ] **56 (A2)** (dopo 55): COW + snapshot/clone + GC (+ packing, + `R_OBJ_MGET`
+      se 53 lo chiede) + marker dir persistenti (§5).
+      Vittoria: rollback vero; retention log implementabile.
+- [ ] **57 (L0/L1) logging** (L0 prima di 55, L1 dopo 56; `arcafs.md` §15): L0
+      convenzione `/var/log` su FAT + rotazione nel servizio; L1 bucket
+      `log` nativo (seal + `R_SYNC` Group + retention via snapshot+GC).
+      Vittoria L0: log ruotati su FAT; L1: bucket nativo con retention.
+- [ ] **58+ (A3–A8, V1, B1)** (dopo 56, come da `arcafs.md` §13): quota,
+      ABAC engine, device-awareness, RAID, tool completo, rete; servizio
+      vettoriale e backend VM/block fuori dal FS, mai dentro.
+      Vittoria: una fase alla volta, ciascuna col suo gate.
 
 ## Parcheggiate
 
